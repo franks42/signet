@@ -10,7 +10,15 @@
       "WebFetch(domain:blogs.igalia.com)",
       "mcp__memory__memory_store",
       "Bash(git add:*)",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git remote:*)",
+      "Bash(git fetch:*)",
+      "Bash(git pull:*)",
+      "Bash(find /Users/franksiebenlist/Development/stroopwafel -maxdepth 2 -type f -name *.edn -o -name *.clj -o -name *.cljc)",
+      "Bash(mkdir -p /Users/franksiebenlist/Development/signet/src/signet/impl)",
+      "Bash(mkdir -p /Users/franksiebenlist/Development/signet/test/signet)",
+      "Bash(clojure:*)"
     ]
   },
   "enableAllProjectMcpServers": true,
