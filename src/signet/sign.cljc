@@ -1,5 +1,5 @@
 (ns signet.sign
-  "Ed25519 signing and verification.
+  "Ed25519 signing and verification for request signing.
 
    Low-level (bytes in, bytes out):
      (sign keypair message-bytes)        → 64-byte signature
@@ -9,7 +9,9 @@
      (sign-edn payload)                  → signed envelope (uses default keypair)
      (sign-edn keypair payload)          → signed envelope
      (sign-edn keypair payload opts)     → with :ttl (seconds)
-     (verify-edn envelope)              → {:valid? bool :message ... :signer ...}"
+     (verify-edn envelope)              → {:valid? bool :message ... :signer ...}
+
+   For capability chains with delegation/sealing, see signet.chain."
   (:require [cedn.core :as cedn]
             [com.github.franks42.uuidv7.core :as uuidv7]
             [signet.key :as key]
@@ -81,52 +83,11 @@
   [x]
   (and (map? x) (= :signet/signed (:type x))))
 
-(defn sign-seal
-  "Sign an EDN payload with an ephemeral keypair, then discard the private key.
-   The ephemeral private key never leaves this function — it is not registered
-   in the key store, and goes out of scope after signing.
-
-   Only the public key is registered, so verifiers can look it up by kid URN.
-
-   Returns a sealed envelope:
-     {:type :signet/sealed
-      :envelope {:message <payload> :signer <kid> :request-id <uuid>}
-      :signature <bytes>}
-
-   No keypair argument — the function IS the key's entire lifecycle."
-  ([payload]
-   (sign-seal payload nil))
-  ([payload opts]
-   (let [;; Generate ephemeral keypair — use internal multimethod to avoid auto-registration
-         #?@(:clj  [[pub-bytes seed-bytes] (jvm/generate-ed25519-keypair)])
-         ;; Only register the public key
-         pub (key/register! (key/->Ed25519PublicKey :signet/ed25519-public-key :Ed25519 pub-bytes))
-         request-id (uuidv7/uuidv7)
-         signer (key/kid pub)
-         envelope (cond-> {:message    payload
-                           :signer     signer
-                           :request-id request-id}
-                   (:ttl opts) (assoc :expires (+ (uuidv7/extract-ts request-id)
-                                                  (* 1000 (:ttl opts)))))
-         canonical (cedn/canonical-bytes envelope)
-         ;; Sign with ephemeral private key — seed-bytes goes out of scope after this let
-         sig #?(:clj  (jvm/ed25519-sign seed-bytes canonical)
-                :cljs (throw (js/Error. "Not yet implemented for ClojureScript")))]
-     {:type      :signet/sealed
-      :envelope  envelope
-      :signature sig})))
-
-(defn sign-sealed?
-  "Returns true if x is a sealed envelope (ephemeral key, no future signatures)."
-  [x]
-  (and (map? x) (= :signet/sealed (:type x))))
-
 (defn verify-edn
-  "Verify a signed or sealed EDN envelope. Returns a result map:
+  "Verify a signed EDN envelope. Returns a result map:
      :valid?          boolean — signature check passed
      :message         the original payload
      :signer          kid URN of the signer
-     :sealed?         true if the envelope is sealed (ephemeral key)
      :request-id      the UUIDv7
      :timestamp       epoch-ms extracted from UUIDv7
      :age-ms          milliseconds since signing
@@ -150,7 +111,6 @@
     (cond-> {:valid?         valid?
              :message        message
              :signer         signer
-             :sealed?        (= :signet/sealed (:type signed-envelope))
              :request-id     request-id
              :timestamp      ts
              :age-ms         (- now ts)
