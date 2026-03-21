@@ -40,6 +40,11 @@
   (let [[pub-bytes _] (extract-raw-keys (seed->keypair-via-kpg "Ed25519" seed-bytes))]
     pub-bytes))
 
+(defn sha-256
+  "Compute SHA-256 hash of byte array. Returns 32-byte hash."
+  [^bytes bs]
+  (.digest (MessageDigest/getInstance "SHA-256") bs))
+
 (defn ed25519-sign
   "Sign message bytes with an Ed25519 private key seed (32 bytes).
    Returns 64-byte signature."

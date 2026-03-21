@@ -19,7 +19,8 @@
       "Bash(mkdir -p /Users/franksiebenlist/Development/signet/src/signet/impl)",
       "Bash(mkdir -p /Users/franksiebenlist/Development/signet/test/signet)",
       "Bash(clojure:*)",
-      "Bash(git tag:*)"
+      "Bash(git tag:*)",
+      "WebFetch(domain:doc.biscuitsec.org)"
     ]
   },
   "enableAllProjectMcpServers": true,
