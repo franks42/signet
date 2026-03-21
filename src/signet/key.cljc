@@ -24,7 +24,8 @@
    Predicates:
      (signing-keypair? k) (signing-public-key? k) (signing-private-key? k)
      (encryption-keypair? k) (encryption-public-key? k) (encryption-private-key? k)"
-  (:require [signet.encoding :as enc]
+  (:require [clojure.string :as str]
+            [signet.encoding :as enc]
             #?(:clj [signet.impl.jvm :as jvm])))
 
 ;; -- Records
@@ -96,6 +97,15 @@
     nil)
   k)
 
+;; -- URN helpers
+
+(defn- urn-algorithm
+  "Return the URN algorithm component for a key's curve."
+  [crv]
+  (case crv
+    :Ed25519 "ed25519"
+    :X25519  "x25519"))
+
 ;; ============================================================
 ;; Key Store — auto-discovery of keys by kid
 ;; ============================================================
@@ -130,7 +140,9 @@
                                  :signet/ed25519-private-key (jvm/ed25519-seed->public-key (:d k))
                                  :signet/x25519-private-key (jvm/x25519-private->public-key (:d k)))
                           :cljs nil))
-           kid-str (when x-bytes (enc/bytes->base64url x-bytes))
+           alg (urn-algorithm (:crv k))
+           kid-str (when (and x-bytes alg)
+                     (str "urn:signet:pk:" alg ":" (enc/bytes->base64url x-bytes)))
            new-rank (get type-rank (:type k) 0)]
        (when kid-str
          (swap! store (fn [m]
@@ -143,9 +155,24 @@
    k))
 
 (defn lookup
-  "Look up a key by kid (base64url string). Returns the best key record or nil."
+  "Look up a key by kid URN string. Returns the best key record or nil.
+   If not found in the store but the URN contains the public key,
+   parses it and auto-registers."
   ([kid-str] (lookup default-key-store kid-str))
-  ([store kid-str] (get @store kid-str)))
+  ([store kid-str]
+   (or (get @store kid-str)
+       ;; URN is self-describing — extract public key if not in store
+       (when (and (string? kid-str) (.startsWith ^String kid-str "urn:signet:pk:"))
+         (let [[_ _ _ alg b64] (str/split kid-str #":")
+               pub (case alg
+                     "ed25519" (->Ed25519PublicKey :signet/ed25519-public-key :Ed25519
+                                                   (enc/base64url->bytes b64))
+                     "x25519"  (->X25519PublicKey :signet/x25519-public-key :X25519
+                                                  (enc/base64url->bytes b64))
+                     nil)]
+           (when pub
+             (register! store pub)
+             pub))))))
 
 (defn registered-keys
   "Return all registered keys as a seq."
@@ -411,9 +438,23 @@
 ;; ============================================================
 
 (defn kid
-  "Return the key identifier: base64url encoding of the public key bytes."
+  "Return the key identifier as a URN: urn:signet:pk:<algorithm>:<base64url-public-key>.
+   Self-describing — the receiver can parse the URN to extract the algorithm
+   and the public key bytes directly."
   [k]
-  (enc/bytes->base64url (:x (public-key k))))
+  (let [pub (public-key k)]
+    (str "urn:signet:pk:" (urn-algorithm (:crv pub)) ":" (enc/bytes->base64url (:x pub)))))
+
+(defn kid->public-key
+  "Parse a kid URN and return the public key record.
+   Extracts the algorithm and public key bytes from the URN."
+  [kid-str]
+  (let [[_ _ _ alg b64] (str/split kid-str #":")]
+    (case alg
+      "ed25519" (->Ed25519PublicKey :signet/ed25519-public-key :Ed25519
+                                    (enc/base64url->bytes b64))
+      "x25519"  (->X25519PublicKey :signet/x25519-public-key :X25519
+                                   (enc/base64url->bytes b64)))))
 
 ;; ============================================================
 ;; raw-shared-secret — X25519 Diffie-Hellman key agreement

@@ -221,24 +221,44 @@
 ;; === kid tests ===
 
 (deftest kid-test
-  (testing "kid returns base64url of public key"
+  (testing "kid returns a URN with embedded public key"
     (let [kp (key/signing-keypair)
           id (key/kid kp)]
       (is (string? id))
-      (is (pos? (count id)))
-      (is (java.util.Arrays/equals ^bytes (:x kp)
-                                   ^bytes (enc/base64url->bytes id)))))
+      (is (.startsWith ^String id "urn:signet:pk:ed25519:"))
+      ;; Round-trip: parse kid back to public key
+      (let [pub (key/kid->public-key id)]
+        (is (key/signing-public-key? pub))
+        (is (java.util.Arrays/equals ^bytes (:x kp) ^bytes (:x pub))))))
 
   (testing "kid works for X25519 keys"
-    (let [kp (key/encryption-keypair)]
-      (is (string? (key/kid kp)))))
+    (let [kp (key/encryption-keypair)
+          id (key/kid kp)]
+      (is (.startsWith ^String id "urn:signet:pk:x25519:"))))
 
   (testing "kid consistent across key forms"
     (let [kp (key/signing-keypair)
           pub (key/signing-public-key kp)
           priv (key/signing-private-key kp)]
       (is (= (key/kid kp) (key/kid pub)))
-      (is (= (key/kid kp) (key/kid priv))))))
+      (is (= (key/kid kp) (key/kid priv)))))
+
+  (testing "kid->public-key round-trips correctly"
+    (let [kp (key/encryption-keypair)
+          id (key/kid kp)
+          pub (key/kid->public-key id)]
+      (is (key/encryption-public-key? pub))
+      (is (java.util.Arrays/equals ^bytes (:x kp) ^bytes (:x pub)))))
+
+  (testing "lookup auto-parses kid URN when key not in store"
+    (let [kp (key/signing-keypair)
+          id (key/kid kp)]
+      (key/clear-key-store!)
+      ;; Key was cleared but URN is self-describing
+      (let [found (key/lookup id)]
+        (is (some? found))
+        (is (key/signing-public-key? found))
+        (is (java.util.Arrays/equals ^bytes (:x kp) ^bytes (:x found)))))))
 
 ;; === Ed25519 → X25519 cross-curve conversion tests ===
 
@@ -465,12 +485,15 @@
           kp2 (key/encryption-keypair)]
       (is (= 2 (count (key/registered-keys))))))
 
-  (testing "unregister! removes a key"
+  (testing "unregister! removes a key from store"
     (let [kp (key/signing-keypair)
           kid-str (key/kid kp)]
       (is (some? (key/lookup kid-str)))
+      (is (key/signing-keypair? (key/lookup kid-str)))
       (key/unregister! kid-str)
-      (is (nil? (key/lookup kid-str)))))
+      ;; URN is self-describing so lookup still works (re-parses to public key)
+      ;; but the keypair is gone — only public key remains
+      (is (key/signing-public-key? (key/lookup kid-str)))))
 
   (testing "clear-key-store! empties the store"
     (key/signing-keypair)
