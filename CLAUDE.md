@@ -41,11 +41,15 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - TTL/expiration support
 - Digests: `message-digest` (same across signers), `digest` (unique per envelope)
 
-### signet.chain — Capability chains (designed, not yet implemented)
-- `extend` — add block, chain stays open (ephemeral key plumbing internal)
-- `close` — add final block + seal (ephemeral key discarded)
-- `verify` — verify chain integrity
-- Developer never touches ephemeral keys
+### signet.chain — Capability chains ✅
+- `extend` — create chain or add block (ephemeral key plumbing internal)
+- `close` — add final block + seal (ephemeral key discarded, chain frozen)
+- `verify` — verify all signatures, chain links, and seal proof
+- Blocks are signed envelopes (sign/sign-edn) — reuses signing infrastructure
+- Ephemeral private keys never registered, never exposed to developer
+- Root authority key must be intentional (no silent auto-generation)
+- Block content is opaque EDN — stroopwafel adds Datalog semantics
+- Predicates: `chain?`, `open?`, `sealed?`
 
 ### signet.encoding — Base64url
 - `bytes->base64url` / `base64url->bytes`
@@ -59,8 +63,9 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 
 ## Implementation Phases
 1. **Phase 1 (MVP)**: Key management + Ed25519 signing ✅
-2. **Phase 2**: signet.chain (capability chains) + X25519 encryption (signet.box)
-3. **Phase 3**: SSH import, key discovery, filesystem-based key publishing
+2. **Phase 1b**: Capability chains (signet.chain) ✅
+3. **Phase 2**: X25519 encryption (signet.box — DH + symmetric encryption)
+4. **Phase 3**: SSH import, key discovery, filesystem-based key publishing
 
 ## Related Local Projects
 - `../stroopwafel` — First consumer (capability-based auth tokens). Adds Datalog on top of signet.chain.
