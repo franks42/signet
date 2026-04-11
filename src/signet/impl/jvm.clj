@@ -69,21 +69,27 @@
     (.sign sig)))
 
 (defn ed25519-verify
-  "Verify an Ed25519 signature. Returns true if valid."
+  "Verify an Ed25519 signature. Returns true if valid, false otherwise
+   (including malformed signatures that throw JCA SignatureException —
+   a tampered bit can land on an invalid curve point, which must be
+   reported as 'invalid', not crash the verifier)."
   [pub-bytes message-bytes signature-bytes]
-  (let [;; Reconstruct X.509 DER encoding from raw public key
-        x509-header (byte-array [0x30 0x2a 0x30 0x05 0x06 0x03 0x2b 0x65
-                                 0x70 0x03 0x21 0x00])
-        x509-bytes (byte-array 44)
-        _ (System/arraycopy x509-header 0 x509-bytes 0 12)
-        _ (System/arraycopy pub-bytes 0 x509-bytes 12 32)
-        key-spec (java.security.spec.X509EncodedKeySpec. x509-bytes)
-        kf (java.security.KeyFactory/getInstance "Ed25519")
-        public-key (.generatePublic kf key-spec)
-        sig (Signature/getInstance "Ed25519")]
-    (.initVerify sig public-key)
-    (.update sig ^bytes message-bytes)
-    (.verify sig ^bytes signature-bytes)))
+  (try
+    (let [;; Reconstruct X.509 DER encoding from raw public key
+          x509-header (byte-array [0x30 0x2a 0x30 0x05 0x06 0x03 0x2b 0x65
+                                   0x70 0x03 0x21 0x00])
+          x509-bytes  (byte-array 44)
+          _           (System/arraycopy x509-header 0 x509-bytes 0 12)
+          _           (System/arraycopy pub-bytes 0 x509-bytes 12 32)
+          key-spec    (java.security.spec.X509EncodedKeySpec. x509-bytes)
+          kf          (java.security.KeyFactory/getInstance "Ed25519")
+          public-key  (.generatePublic kf key-spec)
+          sig         (Signature/getInstance "Ed25519")]
+      (.initVerify sig public-key)
+      (.update sig ^bytes message-bytes)
+      (.verify sig ^bytes signature-bytes))
+    (catch java.security.SignatureException _  false)
+    (catch java.security.InvalidKeyException _ false)))
 
 (defn generate-x25519-keypair
   "Generate an X25519 keypair. Returns [public-key-bytes private-key-bytes]."
