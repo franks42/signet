@@ -1,0 +1,17 @@
+{:deps  {com.github.franks42/cedn    {:mvn/version "1.2.0"}
+         com.github.franks42/uuidv7  {:mvn/version "0.5.0"}}
+
+ :paths ["src" "test"]
+
+ :tasks
+ {:requires ([clojure.test :as t])
+
+  smoke
+  {:doc  "Run the babashka compatibility smoke test suite.
+          Catches regressions in code paths that work on JVM but
+          fail on bb (typically proxy [SecureRandom] via the
+          seed->public-key derivation path)."
+   :requires ([signet.bb-smoke-test])
+   :task (let [r (t/run-tests 'signet.bb-smoke-test)]
+           (when (pos? (+ (:fail r 0) (:error r 0)))
+             (System/exit 1)))}}}
