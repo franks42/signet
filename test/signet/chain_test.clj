@@ -219,3 +219,114 @@
       (is (= [:read-only] (get-in (second (:blocks result)) [:data :restrict])))
       (is (= "/data/reports/q1.csv"
              (get-in (last (:blocks result)) [:data :resource]))))))
+
+;; === Third-party block tests ===
+
+(deftest third-party-request-test
+  (testing "third-party-request returns prev-sig binding"
+    (let [_root (key/signing-keypair)
+          token (chain/extend {:facts ["block 0"]})
+          request (chain/third-party-request token)]
+      (is (= :signet/third-party-request (:type request)))
+      (is (some? (:prev-sig request)))
+      (is (bytes? (:prev-sig request)))))
+
+  (testing "third-party-request fails on sealed chain"
+    (let [_root (key/signing-keypair)
+          sealed (-> (chain/extend {:facts ["test"]}) (chain/close))]
+      (is (thrown? clojure.lang.ExceptionInfo
+                  (chain/third-party-request sealed))))))
+
+(deftest create-third-party-block-test
+  (testing "create-third-party-block produces signed block"
+    (let [_root (key/signing-keypair)
+          token (chain/extend {:facts ["block 0"]})
+          request (chain/third-party-request token)
+          idp-kp (key/signing-keypair)
+          tp-block (chain/create-third-party-block
+                    request
+                    {:email "alice@idp.com" :role "engineer"}
+                    idp-kp)]
+      (is (= :signet/third-party-block (:type tp-block)))
+      (is (= {:email "alice@idp.com" :role "engineer"} (:data tp-block)))
+      (is (some? (:external-sig tp-block)))
+      (is (= (key/kid idp-kp) (:external-key tp-block))))))
+
+(deftest extend-third-party-test
+  (testing "extend-third-party appends block to chain"
+    (let [_root (key/signing-keypair)
+          token (chain/extend {:facts ["authority block"]})
+          idp-kp (key/signing-keypair)
+          request (chain/third-party-request token)
+          tp-block (chain/create-third-party-block
+                    request {:email "alice@idp.com"} idp-kp)
+          token2 (chain/extend-third-party token tp-block)]
+      (is (= 2 (count (:blocks token2))))
+      (is (chain/open? token2))))
+
+  (testing "can extend further after third-party block"
+    (let [_root (key/signing-keypair)
+          token (chain/extend {:facts ["authority"]})
+          idp-kp (key/signing-keypair)
+          request (chain/third-party-request token)
+          tp-block (chain/create-third-party-block
+                    request {:email "alice@idp.com"} idp-kp)
+          token2 (chain/extend-third-party token tp-block)
+          token3 (chain/extend token2 {:checks ["only read"]})]
+      (is (= 3 (count (:blocks token3))))))
+
+  (testing "extend-third-party fails on sealed chain"
+    (let [_root (key/signing-keypair)
+          sealed (-> (chain/extend {:facts ["test"]}) (chain/close))
+          idp-kp (key/signing-keypair)
+          ;; Can't even get a request from sealed, but try extend directly
+          tp-block {:type :signet/third-party-block
+                    :data {:x 1}
+                    :external-sig (byte-array 64)
+                    :external-key (key/kid idp-kp)}]
+      (is (thrown? clojure.lang.ExceptionInfo
+                  (chain/extend-third-party sealed tp-block))))))
+
+(deftest verify-third-party-test
+  (testing "chain with third-party block verifies"
+    (let [_root (key/signing-keypair)
+          token (chain/extend {:facts ["authority"]})
+          idp-kp (key/signing-keypair)
+          request (chain/third-party-request token)
+          tp-block (chain/create-third-party-block
+                    request {:email "alice@idp.com"} idp-kp)
+          token2 (chain/extend-third-party token tp-block)
+          sealed (chain/close token2)
+          result (chain/verify sealed)]
+      (is (:valid? result))
+      (is (= 2 (count (:blocks result))))))
+
+  (testing "tampered third-party content fails verification"
+    (let [_root (key/signing-keypair)
+          token (chain/extend {:facts ["authority"]})
+          idp-kp (key/signing-keypair)
+          request (chain/third-party-request token)
+          tp-block (chain/create-third-party-block
+                    request {:email "alice@idp.com"} idp-kp)
+          token2 (chain/extend-third-party token tp-block)
+          sealed (chain/close token2)
+          ;; Tamper with the third-party block's data
+          tampered (assoc-in sealed [:blocks 1 :envelope :message :data]
+                             {:email "mallory@evil.com"})]
+      (is (not (:valid? (chain/verify tampered))))))
+
+  (testing "third-party block with wrong prev-sig binding fails"
+    (let [root-kp (key/signing-keypair)
+          token-a (chain/extend {:facts ["chain A"]})
+          token-b (chain/extend root-kp {:facts ["chain B"]})
+          idp-kp (key/signing-keypair)
+          ;; Get request from chain A
+          request-a (chain/third-party-request token-a)
+          ;; Third party signs for chain A
+          tp-block (chain/create-third-party-block
+                    request-a {:email "alice@idp.com"} idp-kp)
+          ;; Try to append to chain B (different prev-sig)
+          token-b2 (chain/extend-third-party token-b tp-block)
+          sealed (chain/close token-b2)]
+      ;; External sig should fail because it was bound to chain A's prev-sig
+      (is (not (:valid? (chain/verify sealed)))))))

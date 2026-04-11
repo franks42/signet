@@ -32,7 +32,8 @@
      - Sealed tokens cannot be extended (ephemeral key is gone)
      - Content can only be added, never removed or reordered"
   (:refer-clojure :exclude [extend])
-  (:require [signet.key :as key]
+  (:require [cedn.core :as cedn]
+            [signet.key :as key]
             [signet.sign :as sign]
             #?(:clj [signet.impl.jvm :as jvm])))
 
@@ -260,6 +261,104 @@
 
 
 ;; ============================================================
+;; Public API: third-party blocks
+;; ============================================================
+
+(defn third-party-request
+  "Create a request for a third-party block.
+
+   The token holder calls this to get the binding info needed by an
+   external party (e.g., an IdP) to sign a block bound to this
+   specific chain instance.
+
+   The third party needs the previous block's signature to bind
+   their signed content to this chain — preventing replay of their
+   block into a different chain.
+
+   Throws if the token is sealed.
+
+   Returns:
+     {:type     :signet/third-party-request
+      :prev-sig <bytes — signature of the last block>}"
+  [token]
+  (when (sealed? token)
+    (throw (ex-info "Cannot create third-party request from a sealed chain" {})))
+  {:type     :signet/third-party-request
+   :prev-sig (:signature (peek (:blocks token)))})
+
+(defn create-third-party-block
+  "Create a signed third-party block (called by the external party).
+
+   The third party signs their content bound to a specific chain
+   instance via `prev-sig` from the request. This prevents the
+   block from being replayed into a different chain.
+
+   Arguments:
+     - `request`  : from `third-party-request` — contains :prev-sig
+     - `content`  : opaque EDN (the third party's assertions)
+     - `tp-key`   : the third party's signing keypair
+
+   Returns:
+     {:type          :signet/third-party-block
+      :data          <content>
+      :external-sig  <signature over canonical {data + prev-sig}>
+      :external-key  <kid URN of the third party>}"
+  [request content tp-key]
+  (let [;; The payload that gets signed: content + chain binding
+        signable {:data     content
+                  :prev-sig (:prev-sig request)}
+        canonical #?(:clj  (cedn/canonical-bytes signable)
+                     :cljs (throw (js/Error. "Not yet implemented")))
+        ext-sig  (sign/sign tp-key canonical)]
+    {:type          :signet/third-party-block
+     :data          content
+     :external-sig  ext-sig
+     :external-key  (key/kid tp-key)}))
+
+(defn extend-third-party
+  "Append a third-party block to a chain.
+
+   The token holder calls this after receiving the signed block from
+   the third party. The block is wrapped in the chain's ephemeral
+   key chain like any other block, but also carries the external
+   signature and key for independent verification.
+
+   Throws if the token is sealed.
+
+   Arguments:
+     - `token`    : open chain
+     - `tp-block` : from `create-third-party-block`
+
+   Returns: updated token with the third-party block appended."
+  [token tp-block]
+  (when (sealed? token)
+    (throw (ex-info "Cannot extend a sealed chain" {})))
+  (let [last-block (peek (:blocks token))
+        prev-sig   (:signature last-block)
+
+        ;; Reconstruct ephemeral keypair from proof + last block's next-key
+        last-next-key (get-in last-block [:envelope :message :next-key])
+        eph-pub (key/kid->public-key last-next-key)
+        eph-kp (key/->Ed25519KeyPair :signet/ed25519-keypair :Ed25519
+                                     (:x eph-pub) (:proof token))
+
+        ;; Generate fresh ephemeral keypair for the next block
+        next-eph-kp (make-ephemeral-keypair)
+
+        ;; Build block content: developer's data + third-party metadata
+        block-content {:data         (:data tp-block)
+                       :next-key     (key/kid next-eph-kp)
+                       :prev-sig     prev-sig
+                       :external-sig (:external-sig tp-block)
+                       :external-key (:external-key tp-block)}
+
+        ;; Sign with the ephemeral key (chain integrity)
+        new-block (sign/sign-edn eph-kp block-content)]
+    (assoc token
+           :blocks (conj (:blocks token) new-block)
+           :proof  (:d next-eph-kp))))
+
+;; ============================================================
 ;; Public API: verify
 ;; ============================================================
 
@@ -271,8 +370,9 @@
      2. Each block's signature is valid (via sign/verify-edn)
      3. Each block's prev-sig matches the previous block's signature
      4. Each block's signer matches the previous block's next-key
-     5. If sealed: the seal signature verifies against the last block's next-key
-     6. If open: the proof corresponds to the last block's next-key
+     5. Third-party blocks: external signature verified against external key
+     6. If sealed: the seal signature verifies against the last block's next-key
+     7. If open: the proof corresponds to the last block's next-key
 
    Returns:
      {:valid?   boolean
@@ -328,10 +428,23 @@
                   (assoc acc :error (str "prev-sig mismatch on block " (count results)))
 
                   :else
-                  {:results       (conj results result)
-                   :prev-sig      (:signature block)
-                   :prev-next-key block-next
-                   :error         nil}))))
+                  ;; Check external signature if this is a third-party block
+                  (let [ext-sig (:external-sig msg)
+                        ext-ok? (if ext-sig
+                                  #?(:clj
+                                     (let [ext-pub (key/kid->public-key (:external-key msg))
+                                           ext-payload {:data     (:data msg)
+                                                        :prev-sig prev-sig}
+                                           ext-canonical (cedn/canonical-bytes ext-payload)]
+                                       (sign/verify ext-pub ext-canonical ext-sig))
+                                     :cljs false)
+                                  true)]
+                    (if-not ext-ok?
+                      (assoc acc :error (str "External signature invalid on block " (count results)))
+                      {:results       (conj results result)
+                       :prev-sig      (:signature block)
+                       :prev-next-key block-next
+                       :error         nil}))))))
           {:results [] :prev-sig nil :prev-next-key nil :error nil}
           blocks)
 
