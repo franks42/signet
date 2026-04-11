@@ -578,3 +578,46 @@
       (is (some? (key/default-encryption-keypair)))
       (is (java.util.Arrays/equals ^bytes (:x x-kp)
                                    ^bytes (:x (key/default-encryption-keypair)))))))
+
+;; ============================================================
+;; kid <-> hex conversions
+;; ============================================================
+
+(deftest kid->hex-round-trip-test
+  (testing "kid -> hex -> kid gives back the same URN"
+    (let [kp (key/signing-keypair)
+          kid-urn (key/kid kp)
+          hex (key/kid->hex kid-urn)]
+      (is (= 64 (count hex)) "Ed25519 pub key = 32 bytes = 64 hex chars")
+      (is (re-matches #"[0-9a-f]+" hex) "lowercase hex only")
+      (is (= kid-urn (key/hex->kid hex))))))
+
+(deftest kid->hex-accepts-record-or-urn-test
+  (let [kp (key/signing-keypair)]
+    (is (= (key/kid->hex kp)
+           (key/kid->hex (key/kid kp)))
+        "kid->hex should accept either a key record or a URN string")))
+
+(deftest kid->hex-matches-raw-bytes-test
+  (let [kp (key/signing-keypair)]
+    (is (= (key/kid->hex kp)
+           (enc/bytes->hex (:x kp))))))
+
+(deftest hex->kid-explicit-curve-test
+  (testing "x25519 keys require explicit curve"
+    (let [kp (key/encryption-keypair)
+          hex (enc/bytes->hex (:x kp))
+          urn (key/hex->kid hex :X25519)]
+      (is (clojure.string/starts-with? urn "urn:signet:pk:x25519:"))
+      (is (= (key/kid kp) urn)))))
+
+(deftest hex->bytes-accepts-0x-prefix-test
+  (let [raw (byte-array [0x00 0x01 0xAB 0xCD])
+        hex-plain  (enc/bytes->hex raw)
+        hex-prefix (str "0x" hex-plain)]
+    (is (java.util.Arrays/equals raw (enc/hex->bytes hex-plain)))
+    (is (java.util.Arrays/equals raw (enc/hex->bytes hex-prefix)))))
+
+(deftest hex->bytes-rejects-odd-length-test
+  (is (thrown? clojure.lang.ExceptionInfo
+               (enc/hex->bytes "abc"))))

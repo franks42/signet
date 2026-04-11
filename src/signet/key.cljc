@@ -456,6 +456,40 @@
       "x25519"  (->X25519PublicKey :signet/x25519-public-key :X25519
                                    (enc/base64url->bytes b64)))))
 
+(defn kid->hex
+  "Return the key's 32-byte public key as a lowercase hex string.
+   Accepts a kid URN or any key record — for records, equivalent to
+   (enc/bytes->hex (:x (public-key k))).
+
+   NOTE: hex is a lossy representation — it drops the algorithm tag
+   that the URN carries. Use only for interop with external tools
+   that expect raw hex."
+  [k]
+  (let [pub (if (string? k) (kid->public-key k) (public-key k))]
+    (enc/bytes->hex (:x pub))))
+
+(defn hex->kid
+  "Build a kid URN from a hex-encoded public key.
+   Since hex carries no algorithm tag, the curve must be specified
+   (default :Ed25519).
+
+   Arities:
+     (hex->kid hex)       — assumes Ed25519
+     (hex->kid hex :X25519) — explicit curve
+
+   Returns a kid URN string (and auto-registers the public key in the
+   signet key store as a side effect of parsing)."
+  ([hex] (hex->kid hex :Ed25519))
+  ([hex crv]
+   (let [pub-bytes (enc/hex->bytes hex)
+         pub       (case crv
+                     :Ed25519 (->Ed25519PublicKey :signet/ed25519-public-key
+                                                  :Ed25519 pub-bytes)
+                     :X25519  (->X25519PublicKey :signet/x25519-public-key
+                                                 :X25519 pub-bytes))]
+     (register! pub)
+     (kid pub))))
+
 ;; ============================================================
 ;; raw-shared-secret — X25519 Diffie-Hellman key agreement
 ;; ============================================================
