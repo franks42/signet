@@ -2,7 +2,7 @@
   "JVM implementation of Ed25519/X25519 key operations using Java JCA."
   (:import [java.math BigInteger]
            [java.security KeyFactory KeyPairGenerator MessageDigest SecureRandom Signature]
-           [java.security.spec NamedParameterSpec PKCS8EncodedKeySpec X509EncodedKeySpec]
+           [java.security.spec PKCS8EncodedKeySpec X509EncodedKeySpec]
            [java.util Arrays]
            [javax.crypto KeyAgreement]))
 
@@ -26,7 +26,12 @@
                         (System/arraycopy seed-copy 0 bytes 0
                                           (min (count bytes) (count seed-copy)))))
         kpg (KeyPairGenerator/getInstance algorithm)]
-    (.initialize kpg (NamedParameterSpec. algorithm) fake-random)
+    (.initialize kpg (.newInstance
+                      (.getConstructor
+                       (Class/forName "java.security.spec.NamedParameterSpec")
+                       (into-array Class [String]))
+                      (into-array Object [algorithm]))
+                     fake-random)
     (.generateKeyPair kpg)))
 
 (defn generate-ed25519-keypair
