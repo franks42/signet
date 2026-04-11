@@ -69,10 +69,14 @@
     (.sign sig)))
 
 (defn ed25519-verify
-  "Verify an Ed25519 signature. Returns true if valid, false otherwise
-   (including malformed signatures that throw JCA SignatureException —
-   a tampered bit can land on an invalid curve point, which must be
-   reported as 'invalid', not crash the verifier)."
+  "Verify an Ed25519 signature. Returns true if valid, false otherwise.
+
+   Catches any JCA exception and returns false — a tampered bit can
+   land on an invalid Ed25519 curve point, which JCA reports as
+   SignatureException; verifying untrusted input must never crash.
+   We catch the broadest Exception class here so this works both on
+   JVM Clojure and under babashka's SCI (which doesn't have every
+   java.security exception class in its built-in class list)."
   [pub-bytes message-bytes signature-bytes]
   (try
     (let [;; Reconstruct X.509 DER encoding from raw public key
@@ -88,8 +92,7 @@
       (.initVerify sig public-key)
       (.update sig ^bytes message-bytes)
       (.verify sig ^bytes signature-bytes))
-    (catch java.security.SignatureException _  false)
-    (catch java.security.InvalidKeyException _ false)))
+    (catch Exception _ false)))
 
 (defn generate-x25519-keypair
   "Generate an X25519 keypair. Returns [public-key-bytes private-key-bytes]."
