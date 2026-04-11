@@ -25,7 +25,9 @@
   "Sign message bytes with an Ed25519 keypair. Returns 64-byte signature.
    Accepts any key that contains a private Ed25519 key (keypair or private key)."
   [k message-bytes]
-  (let [d (:d (if (key/signing-private-key? k) k (key/signing-private-key k)))]
+  (let [d (:d k)]
+    (when-not d
+      (throw (ex-info "Key has no private bytes (:d)" {:type (:type k)})))
     #?(:clj  (jvm/ed25519-sign d message-bytes)
        :cljs (throw (js/Error. "Not yet implemented for ClojureScript")))))
 

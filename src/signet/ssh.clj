@@ -85,12 +85,13 @@
           ;; Inside: checkint(4) + checkint(4) + keytype-string + pubkey + privkey(64) + comment
           ppos (atom 8)]                ;; skip 2x checkint
       (let [r (read-ssh-string priv-blob @ppos)] (reset! ppos (:next r))) ;; keytype
-      (let [r (read-ssh-string priv-blob @ppos)] (reset! ppos (:next r))) ;; pubkey(32)
-      (swap! ppos + 4)                  ;; skip privkey length prefix
-      ;; Next 32 bytes = Ed25519 seed (followed by 32 bytes pubkey copy)
-      (let [seed    (byte-array (subvec priv-blob @ppos (+ @ppos 32)))
-            pub-key (jvm/ed25519-seed->public-key seed)]
-        (key/->Ed25519KeyPair :signet/ed25519-keypair :Ed25519 pub-key seed)))))
+      (let [r   (read-ssh-string priv-blob @ppos) ;; embedded pubkey(32)
+            pub (byte-array (:value r))
+            _   (reset! ppos (:next r))]
+        (swap! ppos + 4)                ;; skip privkey length prefix
+        ;; Next 32 bytes = Ed25519 seed (followed by 32 bytes pubkey copy)
+        (let [seed (byte-array (subvec priv-blob @ppos (+ @ppos 32)))]
+          (key/->Ed25519KeyPair :signet/ed25519-keypair :Ed25519 pub seed))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Convenience: load keypair from file paths
