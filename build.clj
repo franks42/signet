@@ -9,7 +9,7 @@
   (:require [clojure.tools.build.api :as b]))
 
 (def lib 'com.github.franks42/signet)
-(def version "0.4.0")
+(def version "0.5.0")
 (def class-dir "target/classes")
 (def jar-file (format "target/%s-%s.jar" (name lib) version))
 (def basis (delay (b/create-basis {:project "deps.edn" :root nil})))
@@ -33,7 +33,7 @@
     :version   version
     :basis     @basis
     :src-dirs  ["src"]
-    :pom-data  [[:description "Ed25519/X25519/secp256k1 crypto primitives, capability chains, and SSH key import for Clojure"]
+    :pom-data  [[:description "Ed25519/X25519/secp256k1 crypto primitives, authenticated encryption, capability chains, and SSH key import for Clojure"]
                 [:url "https://github.com/franks42/signet"]
                 [:licenses
                  [:license

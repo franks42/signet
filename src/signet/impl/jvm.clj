@@ -230,3 +230,74 @@
     (.doPhase ka pub-key true)
     (.generateSecret ka)))
 
+;; ============================================================
+;; AEAD primitives: HKDF-SHA-256 + ChaCha20-Poly1305 via JCA
+;; ============================================================
+;;
+;; Used by signet.encryption for sender-authenticated pubkey-to-pubkey
+;; encryption. JCA-only; bb-compatible (no BouncyCastle needed for
+;; symmetric primitives).
+
+(defn hmac-sha-256
+  "Compute HMAC-SHA-256(key, data). Returns 32 bytes."
+  [^bytes key ^bytes data]
+  (let [mac      (javax.crypto.Mac/getInstance "HmacSHA256")
+        key-spec (javax.crypto.spec.SecretKeySpec. key "HmacSHA256")]
+    (.init mac key-spec)
+    (.doFinal mac data)))
+
+(defn hkdf-sha-256
+  "HKDF (RFC 5869) extract-then-expand. Returns `length` bytes derived
+   from `ikm` with optional salt + info. salt and info default to empty."
+  ([^bytes ikm length]
+   (hkdf-sha-256 ikm (byte-array 0) (byte-array 0) length))
+  ([^bytes ikm ^bytes salt ^bytes info length]
+   (let [;; Extract: PRK = HMAC(salt, ikm)
+         salt' (if (zero? (alength salt)) (byte-array 32) salt)
+         prk   (hmac-sha-256 salt' ikm)
+         ;; Expand: T(i) = HMAC(PRK, T(i-1) || info || byte(i))
+         out   (byte-array length)]
+     (loop [i      1
+            prev   (byte-array 0)
+            offset 0]
+       (when (< offset length)
+         (let [data    (byte-array (+ (alength prev) (alength info) 1))
+               _       (System/arraycopy prev 0 data 0 (alength prev))
+               _       (System/arraycopy info 0 data (alength prev) (alength info))
+               _       (aset-byte data (dec (alength data)) (unchecked-byte i))
+               t       (hmac-sha-256 prk data)
+               n       (min (alength t) (- length offset))]
+           (System/arraycopy t 0 out offset n)
+           (recur (inc i) t (+ offset n)))))
+     out)))
+
+(defn random-bytes
+  "Cryptographically secure random byte array of length n."
+  [n]
+  (let [bs  (byte-array n)
+        rng (java.security.SecureRandom.)]
+    (.nextBytes rng bs)
+    bs))
+
+(defn chacha20-poly1305-encrypt
+  "AEAD encrypt: ChaCha20-Poly1305(key=32B, nonce=12B, plaintext, aad).
+   `aad` may be nil. Returns ciphertext || 16-byte tag."
+  [^bytes key ^bytes nonce ^bytes plaintext aad]
+  (let [cipher    (javax.crypto.Cipher/getInstance "ChaCha20-Poly1305")
+        key-spec  (javax.crypto.spec.SecretKeySpec. key "ChaCha20")
+        iv-spec   (javax.crypto.spec.IvParameterSpec. nonce)]
+    (.init cipher javax.crypto.Cipher/ENCRYPT_MODE key-spec iv-spec)
+    (when aad (.updateAAD cipher ^bytes aad))
+    (.doFinal cipher plaintext)))
+
+(defn chacha20-poly1305-decrypt
+  "AEAD decrypt. `ciphertext` is the output of chacha20-poly1305-encrypt
+   (i.e. ciphertext || tag). Throws on auth failure or tampered AAD."
+  [^bytes key ^bytes nonce ^bytes ciphertext aad]
+  (let [cipher    (javax.crypto.Cipher/getInstance "ChaCha20-Poly1305")
+        key-spec  (javax.crypto.spec.SecretKeySpec. key "ChaCha20")
+        iv-spec   (javax.crypto.spec.IvParameterSpec. nonce)]
+    (.init cipher javax.crypto.Cipher/DECRYPT_MODE key-spec iv-spec)
+    (when aad (.updateAAD cipher ^bytes aad))
+    (.doFinal cipher ciphertext)))
+

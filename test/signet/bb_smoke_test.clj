@@ -85,6 +85,24 @@
           hex (enc/bytes->hex raw)]
       (is (java.util.Arrays/equals raw (enc/hex->bytes hex))))))
 
+;; ---- signet.encryption smoke test (bb-compat) ----
+;; ChaCha20-Poly1305 via JCA is bb-compatible (unlike BouncyCastle);
+;; this catches regressions if we accidentally introduce a JCA class
+;; that bb's SCI hasn't pre-loaded.
+
+(deftest box-unbox-roundtrip-bb
+  (testing "signet.encryption box/unbox roundtrip works on bb"
+    (require '[signet.encryption :as encryption])
+    (let [box      (requiring-resolve 'signet.encryption/box)
+          unbox    (requiring-resolve 'signet.encryption/unbox)
+          alice    (key/encryption-keypair)
+          bob      (key/encryption-keypair)
+          msg      (.getBytes "hello bb signet" "UTF-8")
+          ct       (box alice bob msg)
+          pt       (unbox bob alice ct)]
+      (is (java.util.Arrays/equals msg pt))
+      (is (thrown? Exception (unbox bob alice (byte-array 5)))))))
+
 ;; -- secp256k1 not-available smoke test --
 ;; secp256k1 is JVM/BouncyCastle-backed and not loadable on bb. Confirm
 ;; that calling into the secp256k1 paths from bb fails with a CLEAR
