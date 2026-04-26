@@ -1,7 +1,12 @@
 (ns signet.impl.jvm
-  "JVM implementation of Ed25519/X25519 key operations using Java JCA."
+  "JVM implementation of Ed25519/X25519 key operations using Java JCA.
+
+   secp256k1 ECDSA lives in signet.impl.jvm-secp256k1 (JVM-only,
+   BouncyCastle-backed). Kept separate so this namespace stays
+   bb-compatible — bb's SCI class allowlist excludes BC."
   (:import [java.math BigInteger]
-           [java.security KeyFactory KeyPairGenerator MessageDigest SecureRandom Signature]
+           [java.security KeyFactory KeyPairGenerator
+            MessageDigest SecureRandom Signature]
            [java.security.spec PKCS8EncodedKeySpec X509EncodedKeySpec]
            [java.util Arrays]
            [javax.crypto KeyAgreement]))
@@ -31,7 +36,7 @@
                        (Class/forName "java.security.spec.NamedParameterSpec")
                        (into-array Class [String]))
                       (into-array Object [algorithm]))
-                     fake-random)
+                 fake-random)
     (.generateKeyPair kpg)))
 
 (defn generate-ed25519-keypair
@@ -224,3 +229,4 @@
     (.init ka priv-key)
     (.doPhase ka pub-key true)
     (.generateSecret ka)))
+

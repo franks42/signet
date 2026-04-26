@@ -84,3 +84,21 @@
     (let [raw (byte-array [0 1 -128 127 -1 42])
           hex (enc/bytes->hex raw)]
       (is (java.util.Arrays/equals raw (enc/hex->bytes hex))))))
+
+;; -- secp256k1 not-available smoke test --
+;; secp256k1 is JVM/BouncyCastle-backed and not loadable on bb. Confirm
+;; that calling into the secp256k1 paths from bb fails with a CLEAR
+;; error pointing at the workaround, rather than a raw
+;; ClassNotFoundException.
+
+(deftest secp256k1-on-bb-fails-with-clear-error
+  ;; bb-only: on JVM, BC is loadable and this path succeeds.
+  (when (System/getProperty "babashka.version")
+    (testing "signet/sign on a secp256k1 key surfaces the BC-not-available hint on bb"
+      (let [pub-bytes (byte-array 33)
+            priv-bytes (byte-array 32)
+            kp (key/signing-keypair :secp256k1 pub-bytes priv-bytes)]
+        (is (thrown-with-msg?
+             clojure.lang.ExceptionInfo
+             #"BouncyCastle"
+             (sign/sign kp (.getBytes "x" "UTF-8"))))))))
