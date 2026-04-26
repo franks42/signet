@@ -1,7 +1,11 @@
 {:paths ["src"]
  :deps {org.clojure/clojure {:mvn/version "1.12.4"}
         com.github.franks42/cedn {:mvn/version "1.2.0"}
-        com.github.franks42/uuidv7 {:mvn/version "0.5.0"}}
+        com.github.franks42/uuidv7 {:mvn/version "0.5.0"}
+        ;; BouncyCastle for secp256k1 ECDSA. Required only on the JVM
+        ;; side — bb's SCI class allowlist excludes BC, so signet's
+        ;; secp256k1 paths (signet.impl.jvm-secp256k1) are JVM-only.
+        org.bouncycastle/bcprov-jdk18on {:mvn/version "1.78.1"}}
  :aliases
  {:test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner

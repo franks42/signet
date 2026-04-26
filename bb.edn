@@ -14,4 +14,19 @@
    :requires ([signet.bb-smoke-test])
    :task (let [r (t/run-tests 'signet.bb-smoke-test)]
            (when (pos? (+ (:fail r 0) (:error r 0)))
-             (System/exit 1)))}}}
+             (System/exit 1)))}
+
+  verify
+  {:doc  "Verify an ECDSA / Ed25519 signature. secp256k1 verification
+          shells out to JVM Clojure (BouncyCastle) since BC isn't
+          loadable inside bb itself.
+
+          Usage:
+            bb verify [--curve secp256k1|ed25519]
+                      --pubkey   <hex>
+                      --message  <hex|@file>
+                      --signature <hex|@file>
+
+          Exit code: 0 = valid, 1 = invalid, 2 = bad args."
+   :task (apply shell "clojure" "-M" "-m" "signet.cli.verify"
+                *command-line-args*)}}}
