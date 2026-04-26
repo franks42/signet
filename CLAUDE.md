@@ -51,6 +51,15 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - Block content is opaque EDN — stroopwafel adds Datalog semantics
 - Predicates: `chain?`, `open?`, `sealed?`
 
+### signet.session — Noise_KK forward-secret sessions ✅ (0.6.0)
+- `Noise_KK_25519_ChaChaPoly_SHA256` — KK handshake pattern, X25519 DH, ChaCha20-Poly1305 AEAD, SHA-256 hashing
+- API: `initiator`, `responder`, `write-message`, `read-message`, `established?`
+- Pure-functional state machine; no atoms or global state
+- Two-message handshake (KK exploits pre-shared static keys); after Split, transport messages are pure AEAD with monotonic nonces per direction
+- Forward secrecy via ephemeral-ephemeral DH (`ee` token); mutual authentication via static-static DH (`ss` token) and the cross-DH tokens (`es`, `se`)
+- Ed25519 keypair input via the existing birational map (one identity, multiple uses)
+- See `docs/05-noise-kk-session-design.md` for the design walkthrough
+
 ### signet.encoding — Base64url
 - `bytes->base64url` / `base64url->bytes`
 

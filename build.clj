@@ -9,7 +9,7 @@
   (:require [clojure.tools.build.api :as b]))
 
 (def lib 'com.github.franks42/signet)
-(def version "0.5.0")
+(def version "0.6.0")
 (def class-dir "target/classes")
 (def jar-file (format "target/%s-%s.jar" (name lib) version))
 (def basis (delay (b/create-basis {:project "deps.edn" :root nil})))
