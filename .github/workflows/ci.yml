@@ -154,5 +154,13 @@ jobs:
       - name: libsodium backend on the JVM, with JCA parity
         run: bb test:jvm-sodium
 
+      - name: Diagnose bb and libsodium loading (temporary)
+        run: |
+          file "$(command -v bb)" || true
+          bb --version
+          ls -l /usr/local/lib/libsodium* /lib/x86_64-linux-gnu/libsodium* 2>&1 || true
+          bb -e '(require (quote babashka.ffi)) (println :abs-load (try (:path (babashka.ffi/load-library "/usr/local/lib/libsodium.so.26")) (catch Exception e (str "FAILED " (ex-message e)))))' || true
+          bb -e '(require (quote babashka.ffi)) (println :bare-load (try (:path (babashka.ffi/load-library "libsodium.so.26")) (catch Exception e (str "FAILED " (ex-message e)))))' || true
+
       - name: libsodium backend on babashka
         run: bb test:bb-sodium
