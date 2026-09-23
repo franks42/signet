@@ -12,9 +12,7 @@ name: ci
 #                 dynamically linked bb (the static build cannot load native
 #                 libraries); same libsodium-backend checks
 #
-# The libsodium backend needs nacljc, which is not on Clojars: it is
-# checked out at a pinned commit and installed as the local snapshot
-# (bb nacljc:install). Bump NACLJC_REF deliberately.
+# The libsodium backend uses nacljc from Clojars (deps.edn :sodium alias).
 
 on:
   push:
@@ -22,7 +20,6 @@ on:
   pull_request:
 
 env:
-  NACLJC_REF: 4a5031dea1de39b65ac6d194722b858b03ca7e34
   LIBSODIUM_VERSION: 1.0.22
   # SHA-256 of libsodium-1.0.22.tar.gz, identical from download.libsodium.org
   # and the GitHub release (checked 2026-09-23).
@@ -72,12 +69,6 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/checkout@v6
-        with:
-          repository: franks42/nacljc
-          ref: ${{ env.NACLJC_REF }}
-          path: nacljc
-
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -98,11 +89,8 @@ jobs:
           path: |
             ~/.m2/repository
             ~/.gitlibs
-          key: deps-sodium-${{ runner.os }}-${{ hashFiles('deps.edn', 'bb.edn') }}-${{ env.NACLJC_REF }}
+          key: deps-sodium-${{ runner.os }}-${{ hashFiles('deps.edn', 'bb.edn') }}
           restore-keys: deps-sodium-${{ runner.os }}-
-
-      - name: Install the nacljc snapshot
-        run: bb nacljc:install nacljc
 
       - name: libsodium backend on the JVM, with JCA parity
         run: bb test:jvm-sodium
@@ -117,12 +105,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-
-      - uses: actions/checkout@v6
-        with:
-          repository: franks42/nacljc
-          ref: ${{ env.NACLJC_REF }}
-          path: nacljc
 
       - uses: actions/setup-java@v5
         with:
@@ -162,11 +144,8 @@ jobs:
           path: |
             ~/.m2/repository
             ~/.gitlibs
-          key: deps-sodium-${{ runner.os }}-${{ hashFiles('deps.edn', 'bb.edn') }}-${{ env.NACLJC_REF }}
+          key: deps-sodium-${{ runner.os }}-${{ hashFiles('deps.edn', 'bb.edn') }}
           restore-keys: deps-sodium-${{ runner.os }}-
-
-      - name: Install the nacljc snapshot
-        run: bb nacljc:install nacljc
 
       - name: libsodium backend on the JVM, with JCA parity
         run: bb test:jvm-sodium

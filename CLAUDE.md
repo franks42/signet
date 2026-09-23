@@ -11,7 +11,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - **Name**: signet (like a signet ring — personal key for signing/sealing)
 - **Crypto backends** (`signet.impl` facade, selected once at load: `-Dsignet.backend` / `SIGNET_BACKEND`, default `jca`):
   - `:jca` — `signet.impl.jvm`, Java JCA. No native dependency. Its seed→public-key path (a `proxy [SecureRandom]` trick) does not work on babashka.
-  - `:sodium` — `signet.impl.sodium`, libsodium via `nacljc.core` (the backend keeps the name `:sodium`: it names libsodium, the native engine, not the wrapper) (github.com/franks42/nacljc, used as the local snapshot `com.github.franks42/nacljc 0.1.0-SNAPSHOT` from `bb install` there — re-install after changing nacljc; babashka.ffi). Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
+  - `:sodium` — `signet.impl.sodium`, libsodium via `nacljc.core` (the backend keeps the name `:sodium`: it names libsodium, the native engine, not the wrapper) (github.com/franks42/nacljc, `com.github.franks42/nacljc 0.1.0` from Clojars via the `:sodium` alias; the version in bb.edn's test:bb-sodium and test:jar must match; babashka.ffi). To test an unreleased nacljc, swap in `{:local/root "../nacljc"}`. Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
   - ClojureScript: not implemented (every `:cljs` branch throws). The browser plan is libsodium.js (see `../nacljc/docs/feasibility.md`).
 - **Dependencies**: canonical-edn (cedn) 1.5.2 for deterministic serialization, uuidv7 0.7.1 for request IDs (bumped from 1.2.0 / 0.5.0 in 0.7.0-SNAPSHOT; see README "Compatibility"). Bouncy Castle for secp256k1 only (JVM). nacljc for the `:sodium` backend (alias `:sodium`: local snapshot jar, not published).
 - **Key fields**: JWK-inspired — `:x` (public), `:d` (private), `:crv` (:Ed25519/:X25519), `:type` (dispatch tag)
@@ -115,14 +115,15 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   (`bb test:no-sodium`); `sodium-macos` (Homebrew libsodium; test:jvm-sodium,
   test:bb-sodium, test:jar); `sodium-linux` (libsodium 1.0.22 built from a
   sha256-pinned tarball, since Ubuntu ships 1.0.18; the dynamically linked
-  bb 1.13.224, sha256-pinned). nacljc is checked out at the pinned
-  `NACLJC_REF` and installed with `bb nacljc:install`. Every job only
-  calls bb tasks.
+  bb 1.13.224, sha256-pinned). nacljc 0.1.0 comes from Clojars. Every job
+  only calls bb tasks.
 - **Linux + babashka.ffi needs the dynamically linked bb.** The static
   build, which `setup-clojure` installs on Linux, cannot load any shared
   library. The CI job asserts `file bb` says "dynamically linked".
-- Fresh machines: `clojure -P` before `clojure -T:build install` (tools.build
-  did not fetch `org.babashka/ffi` itself). Both bb tasks do this.
+- Fresh machines: `build.clj`'s `:root nil` basis dropped Maven Central and
+  Clojars (they live in the root deps.edn), so `clojure -T:build install`
+  could only use jars already in ~/.m2 ("Could not find artifact"). Fixed
+  by adding both repositories back in `build.clj`.
 
 ## Trust model and key-store rules
 
@@ -179,7 +180,6 @@ bb test:bb-sodium    # full suite on babashka, libsodium backend: 93 / 415 (all 
 bb smoke             # bb smoke suite (JCA): 9 tests
 bb test:no-sodium    # lint + fmt + JCA suite + bb smoke (no native libsodium needed)
 bb test:all          # test:no-sodium + test:jvm-sodium + test:bb-sodium
-bb nacljc:install [dir]  # clojure -P + tools.build install of nacljc (default ../nacljc)
 bb test:jar          # install signet's jar, run its tests from a scratch consumer: jca, sodium + parity, bb
 bb lint / bb fmt     # clj-kondo / cljfmt on every Clojure file
 ```

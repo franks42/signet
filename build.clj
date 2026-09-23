@@ -12,7 +12,15 @@
 (def version "0.7.0-SNAPSHOT")
 (def class-dir "target/classes")
 (def jar-file (format "target/%s-%s.jar" (name lib) version))
-(def basis (delay (b/create-basis {:project "deps.edn" :root nil})))
+;; :root nil keeps org.clojure/clojure out of the pom, but it also drops the
+;; root deps.edn's Maven Central and Clojars repositories: without them the
+;; basis cannot download anything ("Could not find artifact" on a fresh
+;; machine). So they are added back.
+(def basis
+  (delay (b/create-basis {:project "deps.edn"
+                          :root    nil
+                          :extra   {:mvn/repos {"central" {:url "https://repo1.maven.org/maven2/"}
+                                                "clojars" {:url "https://repo.clojars.org/"}}}})))
 
 (defn clean [_]
   (println "Cleaning target directory...")
