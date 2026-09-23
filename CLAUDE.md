@@ -111,7 +111,18 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - Verified from the installed jar in a scratch consumer (signet's tests
   only, no src): JVM jca 122/572, JVM sodium 122/572 + parity 54/54,
   bb sodium 112/548.
-- No CI yet. It would need libsodium >= 1.0.19 for the sodium runs.
+- CI (`.github/workflows/ci.yml`, green): `jca` on Ubuntu JDK 21 + 25
+  (`bb test:no-sodium`); `sodium-macos` (Homebrew libsodium; test:jvm-sodium,
+  test:bb-sodium, test:jar); `sodium-linux` (libsodium 1.0.22 built from a
+  sha256-pinned tarball, since Ubuntu ships 1.0.18; the dynamically linked
+  bb 1.13.224, sha256-pinned). sodium.cljc is checked out at the pinned
+  `SODIUM_CLJC_REF` and installed with `bb sodium:install`. Every job only
+  calls bb tasks.
+- **Linux + babashka.ffi needs the dynamically linked bb.** The static
+  build, which `setup-clojure` installs on Linux, cannot load any shared
+  library. The CI job asserts `file bb` says "dynamically linked".
+- Fresh machines: `clojure -P` before `clojure -T:build install` (tools.build
+  did not fetch `org.babashka/ffi` itself). Both bb tasks do this.
 
 ## Trust model and key-store rules
 
@@ -166,6 +177,10 @@ bb test:jvm          # full suite, JCA backend (clojure -M:test): 102 tests / 43
 bb test:jvm-sodium   # full suite, libsodium backend + JCA-vs-libsodium parity (54 checks)
 bb test:bb-sodium    # full suite on babashka, libsodium backend: 93 / 415 (all but secp256k1)
 bb smoke             # bb smoke suite (JCA): 9 tests
+bb test:no-sodium    # lint + fmt + JCA suite + bb smoke (no native libsodium needed)
+bb test:all          # test:no-sodium + test:jvm-sodium + test:bb-sodium
+bb sodium:install [dir]  # clojure -P + tools.build install of sodium.cljc (default ../sodium.cljc)
+bb test:jar          # install signet's jar, run its tests from a scratch consumer: jca, sodium + parity, bb
 bb lint / bb fmt     # clj-kondo / cljfmt on every Clojure file
 ```
 

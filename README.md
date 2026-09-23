@@ -109,4 +109,13 @@ CHANGELOG for 1.4.0 and 1.5.0.
 ```bash
 bb test:jvm   bb test:jvm-sodium   bb test:bb-sodium   bb smoke
 bb lint       bb fmt
+bb test:no-sodium    # lint + fmt + JCA suite + bb smoke (no native libsodium needed)
+bb test:all          # test:no-sodium + test:jvm-sodium + test:bb-sodium
+bb sodium:install [dir]  # clojure -P + tools.build install of sodium.cljc (default ../sodium.cljc)
+bb test:jar          # install signet's jar, run its tests from a scratch consumer: jca, sodium + parity, bb
 ```
+
+CI runs the same bb tasks: JCA on Ubuntu (JDK 21 and 25), and the libsodium
+backend on macOS and Linux. On Linux, babashka.ffi needs the **dynamically
+linked** bb build; the static one cannot load libsodium. Ubuntu's packaged
+libsodium (1.0.18) is too old, so CI builds 1.0.22 from source.
