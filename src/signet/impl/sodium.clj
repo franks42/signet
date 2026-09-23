@@ -6,22 +6,22 @@
    nonces and ephemeral keys internally. Public only because signet's own
    namespaces call them.
 
-   libsodium backend for signet, via sodium.core (babashka.ffi): the same
+   libsodium backend for signet, via nacljc.core (babashka.ffi): the same
    16 functions and contracts as signet.impl.jvm (JCA). Selected through
    signet.impl; do not require directly.
 
    Requirements: libsodium >= 1.0.19 installed (e.g. brew install
-   libsodium), sodium.cljc on the classpath (deps.edn alias :sodium), JDK 25+
+   libsodium), nacljc on the classpath (deps.edn alias :sodium), JDK 25+
    with --enable-native-access=ALL-UNNAMED on the JVM, bb >= 1.13.220.
 
    Differences from the JCA backend:
    - Seed -> public key uses crypto_sign_seed_keypair instead of the JCA
      'fake SecureRandom' trick, so it also works on babashka.
-   - Fixed-size inputs are length-checked (sodium.core); a wrong size throws
+   - Fixed-size inputs are length-checked (nacljc.core); a wrong size throws
      ex-info where JCA threw its own exception types.
    - Output is byte-identical to the JCA backend (see
      test/signet/backend_parity.clj)."
-  (:require [sodium.core :as na]))
+  (:require [nacljc.core :as na]))
 
 (def backend
   "This backend's name, as selected in signet.impl."

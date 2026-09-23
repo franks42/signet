@@ -21,7 +21,7 @@
    :task (shell "clojure" "-M:test")}
 
   test:jvm-sodium
-  {:doc  "Full test suite on the JVM, libsodium backend (needs libsodium >= 1.0.19, JDK 25+, and the sodium.cljc snapshot: bb install in ../sodium.cljc)"
+  {:doc  "Full test suite on the JVM, libsodium backend (needs libsodium >= 1.0.19, JDK 25+, and the nacljc snapshot: bb install in ../nacljc)"
    :task (do (shell "clojure" "-M:test:sodium")
              (shell "clojure" "-Sdeps" "{:aliases {:t {:extra-paths [\"test\"]}}}"
                     "-M:t:sodium" "-m" "signet.backend-parity" "sodium"))}
@@ -29,19 +29,19 @@
   test:bb-sodium
   {:doc  "Full test suite on babashka, libsodium backend (all but secp256k1)"
    ;; A subprocess keeps this bb.edn's :paths and :deps; -cp would replace
-   ;; them. sodium.cljc comes from the local snapshot jar (bb install in
-   ;; ../sodium.cljc) via add-deps. Its pom's org.babashka/ffi dependency is
+   ;; them. nacljc comes from the local snapshot jar (bb install in
+   ;; ../nacljc) via add-deps. Its pom's org.babashka/ffi dependency is
    ;; ignored by bb, which always uses its built-in babashka.ffi. No parity
    ;; run here: its JCA oracle cannot derive keys from seeds on bb.
    :task (shell {:extra-env {"SIGNET_BACKEND" "sodium"}}
-                "bb" "-e" (str "(babashka.deps/add-deps '{:deps {com.github.franks42/sodium {:mvn/version \"0.1.0-SNAPSHOT\"}}})"
+                "bb" "-e" (str "(babashka.deps/add-deps '{:deps {com.github.franks42/nacljc {:mvn/version \"0.1.0-SNAPSHOT\"}}})"
                                "(require 'signet.suite) (signet.suite/-main \"sodium\")"))}
 
-  sodium:install
-  {:doc  "Build and install the sodium.cljc snapshot (com.github.franks42/sodium 0.1.0-SNAPSHOT) into ~/.m2 from a checkout. Arg: checkout dir (default ../sodium.cljc)"
+  nacljc:install
+  {:doc  "Build and install the nacljc snapshot (com.github.franks42/nacljc 0.1.0-SNAPSHOT) into ~/.m2 from a checkout. Arg: checkout dir (default ../nacljc)"
    ;; clojure -P first: tools.build's basis (tool mode) cannot download the
    ;; project's deps itself, so on a fresh machine install fails without it.
-   :task (let [dir (or (first *command-line-args*) "../sodium.cljc")]
+   :task (let [dir (or (first *command-line-args*) "../nacljc")]
            (shell {:dir dir} "clojure" "-P")
            (shell {:dir dir} "clojure" "-T:build" "install"))}
 
@@ -50,22 +50,22 @@
    :task (do (run 'lint) (run 'fmt) (run 'test:jvm) (run 'smoke))}
 
   test:all
-  {:doc  "Everything: test:no-sodium plus the libsodium backend on the JVM (with parity) and on bb. Needs libsodium >= 1.0.19 and the sodium.cljc snapshot (bb sodium:install)"
+  {:doc  "Everything: test:no-sodium plus the libsodium backend on the JVM (with parity) and on bb. Needs libsodium >= 1.0.19 and the nacljc snapshot (bb nacljc:install)"
    :task (do (run 'test:no-sodium) (run 'test:jvm-sodium) (run 'test:bb-sodium))}
 
   test:jar
   {:doc  "Install signet's jar locally, then run signet's own tests against the jar from a scratch consumer (tests only, no src): JVM jca, JVM sodium + parity, bb sodium"
    :requires ([babashka.fs :as fs])
-   :task (let [_       (shell "clojure" "-P") ; fresh machines: see sodium:install
+   :task (let [_       (shell "clojure" "-P") ; fresh machines: see nacljc:install
                _       (shell "clojure" "-T:build" "install")
                version (second (re-find (re-pattern "\\(def version \"([^\"]+)\"\\)") (slurp "build.clj")))
                tests   (str (fs/absolutize "test"))
                dir     (str (fs/create-temp-dir {:prefix "signet-consumer-"}))
                coord   (str "com.github.franks42/signet {:mvn/version \"" version "\"}")
-               sodium  "com.github.franks42/sodium {:mvn/version \"0.1.0-SNAPSHOT\"}"]
+               nacljc  "com.github.franks42/nacljc {:mvn/version \"0.1.0-SNAPSHOT\"}"]
            (spit (str dir "/deps.edn")
                  (str "{:paths [\"" tests "\"] :deps {" coord "}"
-                      " :aliases {:sodium {:extra-deps {" sodium "}"
+                      " :aliases {:sodium {:extra-deps {" nacljc "}"
                       " :jvm-opts [\"--enable-native-access=ALL-UNNAMED\" \"-Dsignet.backend=sodium\"]}}}"))
            (try
              (let [from-jar? (fn [out] (re-find (re-pattern "signet-from jar:file:") out))
@@ -78,7 +78,7 @@
                (shell {:dir dir} "clojure" "-M:sodium" "-m" "signet.suite" "sodium")
                (shell {:dir dir} "clojure" "-M:sodium" "-m" "signet.backend-parity" "sodium")
                (shell {:dir dir :extra-env {"SIGNET_BACKEND" "sodium"}}
-                      "bb" "-e" (str "(babashka.deps/add-deps '{:deps {" coord " " sodium "}})"
+                      "bb" "-e" (str "(babashka.deps/add-deps '{:deps {" coord " " nacljc "}})"
                                      "(babashka.classpath/add-classpath \"" tests "\")"
                                      "(require 'signet.suite) (signet.suite/-main \"sodium\")")))
              (finally (fs/delete-tree dir))))}

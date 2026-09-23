@@ -16,7 +16,7 @@
    environment variable SIGNET_BACKEND, then :jca. Reading them is the one
    impure step, and it happens once, at load; after that the backend is
    fixed for the life of the process. Selecting :sodium when libsodium or
-   sodium.cljc is unavailable fails loudly at load instead of falling back
+   nacljc is unavailable fails loudly at load instead of falling back
    to JCA.
 
    Both backends produce byte-identical output
@@ -42,7 +42,7 @@
     (let [root (loop [e t] (if-let [c (ex-cause e)] (recur c) e))]
       (throw (ex-info (str "signet backend " backend " failed to load"
                            (when (= :sodium backend)
-                             " — needs libsodium >= 1.0.19 and sodium.cljc on the classpath (alias :sodium)")
+                             " — needs libsodium >= 1.0.19 and nacljc on the classpath (alias :sodium)")
                            ". Cause: " (ex-message root))
                       {:backend backend :ns backend-ns
                        :cause-class (str (class root)) :cause (ex-message root)}
