@@ -117,6 +117,13 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   `fresh-ephemeral`, `edh` (es/ee/se) vs `dh` (ss), `mix-key` wipes each
   DH output, `split` wipes the ephemeral private key and the handshake
   ck/k. `test/signet/trust_test.clj` asserts absence and zeroing.
+- **dh vs edh is enforced, not just named.** Ephemerals are their own
+  record types (`EphemeralKeyPair`, `EphemeralPublicKey`, private to
+  `signet.session`). `dh` throws `::ephemeral-in-dh` on any ephemeral
+  input; `edh` throws `::no-ephemeral-in-edh` when neither side is
+  ephemeral. Both use `ex-info`, not assert. Swapping either kind of call
+  site fails 10 of the 12 session tests (checked). `key/register!` throws
+  `::ephemeral-key` for ephemeral types instead of ignoring them.
 - Still registering as a side effect: `key/raw-shared-secret` registers
   both parties, and the keypair and extraction constructors register their
   results. They are user-facing identity operations; revisit.

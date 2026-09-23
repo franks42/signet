@@ -164,3 +164,38 @@
         (is (false? (:verified? r)))))
     (testing "the genuine chain verifies against its root"
       (is (true? (:verified? (chain/verify good-token {:root (key/kid root)})))))))
+
+;; ---------------------------------------------------------------------------
+;; dh vs edh: misuse fails loudly instead of relying on the reader
+;; ---------------------------------------------------------------------------
+
+(def ^:private fresh-ephemeral @#'session/fresh-ephemeral)
+(def ^:private dh  @#'session/dh)
+(def ^:private edh @#'session/edh)
+
+(defn- throws-type [f]
+  (try (f) :no-throw
+       (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
+
+(deftest ephemerals-have-their-own-type
+  (let [eph (fresh-ephemeral)]
+    (is (= :signet/ephemeral-x25519-keypair (:type eph)))
+    (is (= 32 (count (:d eph))))))
+
+(deftest dh-vs-edh-misuse-throws
+  (let [static-a (key/encryption-keypair)
+        static-b (key/public-key (key/encryption-keypair))
+        eph      (fresh-ephemeral)]
+    (testing "correct use works"
+      (is (= 32 (count (dh static-a static-b))) "ss: static x static")
+      (is (= 32 (count (edh eph static-b))) "es/se: ephemeral x static")
+      (is (= 32 (count (edh static-a eph))) "static x ephemeral public"))
+    (testing "dh refuses any ephemeral input"
+      (is (= :signet.session/ephemeral-in-dh (throws-type #(dh eph static-b))))
+      (is (= :signet.session/ephemeral-in-dh (throws-type #(dh static-a eph)))))
+    (testing "edh refuses two static keys"
+      (is (= :signet.session/no-ephemeral-in-edh (throws-type #(edh static-a static-b)))))))
+
+(deftest ephemerals-cannot-be-registered
+  (is (= :signet.key/ephemeral-key (throws-type #(key/register! (fresh-ephemeral))))
+      "register! refuses ephemeral keys loudly instead of ignoring them"))

@@ -184,13 +184,29 @@
 ;; ============================================================
 
 #?(:clj
+   (do
+     ;; Ephemeral keys are their own types, so code can tell them apart
+     ;; from identity keys: dh/edh check them, and signet.key/register!
+     ;; refuses them. Private to this namespace.
+     (defrecord EphemeralKeyPair [type crv x d])
+     (defrecord EphemeralPublicKey [type crv x])))
+
+#?(:clj
+   (def ^:private ephemeral-types
+     #{:signet/ephemeral-x25519-keypair :signet/ephemeral-x25519-public-key}))
+
+#?(:clj
+   (defn- ephemeral? [k] (contains? ephemeral-types (:type k))))
+
+#?(:clj
    (defn- ->x25519-public-bytes
      "Extract the 32-byte X25519 public key from any signet key record.
       X25519 records (including ephemerals) are used as-is; only static
       Ed25519 identity keys go through signet.key's conversion."
      [k]
      (case (:type k)
-       (:signet/x25519-public-key :signet/x25519-keypair) (:x k)
+       (:signet/x25519-public-key :signet/x25519-keypair
+                                  :signet/ephemeral-x25519-keypair :signet/ephemeral-x25519-public-key) (:x k)
        (:x (key/encryption-public-key k)))))
 
 #?(:clj
@@ -199,7 +215,7 @@
       static) or, via conversion, of a static Ed25519 identity keypair."
      [k]
      (case (:type k)
-       :signet/x25519-keypair (:d k)
+       (:signet/x25519-keypair :signet/ephemeral-x25519-keypair) (:d k)
        (:d (key/encryption-private-key k)))))
 
 #?(:clj
@@ -209,7 +225,7 @@
       Split. Callers of the public API never see it."
      []
      (let [[pub priv] (impl/generate-x25519-keypair)]
-       (key/->X25519KeyPair :signet/x25519-keypair :X25519 pub priv))))
+       (->EphemeralKeyPair :signet/ephemeral-x25519-keypair :X25519 pub priv))))
 
 #?(:clj
    (defn- x25519-dh*
@@ -223,8 +239,13 @@
 #?(:clj
    (defn- dh
      "Static-static DH — Noise token ss. Returns the 32-byte shared
-      secret, which mix-key consumes and wipes. Never registers keys."
+      secret, which mix-key consumes and wipes. Never registers keys.
+      Throws ::ephemeral-in-dh if either side is ephemeral: that is edh's
+      job, and mixing them up must fail loudly, not silently."
      [local-static-kp remote-static-pub]
+     (when (or (ephemeral? local-static-kp) (ephemeral? remote-static-pub))
+       (throw (ex-info "dh is for static keys only (Noise ss); use edh for es/ee/se"
+                       {:type ::ephemeral-in-dh})))
      (x25519-dh* local-static-kp remote-static-pub)))
 
 #?(:clj
@@ -232,8 +253,12 @@
      "Ephemeral DH — Noise tokens es, ee, se: at least one side is an
       ephemeral key. Never registers keys; the output is consumed and
       wiped by mix-key, and the local ephemeral private key is wiped at
-      Split. Ephemerals never leave this namespace."
+      Split. Ephemerals never leave this namespace. Throws
+      ::no-ephemeral-in-edh if neither side is ephemeral (that is dh)."
      [local-kp remote-pub]
+     (when-not (or (ephemeral? local-kp) (ephemeral? remote-pub))
+       (throw (ex-info "edh needs an ephemeral key on at least one side (Noise es/ee/se); use dh for ss"
+                       {:type ::no-ephemeral-in-edh})))
      (x25519-dh* local-kp remote-pub)))
 
 ;; ============================================================
@@ -376,7 +401,7 @@
                         :length (alength msg)
                         :min    48})))
      (let [eph-pub-bs (java.util.Arrays/copyOfRange msg 0 32)
-           remote-eph (key/->X25519PublicKey :signet/x25519-public-key :X25519 eph-pub-bs)
+           remote-eph (->EphemeralPublicKey :signet/ephemeral-x25519-public-key :X25519 eph-pub-bs)
            ct         (java.util.Arrays/copyOfRange msg 32 (alength msg))
            state      (-> state
                           (assoc :remote-ephemeral-pub remote-eph)
@@ -435,7 +460,7 @@
                         :length (alength msg)
                         :min    48})))
      (let [eph-pub-bs (java.util.Arrays/copyOfRange msg 0 32)
-           remote-eph (key/->X25519PublicKey :signet/x25519-public-key :X25519 eph-pub-bs)
+           remote-eph (->EphemeralPublicKey :signet/ephemeral-x25519-public-key :X25519 eph-pub-bs)
            ct         (java.util.Arrays/copyOfRange msg 32 (alength msg))
            state      (-> state
                           (assoc :remote-ephemeral-pub remote-eph)

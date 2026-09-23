@@ -171,6 +171,10 @@
    multiplication directly); such keys register without a kid."
   ([k] (register! default-key-store k))
   ([store k]
+   ;; Ephemeral keys (signet.session) must never be kept: refuse loudly
+   ;; rather than silently ignoring them like other unknown types.
+   (when (#{:signet/ephemeral-x25519-keypair :signet/ephemeral-x25519-public-key} (:type k))
+     (throw (ex-info "Ephemeral keys must never be registered" {:type ::ephemeral-key})))
    (when (and k (:type k) (known-key-types (:type k)))
      (let [;; Need public key bytes for kid — may need derivation for private-only keys
            x-bytes (or (:x k)
