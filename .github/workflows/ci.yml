@@ -22,7 +22,7 @@ on:
   pull_request:
 
 env:
-  NACLJC_REF: 972499cd66cb535a48a1e5d2ae76008bd6ee8f2f
+  NACLJC_REF: 4a5031dea1de39b65ac6d194722b858b03ca7e34
   LIBSODIUM_VERSION: 1.0.22
   # SHA-256 of libsodium-1.0.22.tar.gz, identical from download.libsodium.org
   # and the GitHub release (checked 2026-09-23).

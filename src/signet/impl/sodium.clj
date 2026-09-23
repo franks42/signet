@@ -17,8 +17,11 @@
    Differences from the JCA backend:
    - Seed -> public key uses crypto_sign_seed_keypair instead of the JCA
      'fake SecureRandom' trick, so it also works on babashka.
-   - Fixed-size inputs are length-checked (nacljc.core); a wrong size throws
-     ex-info where JCA threw its own exception types.
+   - nacljc.core type- and length-checks every input (a wrong one throws
+     ex-info where JCA threw its own exception types) and wipes every native
+     buffer before releasing it.
+   - Ed25519 signs from the 32-byte seed: the 64-byte libsodium secret key
+     exists only in native memory, never on the Clojure heap.
    - Output is byte-identical to the JCA backend (see
      test/signet/backend_parity.clj)."
   (:require [nacljc.core :as na]))
@@ -31,13 +34,13 @@
   "Generate an Ed25519 keypair. Returns [public-key-bytes private-key-seed-bytes]."
   []
   (let [seed (na/random-bytes 32)
-        [pk _] (na/seed->keypair seed)]
+        pk   (na/ed25519-public-key seed)]
     [pk seed]))
 
 (defn ed25519-seed->public-key
   "Derive the Ed25519 public key (32 bytes) from a seed (32 bytes)."
   [seed-bytes]
-  (first (na/seed->keypair seed-bytes)))
+  (na/ed25519-public-key seed-bytes))
 
 (defn sha-256
   "Compute SHA-256 hash of byte array. Returns 32-byte hash."
@@ -48,36 +51,36 @@
   "Sign message bytes with an Ed25519 private key seed (32 bytes).
    Returns 64-byte signature."
   [seed-bytes message-bytes]
-  (na/sign (second (na/seed->keypair seed-bytes)) message-bytes))
+  (na/ed25519-sign seed-bytes message-bytes))
 
 (defn ed25519-verify
   "Verify an Ed25519 signature. Returns true if valid, false otherwise —
    never throws on malformed input."
   [pub-bytes message-bytes signature-bytes]
   (try
-    (na/verify? pub-bytes message-bytes signature-bytes)
+    (na/ed25519-verify? pub-bytes message-bytes signature-bytes)
     (catch Exception _ false)))
 
 (defn generate-x25519-keypair
   "Generate an X25519 keypair. Returns [public-key-bytes private-key-bytes]."
   []
   (let [priv (na/random-bytes 32)]
-    [(na/x25519-base priv) priv]))
+    [(na/x25519-public-key priv) priv]))
 
 (defn x25519-private->public-key
   "Derive the X25519 public key (32 bytes) from a private key (32 bytes)."
   [priv-bytes]
-  (na/x25519-base priv-bytes))
+  (na/x25519-public-key priv-bytes))
 
 (defn ed25519-pub->x25519-pub
   "Convert an Ed25519 public key (32 bytes) to an X25519 public key (32 bytes)."
   [ed-pub]
-  (na/ed-pk->x-pk ed-pub))
+  (na/ed25519->x25519-public-key ed-pub))
 
 (defn ed25519-seed->x25519-private
   "Convert an Ed25519 seed (32 bytes) to an X25519 private key (32 bytes)."
   [seed]
-  (na/ed-sk->x-sk (second (na/seed->keypair seed))))
+  (na/ed25519->x25519-secret-key seed))
 
 (defn ed25519-keypair->x25519-keypair
   "Convert an Ed25519 keypair to an X25519 keypair.
@@ -94,7 +97,7 @@
 (defn hmac-sha-256
   "Compute HMAC-SHA-256(key, data). Returns 32 bytes."
   [key data]
-  (na/hmac-sha256 key data))
+  (na/hmac-sha-256 key data))
 
 (defn hkdf-sha-256
   "HKDF (RFC 5869) extract-then-expand. Returns `length` bytes derived
@@ -102,7 +105,7 @@
   ([ikm length]
    (hkdf-sha-256 ikm (byte-array 0) (byte-array 0) length))
   ([ikm salt info length]
-   (na/hkdf-sha256 ikm salt info length)))
+   (na/hkdf-sha-256 ikm salt info length)))
 
 (defn random-bytes
   "Cryptographically secure random byte array of length n."
@@ -113,9 +116,9 @@
   "AEAD encrypt: ChaCha20-Poly1305(key=32B, nonce=12B, plaintext, aad).
    `aad` may be nil. Returns ciphertext || 16-byte tag."
   [key nonce plaintext aad]
-  (na/aead-encrypt key nonce plaintext aad))
+  (na/chacha20-poly1305-encrypt key nonce plaintext aad))
 
 (defn chacha20-poly1305-decrypt
   "AEAD decrypt. Throws on auth failure or tampered AAD."
   [key nonce ciphertext aad]
-  (na/aead-decrypt key nonce ciphertext aad))
+  (na/chacha20-poly1305-decrypt key nonce ciphertext aad))
