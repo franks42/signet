@@ -194,27 +194,34 @@
    (auto-set-default! k)
    k))
 
+(defn- parse-kid
+  "The public key record a self-describing kid URN names, or nil for
+   anything malformed (unknown algorithm, bad base64, wrong length).
+   Pure; never throws, never touches the store."
+  [kid-str]
+  (when (and (string? kid-str) (str/starts-with? kid-str "urn:signet:pk:"))
+    (let [[_ _ _ alg b64 & more] (str/split kid-str #":")
+          x (when (and b64 (empty? more))
+              (try (enc/base64url->bytes b64) (catch #?(:clj Exception :cljs :default) _ nil)))]
+      (when x
+        (case [alg (alength ^bytes x)]
+          ["ed25519" 32]   (->Ed25519PublicKey :signet/ed25519-public-key :Ed25519 x)
+          ["x25519" 32]    (->X25519PublicKey :signet/x25519-public-key :X25519 x)
+          ["secp256k1" 33] (->Secp256k1PublicKey :signet/secp256k1-public-key :secp256k1 x) ; compressed point
+          nil)))))
+
 (defn lookup
-  "Look up a key by kid URN string. Returns the best key record or nil.
-   If not found in the store but the URN contains the public key,
-   parses it and auto-registers."
+  "Look up a key by kid URN string. Returns the best registered key record,
+   else the public key the self-describing URN names, else nil.
+
+   Never registers anything: the store holds only keys the caller put
+   there deliberately. Parsing a kid from an untrusted envelope must not
+   grow the verifier's memory. A parsed key is not a trusted key; see
+   signet.sign/verify-edn's :signer option."
   ([kid-str] (lookup default-key-store kid-str))
   ([store kid-str]
    (or (get @store kid-str)
-       ;; URN is self-describing — extract public key if not in store
-       (when (and (string? kid-str) (.startsWith ^String kid-str "urn:signet:pk:"))
-         (let [[_ _ _ alg b64] (str/split kid-str #":")
-               pub (case alg
-                     "ed25519"   (->Ed25519PublicKey :signet/ed25519-public-key :Ed25519
-                                                     (enc/base64url->bytes b64))
-                     "x25519"    (->X25519PublicKey :signet/x25519-public-key :X25519
-                                                    (enc/base64url->bytes b64))
-                     "secp256k1" (->Secp256k1PublicKey :signet/secp256k1-public-key :secp256k1
-                                                       (enc/base64url->bytes b64))
-                     nil)]
-           (when pub
-             (register! store pub)
-             pub))))))
+       (parse-kid kid-str))))
 
 (defn registered-keys
   "Return all registered keys as a seq."
@@ -561,12 +568,22 @@
 ;; kid — key identifier
 ;; ============================================================
 
+(defn as-public-key
+  "The public key record for any key (keypair, private-only or public).
+   Pure: unlike public-key / signing-public-key, it never registers
+   anything in the key store."
+  [k]
+  (case (:crv k)
+    (:Ed25519 :secp256k1) (if (signing-public-key? k) k (-signing-public-key k))
+    :X25519               (if (encryption-public-key? k) k (-encryption-public-key k))))
+
 (defn kid
   "Return the key identifier as a URN: urn:signet:pk:<algorithm>:<base64url-public-key>.
    Self-describing — the receiver can parse the URN to extract the algorithm
-   and the public key bytes directly."
+   and the public key bytes directly. Pure: computing a kid never registers
+   the key (so kids of ephemeral keys leave no trace in the store)."
   [k]
-  (let [pub (public-key k)]
+  (let [pub (as-public-key k)]
     (str "urn:signet:pk:" (urn-algorithm (:crv pub)) ":" (enc/bytes->base64url (:x pub)))))
 
 (defn kid->public-key

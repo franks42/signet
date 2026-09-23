@@ -42,18 +42,14 @@
 ;; ============================================================
 
 (defn- make-ephemeral-keypair
-  "Generate an ephemeral Ed25519 keypair for chain linking.
-   Only the PUBLIC key is registered in the key store — the private key
-   stays internal to the chain and is never registered."
+  "Generate an ephemeral Ed25519 keypair for chain linking. Nothing is
+   registered in the key store: verifiers resolve the next block's signer
+   from its self-describing kid URN. The private key lives only in the
+   open token's :proof until the chain is sealed."
   []
-  #?(:clj  (let [[pub-bytes seed-bytes] (impl/generate-ed25519-keypair)
-                  ;; Register only the public key so verifiers can look it up
-                 _ (key/register! (key/->Ed25519PublicKey
-                                   :signet/ed25519-public-key :Ed25519 pub-bytes))
-                  ;; Build a keypair record for signing, but do NOT register it
-                 kp (key/->Ed25519KeyPair
-                     :signet/ed25519-keypair :Ed25519 pub-bytes seed-bytes)]
-             kp)
+  #?(:clj  (let [[pub-bytes seed-bytes] (impl/generate-ed25519-keypair)]
+             (key/->Ed25519KeyPair
+              :signet/ed25519-keypair :Ed25519 pub-bytes seed-bytes))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
 (defn- make-block
@@ -361,25 +357,9 @@
 ;; Public API: verify
 ;; ============================================================
 
-(defn verify
-  "Verify a chain's integrity and all signatures.
-
-   Checks:
-     1. Block 0's signer matches the root authority
-     2. Each block's signature is valid (via sign/verify-edn)
-     3. Each block's prev-sig matches the previous block's signature
-     4. Each block's signer matches the previous block's next-key
-     5. Third-party blocks: external signature verified against external key
-     6. If sealed: the seal signature verifies against the last block's next-key
-     7. If open: the proof corresponds to the last block's next-key
-
-   Returns:
-     {:valid?   boolean
-      :sealed?  boolean
-      :root     kid URN of root authority
-      :blocks   vector of each block's verification result (from sign/verify-edn)
-      :error    error message if invalid (optional)}"
-  [token]
+(defn- verify*
+  "The chain checks behind verify. May throw on a malformed token."
+  [token verify-opts]
   (let [blocks (:blocks token)
         root   (:root token)
 
@@ -391,7 +371,7 @@
               ;; Short-circuit on first error
              acc
              (let [;; Verify this block's signature using sign/verify-edn
-                   result (sign/verify-edn block)
+                   result (sign/verify-edn block verify-opts)
 
                     ;; Extract chain metadata from the block's message
                    msg         (:message result)
@@ -416,7 +396,8 @@
                                   (nil? block-prev))]
                (cond
                  (not sig-valid?)
-                 (assoc acc :error (str "Invalid signature on block " (count results)))
+                 (assoc acc :error (str "Invalid block " (count results) ": "
+                                        (name (or (:error result) :bad-signature))))
 
                  (not signer-ok?)
                  (assoc acc :error (str "Signer mismatch on block " (count results)
@@ -480,3 +461,48 @@
        :root    root
        :blocks  (mapv :message (:results block-results))
        :error   (when-not proof-valid? "Invalid proof")})))
+
+(defn verify
+  "Verify a chain's integrity and all signatures.
+
+   Checks:
+     1. Block 0's signer matches the root authority
+     2. Each block's signature is valid (via sign/verify-edn)
+     3. Each block's prev-sig matches the previous block's signature
+     4. Each block's signer matches the previous block's next-key
+     5. Third-party blocks: external signature verified against external key
+     6. If sealed: the seal signature verifies against the last block's next-key
+     7. If open: the proof corresponds to the last block's next-key
+
+   Terms (as in sign/verify-edn): :valid? means self-consistent — anyone
+   can mint a valid chain rooted in their own key. Pass the expected root
+   to also get :verified?. Whether the chain's facts authorize anything is
+   policy, not signet's job. Never throws: a malformed token is invalid.
+
+   opts (optional):
+     :root  expected root authority: a kid URN, or a set of acceptable kids.
+            With :root given, :valid? also requires a match.
+     :now   epoch-ms for block expiry (without it: reads the system clock)
+
+   Returns:
+     {:valid?    boolean
+      :verified? boolean (only with :root)
+      :sealed?   boolean
+      :root      kid URN of root authority
+      :blocks    vector of each block's verification result (from sign/verify-edn)
+      :error     error message if invalid (optional)}"
+  ([token] (verify token nil))
+  ([token {expected-root :root :as opts}]
+   (let [result (try (verify* token (select-keys opts [:now]))
+                     (catch #?(:clj Exception :cljs :default) e
+                       {:valid? false :sealed? false :root (when (map? token) (:root token))
+                        :error (str "Malformed token: " (ex-message e))}))]
+     (if (some? expected-root)
+       (let [verified? (boolean (and (:valid? result)
+                                     (if (set? expected-root)
+                                       (contains? expected-root (:root result))
+                                       (= expected-root (:root result)))))]
+         (cond-> (assoc result :verified? verified? :valid? verified?)
+           (and (:valid? result) (not verified?))
+           (assoc :error (str "Root " (:root result) " is not the expected root"))))
+       result))))

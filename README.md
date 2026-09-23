@@ -9,6 +9,35 @@ sender-authenticated encryption (`signet.encryption`), Noise_KK sessions
 
 Runs on the JVM and babashka. ClojureScript is not implemented yet.
 
+## Valid, verified, authorized
+
+signet keeps three questions apart:
+
+- **Valid:** the envelope is well-formed, the signature checks out under
+  the key named in `:signer`, and it hasn't expired. This is only
+  self-consistency: anyone can produce a valid envelope with their own key.
+- **Verified:** valid, *and* the signer (or a chain's root) is the identity
+  you expected. Pass it in, as one kid or a set of kids:
+  `(sign/verify-edn env {:signer kid})`, `(chain/verify token {:root kid})`.
+  The result then has `:verified?`, and `:valid?` also requires it.
+- **Authorized:** whether that identity may do this. That's policy, and not
+  signet's job. It belongs to a policy decision point such as stroopwafel's.
+
+`verify-edn` and `chain/verify` never throw on malformed input; they return
+`:valid? false` with an `:error`. Both take `:now` (epoch-ms) to judge
+expiry deterministically; without it they read the clock.
+
+## Keys: what is stored, what is not
+
+- The key store holds only keys you create or register deliberately.
+  `key/lookup` and `key/kid` are pure: resolving a kid from an envelope
+  never adds it to the store, so untrusted input cannot grow memory.
+- **Ephemeral keys are never exposed, never stored, and wiped after use.**
+  Session and chain code creates them internally. Noise session
+  ephemerals, and every DH output, are zeroed as soon as they have been
+  used. Without that there is no forward secrecy. An open chain's
+  ephemeral key lives in the token's `:proof` until the chain is sealed.
+
 ## Crypto backends
 
 `signet.impl` selects the backend once, when it loads: the JVM system
@@ -27,6 +56,15 @@ SIGNET_BACKEND=sodium bb …  # on babashka, with com.github.franks42/sodium 0.1
 ```
 
 ## Compatibility
+
+**Trust fixes (branch `libsodium-backend`):** an expired envelope is no
+longer `:valid?`. The raw signature check is now `:signature-valid?`, and
+`:error` says why an envelope is invalid. `key/lookup` no longer registers
+the keys it parses from kids, and `key/kid` no longer registers anything.
+Code that relied on either for registration must call `key/register!`
+explicitly.
+
+### cedn 1.5.2
 
 signet signs canonical EDN bytes produced by cedn. Since the branch
 `libsodium-backend` it depends on cedn 1.5.2 (before: 1.2.0). cedn 1.4.0

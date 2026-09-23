@@ -100,6 +100,29 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `docs/03-design-ideas.md` — Detailed design: namespace structure, key representation, envelope format
 - `docs/04-jca-seed-to-public-key-trick.md` — SecureRandom trick for deriving public keys without reflection
 
+## Trust model and key-store rules (branch libsodium-backend)
+
+- **valid** = well-formed, signature ok under the key named in :signer, not
+  expired: self-consistency only. **verified** = valid AND the signer/root
+  is the expected identity (`verify-edn` `{:signer kid-or-set}`,
+  `chain/verify` `{:root kid-or-set}`). **authorized** = policy, which
+  belongs to a PDP (stroopwafel), not to signet. The user plans to integrate
+  a PDP "everywhere those questions are asked", so keep those seams clean.
+- `verify-edn` / `chain/verify` never throw on malformed input. Pass `:now`
+  for determinism; without it they read the clock (impure, documented).
+- `key/lookup`, `key/kid`, `key/as-public-key` are pure and never register.
+  The store holds only deliberately registered keys.
+- **Ephemeral keys are never kept longer than needed:** never registered,
+  never exposed by the public API, and wiped after use. In `signet.session`:
+  `fresh-ephemeral`, `edh` (es/ee/se) vs `dh` (ss), `mix-key` wipes each
+  DH output, `split` wipes the ephemeral private key and the handshake
+  ck/k. `test/signet/trust_test.clj` asserts absence and zeroing.
+- Still registering as a side effect: `key/raw-shared-secret` registers
+  both parties, and the keypair and extraction constructors register their
+  results. They are user-facing identity operations; revisit.
+- Open review findings: 5 (reusing a stale session state reuses a nonce)
+  and 7 (`box` uses one key in both directions).
+
 ## Testing, lint, format
 
 ```bash

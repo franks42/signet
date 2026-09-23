@@ -71,6 +71,13 @@
 ;; ============================================================
 
 #?(:clj
+   (defn- wipe!
+     "Overwrite a secret byte array with zeros once its purpose has ended.
+      Impure: mutates the array in place."
+     [bs]
+     (when bs (java.util.Arrays/fill ^bytes bs (byte 0)))))
+
+#?(:clj
    (defn- sha-256-bytes [^bytes data]
      (impl/sha-256 data)))
 
@@ -91,11 +98,15 @@
      "Fold a DH output (or other ikm) into the chaining key and update
       the AEAD key. HKDF-Extract-then-Expand with the chaining key as
       salt: first 32 output bytes become new ck; last 32 become new k.
-      Resets the nonce counter to zero."
+      Resets the nonce counter to zero.
+      Consumes ikm: it is a DH output, used once, so it is wiped here, as
+      is the HKDF scratch buffer. Impure in that sense."
      [{:keys [ck] :as state} ^bytes ikm]
      (let [out  (impl/hkdf-sha-256 ikm ck (byte-array 0) 64)
            ck'  (java.util.Arrays/copyOfRange out 0 32)
            k'   (java.util.Arrays/copyOfRange out 32 64)]
+       (wipe! ikm)
+       (wipe! out)
        (assoc state :ck ck' :k k' :n 0))))
 
 #?(:clj
@@ -147,13 +158,21 @@
       symmetric state (ck, k, n, h) is no longer needed — only the two
       32-byte transport keys remain, each with its own monotonic
       nonce counter."
-     [{:keys [ck role]}]
+     [{:keys [ck k role local-ephemeral-kp]}]
      (let [out (impl/hkdf-sha-256 (byte-array 0) ck (byte-array 0) 64)
            t1  (java.util.Arrays/copyOfRange out 0 32)
            t2  (java.util.Arrays/copyOfRange out 32 64)
            [send recv] (case role
                          :initiator [t1 t2]
                          :responder [t2 t1])]
+       ;; Forward secrecy: the ephemeral private key and the handshake
+       ;; secrets have done their job. Wipe them; only the two transport
+       ;; keys survive. (This mutates the consumed handshake state, which
+       ;; must not be reused anyway.)
+       (wipe! (:d local-ephemeral-kp))
+       (wipe! ck)
+       (wipe! k)
+       (wipe! out)
        {:phase :transport
         :role  role
         :send  {:k send :n 0}
@@ -166,18 +185,56 @@
 
 #?(:clj
    (defn- ->x25519-public-bytes
-     "Extract the 32-byte X25519 public key from any signet key
-      record. Ed25519 records are auto-converted via signet.key."
+     "Extract the 32-byte X25519 public key from any signet key record.
+      X25519 records (including ephemerals) are used as-is; only static
+      Ed25519 identity keys go through signet.key's conversion."
      [k]
-     (:x (key/encryption-public-key k))))
+     (case (:type k)
+       (:signet/x25519-public-key :signet/x25519-keypair) (:x k)
+       (:x (key/encryption-public-key k)))))
+
+#?(:clj
+   (defn- ->x25519-private-bytes
+     "The 32-byte X25519 private key of an X25519 keypair (ephemeral or
+      static) or, via conversion, of a static Ed25519 identity keypair."
+     [k]
+     (case (:type k)
+       :signet/x25519-keypair (:d k)
+       (:d (key/encryption-private-key k)))))
+
+#?(:clj
+   (defn- fresh-ephemeral
+     "A new X25519 ephemeral keypair, straight from the backend. Never
+      registered anywhere; lives only in handshake state and is wiped at
+      Split. Callers of the public API never see it."
+     []
+     (let [[pub priv] (impl/generate-x25519-keypair)]
+       (key/->X25519KeyPair :signet/x25519-keypair :X25519 pub priv))))
+
+#?(:clj
+   (defn- x25519-dh*
+     "The raw X25519 computation behind dh and edh, by the backend
+      directly: nothing is registered anywhere. Static Ed25519 identity
+      keys are converted to X25519 first."
+     [local-kp remote-pub]
+     (impl/x25519-dh (->x25519-private-bytes local-kp)
+                     (->x25519-public-bytes remote-pub))))
 
 #?(:clj
    (defn- dh
-     "DH(local-priv, remote-pub) returning the 32-byte shared secret.
-      Both inputs may be Ed25519 records — signet.key handles the
-      X25519 conversion under the hood."
+     "Static-static DH — Noise token ss. Returns the 32-byte shared
+      secret, which mix-key consumes and wipes. Never registers keys."
+     [local-static-kp remote-static-pub]
+     (x25519-dh* local-static-kp remote-static-pub)))
+
+#?(:clj
+   (defn- edh
+     "Ephemeral DH — Noise tokens es, ee, se: at least one side is an
+      ephemeral key. Never registers keys; the output is consumed and
+      wiped by mix-key, and the local ephemeral private key is wiped at
+      Split. Ephemerals never leave this namespace."
      [local-kp remote-pub]
-     (:k (key/raw-shared-secret local-kp remote-pub))))
+     (x25519-dh* local-kp remote-pub)))
 
 ;; ============================================================
 ;; Initial state construction (Noise spec §5.3 init steps)
@@ -292,12 +349,12 @@
       - EncryptAndHash(payload). After 'es' the AEAD key exists,
         so the payload is now encrypted under the chained ck."
      [{:keys [local-static-kp remote-static-pub] :as state} payload]
-     (let [eph-kp     (key/encryption-keypair)
+     (let [eph-kp     (fresh-ephemeral)
            eph-pub-bs (:x eph-kp)
            state      (-> state
                           (assoc :local-ephemeral-kp eph-kp)
                           (mix-hash eph-pub-bs)                                       ; "e"
-                          (mix-key (dh eph-kp remote-static-pub))                     ; "es"
+                          (mix-key (edh eph-kp remote-static-pub))                    ; "es"
                           (mix-key (dh local-static-kp remote-static-pub)))           ; "ss"
            [state ct] (encrypt-and-hash state (or payload (byte-array 0)))
            buf        (byte-array (+ 32 (alength ^bytes ct)))]
@@ -319,13 +376,12 @@
                         :length (alength msg)
                         :min    48})))
      (let [eph-pub-bs (java.util.Arrays/copyOfRange msg 0 32)
-           remote-eph (key/encryption-public-key
-                       {:type :signet/x25519-public-key :crv :X25519 :x eph-pub-bs})
+           remote-eph (key/->X25519PublicKey :signet/x25519-public-key :X25519 eph-pub-bs)
            ct         (java.util.Arrays/copyOfRange msg 32 (alength msg))
            state      (-> state
                           (assoc :remote-ephemeral-pub remote-eph)
                           (mix-hash eph-pub-bs)                                  ; "e"
-                          (mix-key (dh local-static-kp remote-eph))              ; "es"
+                          (mix-key (edh local-static-kp remote-eph))             ; "es"
                           (mix-key (dh local-static-kp remote-static-pub)))      ; "ss"
            [state pt] (decrypt-and-hash state ct)]
        [(assoc state :pos 1) pt])))
@@ -352,13 +408,13 @@
         static, not the local sender's.
       - EncryptAndHash(payload). After both DHs, Split into transport."
      [{:keys [remote-static-pub remote-ephemeral-pub] :as state} payload]
-     (let [eph-kp     (key/encryption-keypair)
+     (let [eph-kp     (fresh-ephemeral)
            eph-pub-bs (:x eph-kp)
            state      (-> state
                           (assoc :local-ephemeral-kp eph-kp)
                           (mix-hash eph-pub-bs)                                  ; "e"
-                          (mix-key (dh eph-kp remote-ephemeral-pub))             ; "ee"
-                          (mix-key (dh eph-kp remote-static-pub)))               ; "se"
+                          (mix-key (edh eph-kp remote-ephemeral-pub))            ; "ee"
+                          (mix-key (edh eph-kp remote-static-pub)))              ; "se"
            [state ct] (encrypt-and-hash state (or payload (byte-array 0)))
            buf        (byte-array (+ 32 (alength ^bytes ct)))]
        (System/arraycopy eph-pub-bs 0 buf 0 32)
@@ -379,14 +435,13 @@
                         :length (alength msg)
                         :min    48})))
      (let [eph-pub-bs (java.util.Arrays/copyOfRange msg 0 32)
-           remote-eph (key/encryption-public-key
-                       {:type :signet/x25519-public-key :crv :X25519 :x eph-pub-bs})
+           remote-eph (key/->X25519PublicKey :signet/x25519-public-key :X25519 eph-pub-bs)
            ct         (java.util.Arrays/copyOfRange msg 32 (alength msg))
            state      (-> state
                           (assoc :remote-ephemeral-pub remote-eph)
                           (mix-hash eph-pub-bs)                                  ; "e"
-                          (mix-key (dh local-ephemeral-kp remote-eph))           ; "ee"
-                          (mix-key (dh local-static-kp remote-eph)))             ; "se"
+                          (mix-key (edh local-ephemeral-kp remote-eph))          ; "ee"
+                          (mix-key (edh local-static-kp remote-eph)))            ; "se"
            [state pt] (decrypt-and-hash state ct)]
        [(split state) pt])))
 

@@ -123,3 +123,15 @@
       (is (.startsWith ^String urn "urn:signet:pk:secp256k1:"))
       (is (= :signet/secp256k1-public-key (:type parsed)))
       (is (java.util.Arrays/equals ^bytes pub-bytes ^bytes (:x parsed))))))
+
+;; -- EDN envelopes: the verifier resolves a 33-byte secp256k1 kid --
+
+(deftest secp256k1-sign-edn-round-trip
+  (testing "verify-edn resolves a secp256k1 signer from its kid (33-byte compressed point)"
+    (let [kp  (key/signing-keypair :secp256k1)
+          env (sign/sign-edn kp {:order 42})]
+      (key/clear-key-store!)
+      (let [r (sign/verify-edn env {:signer (key/kid kp)})]
+        (is (true? (:valid? r)))
+        (is (true? (:verified? r)))
+        (is (empty? (key/registered-keys)) "resolving the kid registered nothing")))))

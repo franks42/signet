@@ -11,7 +11,7 @@
 
 (def ^:private test-nss
   '[signet.key-test signet.sign-test signet.chain-test signet.encryption-test
-    signet.session-test signet.ssh-test signet.bb-smoke-test])
+    signet.session-test signet.ssh-test signet.bb-smoke-test signet.trust-test])
 
 (defn -main [& [expected]]
   (let [bb? (System/getProperty "babashka.version")
