@@ -8,8 +8,9 @@ name: ci
 #   sodium-macos  macOS, JDK 25: libsodium from Homebrew; libsodium backend on
 #                 the JVM (+ JCA parity) and on bb; the consumer-from-jar check
 #   sodium-linux  Ubuntu, JDK 25: libsodium 1.0.22 built from a checksum-pinned
-#                 source tarball, because Ubuntu's own package is 1.0.18, which
-#                 has no HKDF; same libsodium-backend checks
+#                 source tarball (Ubuntu's package is 1.0.18, no HKDF) and the
+#                 dynamically linked bb (the static build cannot load native
+#                 libraries); same libsodium-backend checks
 #
 # The libsodium backend needs sodium.cljc, which is not on Clojars: it is
 # checked out at a pinned commit and installed as the local snapshot
@@ -26,6 +27,12 @@ env:
   # SHA-256 of libsodium-1.0.22.tar.gz, identical from download.libsodium.org
   # and the GitHub release (checked 2026-09-23).
   LIBSODIUM_SHA256: adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349
+  # babashka.ffi on Linux needs the DYNAMICALLY linked bb: the static (musl)
+  # build, which setup-clojure installs on Linux, cannot load shared libraries
+  # at all ("cannot load library", even by absolute path; seen 2026-09-23).
+  BB_VERSION: 1.13.224
+  # SHA-256 of babashka-1.13.224-linux-amd64.tar.gz (matches the release's .sha256)
+  BB_LINUX_SHA256: 9640da489dbbeeb4830cd87f22e44e26af0f8313160c491c61d9c245e86206f6
 
 jobs:
   jca:
@@ -124,8 +131,18 @@ jobs:
 
       - uses: DeLaGuardo/setup-clojure@13.6.0
         with:
-          bb: 'latest'
           cli: 'latest'
+
+      - name: Install the dynamically linked bb ${{ env.BB_VERSION }} (checksum-pinned)
+        run: |
+          curl -fsSL -o bb.tar.gz \
+            "https://github.com/babashka/babashka/releases/download/v${BB_VERSION}/babashka-${BB_VERSION}-linux-amd64.tar.gz"
+          echo "${BB_LINUX_SHA256}  bb.tar.gz" | sha256sum --check --strict
+          sudo tar xzf bb.tar.gz -C /usr/local/bin bb
+          file "$(command -v bb)"
+          file "$(command -v bb)" | grep -q "dynamically linked" \
+            || { echo "::error::bb must be dynamically linked for babashka.ffi"; exit 1; }
+          bb --version
 
       - name: Build libsodium ${{ env.LIBSODIUM_VERSION }} from source (checksum-pinned)
         run: |
@@ -153,14 +170,6 @@ jobs:
 
       - name: libsodium backend on the JVM, with JCA parity
         run: bb test:jvm-sodium
-
-      - name: Diagnose bb and libsodium loading (temporary)
-        run: |
-          file "$(command -v bb)" || true
-          bb --version
-          ls -l /usr/local/lib/libsodium* /lib/x86_64-linux-gnu/libsodium* 2>&1 || true
-          bb -e '(require (quote babashka.ffi)) (println :abs-load (try (:path (babashka.ffi/load-library "/usr/local/lib/libsodium.so.26")) (catch Exception e (str "FAILED " (ex-message e)))))' || true
-          bb -e '(require (quote babashka.ffi)) (println :bare-load (try (:path (babashka.ffi/load-library "libsodium.so.26")) (catch Exception e (str "FAILED " (ex-message e)))))' || true
 
       - name: libsodium backend on babashka
         run: bb test:bb-sodium
