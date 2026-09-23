@@ -1,7 +1,8 @@
 # box v2 — self-describing, directional, nonce-safe
 
-Status: **design note, not implemented** (2026-09-23). Supersedes nothing;
-box v1 (`signet.encryption/box`) stays readable.
+Status: **design note, not implemented** (2026-09-23; decisions settled the
+same day, see "Decisions"). **v2 replaces v1 entirely:** signet is its own
+ecosystem, so there is no v1 reader or writer to keep.
 
 ## Background
 
@@ -37,11 +38,15 @@ It has three problems:
   Curve25519 public key is 32 bytes, so the kid *is* the key. A kid slot
   needs no registry lookup, and resolving it registers nothing (see
   `key/lookup`).
-- **Optional slots.** Some protocols have one obvious receiver and key, so
+- **Optional slots, on by default.** The default is the easy path: both
+  kids are included. Some protocols have one obvious receiver and key, so
   the kid adds nothing. Others want unlinkability: a kid on the wire tells
-  observers who is talking to whom. So both kid slots can be omitted.
+  observers who is talking to whom. For those, either slot can be omitted.
   Omitting a slot changes only what is *transmitted*, never what is
   *authenticated* (see "Binding").
+- **Ed25519 and X25519 kids** are both accepted in the slots. The same
+  usability argument holds for signet's Ed25519 identities, which are
+  converted to X25519 internally, as `box` already does.
 - **Directional keys**, closing finding 7.
 - **Nonce-safe at any volume.** Random nonces with no practical message
   limit, handled entirely inside `box`/`unbox`. The caller never sees or
@@ -73,9 +78,14 @@ The key derivation always binds **both** public keys, in direction order:
 shared = X25519(sender_sk, recipient_pk)          ; same value both ways
 k_msg  = HKDF-SHA-256(ikm  = shared,
                       salt = nonce,               ; 24 random bytes
-                      info = "signet/box/v2" ‖ sender_pk ‖ recipient_pk,
+                      info = "signet/box/v2" ‖ sender_x25519_pk ‖ recipient_x25519_pk,
                       len  = 32)
 ```
+
+The info binds the **X25519** form of each key: Ed25519 kids are converted
+first. So one identity derives the same key whichever kid form (Ed25519 or
+X25519) appears in a slot. The slot itself is AAD, so its form cannot be
+swapped in transit.
 
 - **Direction:** A→B uses `info = … ‖ A ‖ B` and B→A uses `… ‖ B ‖ A`, so
   their keys differ, and a reflected message fails authentication. That
@@ -110,15 +120,24 @@ Alternatives considered:
 ```clojure
 {:type  :signet/box
  :v     2
- :from  "urn:signet:pk:x25519:…"   ; optional: sender kid
- :to    "urn:signet:pk:x25519:…"   ; optional: recipient kid
+ :from  "urn:signet:pk:ed25519:…"  ; optional (default on): sender kid, Ed25519 or X25519
+ :to    "urn:signet:pk:x25519:…"   ; optional (default on): recipient kid, Ed25519 or X25519
+ :aad   {:request-id #uuid "…"}    ; optional: caller context, any CEDN-P EDN value
  :nonce #bytes "…"                 ; required: 24 random bytes (the HKDF salt)
  :ct    #bytes "…"}                ; ChaCha20-Poly1305(k_msg, 0^96, pt, aad) incl. 16-byte tag
 ```
 
-`aad = cedn-bytes({:type :v :from? :to? :nonce})`: every field except
-`:ct`, in canonical form. Caller AAD, if given (`{:aad bytes}`), is
-appended under a separate key so it cannot collide with the header.
+`aad = cedn-bytes(header)`, where `header` is every field except `:ct`, in
+canonical form. The caller's context lives **inside** the header as the
+optional `:aad` slot, so it is authenticated with everything else. Since
+the header is canonical EDN, `:aad` can be any EDN value, not just bytes.
+Two consequences:
+
+- `:aad` **travels in the clear**: it is authenticated, not secret.
+- The receiver should **check** it, not just read it. `unbox` takes an
+  expected value (`{:aad expected}`) and treats a mismatch as invalid, just
+  as `:from` works for the sender. Without an expectation, `unbox` returns
+  the value for the caller to inspect.
 
 Size overhead versus v1: about 24 bytes of nonce plus about 60 bytes per
 kid included, plus the EDN framing. Negligible for the intended uses.
@@ -126,11 +145,11 @@ kid included, plus the EDN framing. Negligible for the intended uses.
 ## API sketch
 
 ```clojure
-(box   sender-kp recipient-pub plaintext)            ; defaults: include :from and :to
-(box   sender-kp recipient-pub plaintext {:from? false :to? false :aad bytes})
+(box   sender-kp recipient-pub plaintext)            ; default: include :from and :to
+(box   sender-kp recipient-pub plaintext {:from? false :to? false :aad edn-value})
 (unbox recipient-kp-or-keys boxed)                   ; resolves keys from slots when present
-(unbox recipient-kp-or-keys boxed {:from expected-kid-or-set :aad bytes})
-;; => {:valid? … :verified? (with :from) :plaintext … :from kid :error …}
+(unbox recipient-kp-or-keys boxed {:from expected-kid-or-set :aad expected-edn-value})
+;; => {:valid? … :verified? (with :from) :plaintext … :from kid :aad … :error …}
 ```
 
 - The receiver's keypair comes from the argument. If the argument is a set
@@ -142,9 +161,9 @@ kid included, plus the EDN framing. Negligible for the intended uses.
 - Like `verify-edn`, `unbox` never throws on malformed input.
 - **Nonces never appear in the API.** Ephemerals do not appear either, if
   a v2 seal is added.
-- **v1 compatibility:** `unbox` dispatches on the input. Raw bytes are
-  v1; a `{:type :signet/box :v 2}` map is v2. `box` writes v2; a v1 writer
-  is kept only for peers that cannot read v2.
+- **No v1.** `box`/`unbox` read and write only v2. v1's raw
+  `nonce ‖ ct` bytes are rejected as malformed (`:valid? false`). The `:v`
+  field is kept so a future v3 can be told apart.
 
 ## Seal (anonymous sender), later
 
@@ -157,6 +176,11 @@ identity by definition, so it can be valid but never "verified as" anyone.
 
 - Known-answer vectors: fixed keys and nonce giving exact bytes, identical
   on the JCA and libsodium backends (parity).
+- **Kid forms:** a box addressed with Ed25519 kids and one with X25519 kids
+  for the same identities both unbox. Changing a slot's form in transit
+  fails (AAD).
+- **`:aad`:** any EDN value round-trips. A mismatch against the expected
+  value, or a missing slot when one is expected, is invalid.
 - **Reflection:** a message A→B fails to `unbox` as B→A, both with and
   without kid slots. It must fail today against v1 (failing-first).
 - **Tampering:** changing, adding or removing `:from`, `:to`, `:v` or
@@ -169,13 +193,15 @@ identity by definition, so it can be valid but never "verified as" anyone.
   throw. Resolving kids registers nothing in the store.
 - **Nonce uniqueness:** 10^6 boxes, all nonces distinct.
 
-## Open questions
+## Decisions (2026-09-23)
 
-1. Should the kid slots default to on (ease) or off (privacy)? This note
-   proposes on, with `:from? false` / `:to? false` for unlinkable or
-   single-key protocols.
-2. Does a v1 writer stay available, or is v1 read-only after v2 ships?
-3. Should the caller's `:aad` sit inside the cedn header map (simpler) or
-   be appended as separate bytes (keeps the header shape fixed)?
-4. Should Ed25519 identity kids be allowed in the slots (converted to X25519
-   internally, as `box` does today), or only `x25519` kids on the wire?
+1. **Kid slots default to on.** The easy path is the default; omit
+   `:from`/`:to` for unlinkable or single-key protocols.
+2. **v1 is dropped.** No v1 reader or writer: signet lives in its own
+   bubble, so there are no external v1 peers to support.
+3. **Caller AAD goes inside the header** as the optional `:aad` slot (any
+   EDN value; authenticated, visible on the wire, checked against
+   `unbox`'s expectation).
+4. **Ed25519 kids are allowed in the slots,** for the same usability
+   reasons as X25519. Key derivation binds the X25519 forms, so either kid
+   form derives the same key.
