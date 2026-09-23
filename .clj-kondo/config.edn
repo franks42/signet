@@ -1,0 +1,8 @@
+{;; signet runs on the JVM and bb only: every :cljs branch is a
+ ;; "Not yet implemented" stub, which clj-kondo would report as unused
+ ;; bindings and unresolved JVM-only symbols. Lint the :clj branch only;
+ ;; drop this when ClojureScript support is implemented.
+ :cljc {:features #{:clj}}
+ :linters {:unused-private-var
+           ;; defonce kept for its side effect: installing the BC provider
+           {:exclude [signet.impl.jvm-secp256k1/bc-installed]}}}

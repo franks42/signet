@@ -1,8 +1,7 @@
 (ns signet.chain-test
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [signet.chain :as chain]
-            [signet.key :as key]
-            [signet.sign :as sign]))
+            [signet.key :as key]))
 
 (use-fixtures :each (fn [f] (key/clear-key-store!) (f)))
 
@@ -28,13 +27,13 @@
   (testing "create chain fails without default key"
     (key/clear-key-store!)
     (is (thrown? clojure.lang.ExceptionInfo
-                (chain/extend {:facts ["no key"]})))))
+                 (chain/extend {:facts ["no key"]})))))
 
 ;; === Chain extension tests ===
 
 (deftest extend-chain-test
   (testing "extend adds a block"
-    (let [root-kp (key/signing-keypair)
+    (let [_ (key/signing-keypair) ; becomes the default root key extend uses
           token (chain/extend {:facts ["alice can read/write"]})
           token2 (chain/extend token {:checks ["only read"]})]
       (is (= 2 (count (:blocks token2))))
@@ -54,7 +53,7 @@
           sealed (-> (chain/extend {:facts ["test"]})
                      (chain/close))]
       (is (thrown? clojure.lang.ExceptionInfo
-                  (chain/extend sealed {:checks ["nope"]}))))))
+                   (chain/extend sealed {:checks ["nope"]}))))))
 
 ;; === Chain sealing tests ===
 
@@ -80,7 +79,7 @@
           sealed (-> (chain/extend {:facts ["test"]})
                      (chain/close))]
       (is (thrown? clojure.lang.ExceptionInfo
-                  (chain/close sealed))))))
+                   (chain/close sealed))))))
 
 ;; === Chain verification tests ===
 
@@ -148,9 +147,9 @@
                      (chain/close))
           ;; Swap blocks 1 and 2
           tampered (assoc sealed :blocks
-                         [(get-in sealed [:blocks 0])
-                          (get-in sealed [:blocks 2])
-                          (get-in sealed [:blocks 1])])]
+                          [(get-in sealed [:blocks 0])
+                           (get-in sealed [:blocks 2])
+                           (get-in sealed [:blocks 1])])]
       (is (not (:valid? (chain/verify tampered))))))
 
   (testing "wrong root key fails"
@@ -189,14 +188,14 @@
 
           ;; Admin issues broad capability
           token (chain/extend admin-kp
-                              {:subject "alice"
-                               :rights  [:read :write]
-                               :resource "/data/*"})
+                  {:subject "alice"
+                   :rights  [:read :write]
+                   :resource "/data/*"})
 
           ;; Alice attenuates: read-only
           token (chain/extend token
-                              {:restrict [:read-only]
-                               :resource "/data/reports/*"})
+                  {:restrict [:read-only]
+                   :resource "/data/reports/*"})
 
           ;; Report service attenuates further and seals
           sealed (chain/close token
@@ -235,7 +234,7 @@
     (let [_root (key/signing-keypair)
           sealed (-> (chain/extend {:facts ["test"]}) (chain/close))]
       (is (thrown? clojure.lang.ExceptionInfo
-                  (chain/third-party-request sealed))))))
+                   (chain/third-party-request sealed))))))
 
 (deftest create-third-party-block-test
   (testing "create-third-party-block produces signed block"
@@ -285,7 +284,7 @@
                     :external-sig (byte-array 64)
                     :external-key (key/kid idp-kp)}]
       (is (thrown? clojure.lang.ExceptionInfo
-                  (chain/extend-third-party sealed tp-block))))))
+                   (chain/extend-third-party sealed tp-block))))))
 
 (deftest verify-third-party-test
   (testing "chain with third-party block verifies"

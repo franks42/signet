@@ -1,5 +1,6 @@
 (ns signet.key-test
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require [clojure.string :as str]
+            [clojure.test :refer [deftest is testing use-fixtures]]
             [signet.key :as key]
             [signet.encoding :as enc]))
 
@@ -427,8 +428,8 @@
     (let [kp (key/signing-keypair)
           _ (key/clear-key-store!)
           kp2 (key/signing-keypair {:type :signet/ed25519-keypair
-                                     :crv :Ed25519
-                                     :x (:x kp) :d (:d kp)})]
+                                    :crv :Ed25519
+                                    :x (:x kp) :d (:d kp)})]
       (is (some? (key/lookup (key/kid kp2))))))
 
   (testing "public-key extraction auto-registers"
@@ -481,8 +482,8 @@
 
 (deftest key-store-operations-test
   (testing "registered-keys returns all keys"
-    (let [kp1 (key/signing-keypair)
-          kp2 (key/encryption-keypair)]
+    (let [_ (key/signing-keypair)       ; generating registers the key
+          _ (key/encryption-keypair)]
       (is (= 2 (count (key/registered-keys))))))
 
   (testing "unregister! removes a key from store"
@@ -564,8 +565,8 @@
 
 (deftest default-keys-independent-test
   (testing "signing and encryption defaults are independent"
-    (let [sign-kp (key/signing-keypair)
-          enc-kp (key/encryption-keypair)]
+    (let [_ (key/signing-keypair)       ; first keypair of each kind becomes the default
+          _ (key/encryption-keypair)]
       (is (key/signing-keypair? (key/default-signing-keypair)))
       (is (key/encryption-keypair? (key/default-encryption-keypair)))
       (is (not= (:type (key/default-signing-keypair))
@@ -608,7 +609,7 @@
     (let [kp (key/encryption-keypair)
           hex (enc/bytes->hex (:x kp))
           urn (key/hex->kid hex :X25519)]
-      (is (clojure.string/starts-with? urn "urn:signet:pk:x25519:"))
+      (is (str/starts-with? urn "urn:signet:pk:x25519:"))
       (is (= (key/kid kp) urn)))))
 
 (deftest hex->bytes-accepts-0x-prefix-test

@@ -107,8 +107,8 @@
           msg-b    (.getBytes "bob → alice 1" "UTF-8")
           [alice ct1] (session/write-message alice msg-a)
           [bob   pt1] (session/read-message  bob ct1)
-          [bob   ct2] (session/write-message bob msg-b)
-          [alice pt2] (session/read-message  alice ct2)]
+          [_bob   ct2] (session/write-message bob msg-b)
+          [_alice pt2] (session/read-message  alice ct2)]
       (is (bytes= msg-a pt1))
       (is (bytes= msg-b pt2)))))
 

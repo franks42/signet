@@ -16,6 +16,18 @@
            (when (pos? (+ (:fail r 0) (:error r 0)))
              (System/exit 1)))}
 
+  lint
+  {:doc  "clj-kondo on every Clojure file (config: :clj branch only, see .clj-kondo/config.edn)"
+   :task (shell "clj-kondo" "--lint" "src" "test" "build.clj" "bb.edn" "deps.edn")}
+
+  fmt
+  {:doc  "cljfmt check on every Clojure file"
+   :task (shell "cljfmt" "check" "src" "test" "build.clj" "bb.edn" "deps.edn")}
+
+  fmt:fix
+  {:doc  "cljfmt fix on every Clojure file"
+   :task (shell "cljfmt" "fix" "src" "test" "build.clj" "bb.edn" "deps.edn")}
+
   verify
   {:doc  "Verify an ECDSA / Ed25519 signature. secp256k1 verification
           shells out to JVM Clojure (BouncyCastle) since BC isn't

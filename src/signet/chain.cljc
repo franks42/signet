@@ -48,12 +48,12 @@
   []
   #?(:clj  (let [[pub-bytes seed-bytes] (jvm/generate-ed25519-keypair)
                   ;; Register only the public key so verifiers can look it up
-                  pub (key/register! (key/->Ed25519PublicKey
-                                      :signet/ed25519-public-key :Ed25519 pub-bytes))
+                 _ (key/register! (key/->Ed25519PublicKey
+                                   :signet/ed25519-public-key :Ed25519 pub-bytes))
                   ;; Build a keypair record for signing, but do NOT register it
-                  kp (key/->Ed25519KeyPair
-                       :signet/ed25519-keypair :Ed25519 pub-bytes seed-bytes)]
-              kp)
+                 kp (key/->Ed25519KeyPair
+                     :signet/ed25519-keypair :Ed25519 pub-bytes seed-bytes)]
+             kp)
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
 (defn- make-block
@@ -73,9 +73,9 @@
    Returns a signed envelope (from sign/sign-edn)."
   [signing-key content next-key-kid prev-sig]
   (sign/sign-edn signing-key
-                  {:data     content
-                   :next-key next-key-kid
-                   :prev-sig prev-sig}))
+                 {:data     content
+                  :next-key next-key-kid
+                  :prev-sig prev-sig}))
 
 ;; ============================================================
 ;; Internal: chain creation and extension
@@ -193,8 +193,8 @@
    (let [root-kp (key/default-signing-keypair)]
      (when-not root-kp
        (throw (ex-info
-                "No default signing keypair. Create or import one first."
-                {:hint "Call (key/signing-keypair) or import from SSH"})))
+               "No default signing keypair. Create or import one first."
+               {:hint "Call (key/signing-keypair) or import from SSH"})))
      (create-chain root-kp content)))
   ([token-or-key content]
    (cond
@@ -258,7 +258,6 @@
    ;; Add the final block, then seal
    (-> (extend-chain token content)
        (close))))
-
 
 ;; ============================================================
 ;; Public API: third-party blocks
@@ -387,66 +386,66 @@
         ;; Verify each block's signature and check chain links
         block-results
         (reduce
-          (fn [{:keys [results prev-sig prev-next-key error] :as acc} block]
-            (if error
+         (fn [{:keys [results prev-sig prev-next-key error] :as acc} block]
+           (if error
               ;; Short-circuit on first error
-              acc
-              (let [;; Verify this block's signature using sign/verify-edn
-                    result (sign/verify-edn block)
+             acc
+             (let [;; Verify this block's signature using sign/verify-edn
+                   result (sign/verify-edn block)
 
                     ;; Extract chain metadata from the block's message
-                    msg         (:message result)
-                    block-next  (:next-key msg)
-                    block-prev  (:prev-sig msg)
-                    signer      (:signer result)
+                   msg         (:message result)
+                   block-next  (:next-key msg)
+                   block-prev  (:prev-sig msg)
+                   signer      (:signer result)
 
                     ;; Block 0: signer must be root authority
                     ;; Block N: signer must match previous block's next-key
-                    expected-signer (or prev-next-key root)
+                   expected-signer (or prev-next-key root)
 
                     ;; Check chain integrity
-                    sig-valid?   (:valid? result)
-                    signer-ok?   (= signer expected-signer)
-                    prev-sig-ok? (if prev-sig
+                   sig-valid?   (:valid? result)
+                   signer-ok?   (= signer expected-signer)
+                   prev-sig-ok? (if prev-sig
                                    ;; Compare prev-sig in this block with
                                    ;; actual signature of previous block
-                                   (java.util.Arrays/equals
-                                     ^bytes block-prev
-                                     ^bytes prev-sig)
+                                  (java.util.Arrays/equals
+                                   ^bytes block-prev
+                                   ^bytes prev-sig)
                                    ;; Block 0: prev-sig should be nil
-                                   (nil? block-prev))]
-                (cond
-                  (not sig-valid?)
-                  (assoc acc :error (str "Invalid signature on block " (count results)))
+                                  (nil? block-prev))]
+               (cond
+                 (not sig-valid?)
+                 (assoc acc :error (str "Invalid signature on block " (count results)))
 
-                  (not signer-ok?)
-                  (assoc acc :error (str "Signer mismatch on block " (count results)
+                 (not signer-ok?)
+                 (assoc acc :error (str "Signer mismatch on block " (count results)
                                         ": expected " expected-signer
                                         ", got " signer))
 
-                  (not prev-sig-ok?)
-                  (assoc acc :error (str "prev-sig mismatch on block " (count results)))
+                 (not prev-sig-ok?)
+                 (assoc acc :error (str "prev-sig mismatch on block " (count results)))
 
-                  :else
+                 :else
                   ;; Check external signature if this is a third-party block
-                  (let [ext-sig (:external-sig msg)
-                        ext-ok? (if ext-sig
-                                  #?(:clj
-                                     (let [ext-pub (key/kid->public-key (:external-key msg))
-                                           ext-payload {:data     (:data msg)
-                                                        :prev-sig prev-sig}
-                                           ext-canonical (cedn/canonical-bytes ext-payload)]
-                                       (sign/verify ext-pub ext-canonical ext-sig))
-                                     :cljs false)
-                                  true)]
-                    (if-not ext-ok?
-                      (assoc acc :error (str "External signature invalid on block " (count results)))
-                      {:results       (conj results result)
-                       :prev-sig      (:signature block)
-                       :prev-next-key block-next
-                       :error         nil}))))))
-          {:results [] :prev-sig nil :prev-next-key nil :error nil}
-          blocks)
+                 (let [ext-sig (:external-sig msg)
+                       ext-ok? (if ext-sig
+                                 #?(:clj
+                                    (let [ext-pub (key/kid->public-key (:external-key msg))
+                                          ext-payload {:data     (:data msg)
+                                                       :prev-sig prev-sig}
+                                          ext-canonical (cedn/canonical-bytes ext-payload)]
+                                      (sign/verify ext-pub ext-canonical ext-sig))
+                                    :cljs false)
+                                 true)]
+                   (if-not ext-ok?
+                     (assoc acc :error (str "External signature invalid on block " (count results)))
+                     {:results       (conj results result)
+                      :prev-sig      (:signature block)
+                      :prev-next-key block-next
+                      :error         nil}))))))
+         {:results [] :prev-sig nil :prev-next-key nil :error nil}
+         blocks)
 
         ;; If blocks verified, check the proof (seal or open)
         proof-valid?
@@ -464,8 +463,8 @@
               #?(:clj
                  (let [derived-pub (jvm/ed25519-seed->public-key (:proof token))]
                    (java.util.Arrays/equals
-                     ^bytes (:x last-pub)
-                     ^bytes derived-pub))
+                    ^bytes (:x last-pub)
+                    ^bytes derived-pub))
                  :cljs false))))]
 
     (if-let [error (:error block-results)]
