@@ -92,14 +92,18 @@
       (is (> (:expires result) (:timestamp result)))
       (is (< (- (:expires result) (:timestamp result) 3600000) 100))))
 
-  (testing "expired envelope is flagged"
+  (testing "expired envelope is flagged and not valid"
     (let [kp (key/signing-keypair)
           ;; TTL of 0 seconds = already expired
           envelope (sign/sign-edn kp {:msg "old"} {:ttl 0})]
       (Thread/sleep 10)
       (let [result (sign/verify-edn envelope)]
-        (is (:valid? result))
-        (is (:expired? result))))))
+        ;; Since the trust fixes, expiry counts toward :valid?; the raw
+        ;; signature check is reported separately.
+        (is (:signature-valid? result))
+        (is (:expired? result))
+        (is (false? (:valid? result)))
+        (is (= :expired (:error result)))))))
 
 (deftest sign-edn-tamper-test
   (testing "tampered message fails verification"

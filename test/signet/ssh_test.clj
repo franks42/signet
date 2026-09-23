@@ -99,4 +99,4 @@
     (let [pub-from-file (ssh/read-public-key (slurp (str test-priv-path ".pub")))
           kp-from-priv  (ssh/read-private-key (slurp test-priv-path))]
       (is (java.util.Arrays/equals ^bytes (:x pub-from-file)
-                                    ^bytes (:x kp-from-priv))))))
+                                   ^bytes (:x kp-from-priv))))))

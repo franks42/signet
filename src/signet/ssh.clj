@@ -8,7 +8,6 @@
 
    No external dependencies — just byte manipulation and base64."
   (:require [signet.key :as key]
-            [signet.impl.jvm :as jvm]
             [clojure.string :as str]))
 
 ;; ---------------------------------------------------------------------------

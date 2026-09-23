@@ -98,10 +98,12 @@
           alice    (key/encryption-keypair)
           bob      (key/encryption-keypair)
           msg      (.getBytes "hello bb signet" "UTF-8")
-          ct       (box alice bob msg)
-          pt       (unbox bob alice ct)]
-      (is (java.util.Arrays/equals msg pt))
-      (is (thrown? Exception (unbox bob alice (byte-array 5)))))))
+          boxed    (box alice bob msg)
+          r        (unbox bob boxed)]
+      (is (:valid? r))
+      (is (java.util.Arrays/equals msg ^bytes (:plaintext r)))
+      (is (false? (:valid? (unbox bob (byte-array 5))))
+          "malformed input is invalid, never a throw"))))
 
 ;; -- secp256k1 not-available smoke test --
 ;; secp256k1 is JVM/BouncyCastle-backed and not loadable on bb. Confirm

@@ -36,7 +36,7 @@
    `encrypted-payload` is ChaCha20-Poly1305 ciphertext-with-tag (16-byte
    tag at end). Empty payloads are valid; the tag is still 16 bytes."
   (:require [signet.key :as key]
-            #?(:clj [signet.impl.jvm :as jvm])))
+            #?(:clj [signet.impl :as impl])))
 
 ;; ============================================================
 ;; Constants — protocol name and pattern fixed at compile time
@@ -71,8 +71,51 @@
 ;; ============================================================
 
 #?(:clj
+   (defn- wipe!
+     "Overwrite a secret byte array with zeros once its purpose has ended.
+      Impure: mutates the array in place."
+     [bs]
+     (when bs (java.util.Arrays/fill ^bytes bs (byte 0)))))
+
+#?(:clj
+   (defn- fresh-marker
+     "A one-shot marker for a session state value. Every state
+      write-message / read-message returns gets a fresh one."
+     []
+     ;; A Clojure atom, not AtomicBoolean: bb does not expose the latter,
+     ;; and compare-and-set! is an atomic CAS on both platforms.
+     (atom false)))
+
+#?(:clj
+   (defn- consume!
+     "Run op (which returns [next-state output]) on state, then mark state
+      consumed; return [next-state-with-fresh-marker output].
+
+      A state is single-use: using a consumed state again throws
+      ::stale-session-state. Reusing a sending state would reuse its AEAD
+      nonce (plaintext XOR leak, forgeries); reusing a receiving state
+      would accept a replay. The marker is set only after op succeeds, so
+      a failed read (forged or tampered message) leaves the state usable.
+      Under a race, compare-and-set lets exactly one caller win; the
+      losers' outputs are discarded, never returned. Impure: mutates the
+      marker of the state passed in."
+     [state op]
+     (let [m (:consumed state)]
+       (when-not (instance? clojure.lang.Atom m)
+         (throw (ex-info "Not a signet session state (missing single-use marker)"
+                         {:type ::not-a-session-state})))
+       (when @m
+         (throw (ex-info "Stale session state: it was already used. Use the state returned by the previous write-message/read-message"
+                         {:type ::stale-session-state})))
+       (let [[next-state out] (op)]
+         (when-not (compare-and-set! m false true)
+           (throw (ex-info "Stale session state: another call consumed it first"
+                           {:type ::stale-session-state})))
+         [(assoc next-state :consumed (fresh-marker)) out]))))
+
+#?(:clj
    (defn- sha-256-bytes [^bytes data]
-     (jvm/sha-256 data)))
+     (impl/sha-256 data)))
 
 #?(:clj
    (defn- mix-hash
@@ -91,11 +134,15 @@
      "Fold a DH output (or other ikm) into the chaining key and update
       the AEAD key. HKDF-Extract-then-Expand with the chaining key as
       salt: first 32 output bytes become new ck; last 32 become new k.
-      Resets the nonce counter to zero."
+      Resets the nonce counter to zero.
+      Consumes ikm: it is a DH output, used once, so it is wiped here, as
+      is the HKDF scratch buffer. Impure in that sense."
      [{:keys [ck] :as state} ^bytes ikm]
-     (let [out  (jvm/hkdf-sha-256 ikm ck (byte-array 0) 64)
+     (let [out  (impl/hkdf-sha-256 ikm ck (byte-array 0) 64)
            ck'  (java.util.Arrays/copyOfRange out 0 32)
            k'   (java.util.Arrays/copyOfRange out 32 64)]
+       (wipe! ikm)
+       (wipe! out)
        (assoc state :ck ck' :k k' :n 0))))
 
 #?(:clj
@@ -118,7 +165,7 @@
       [new-state ciphertext-bytes]."
      [{:keys [k n h] :as state} ^bytes plaintext]
      (if k
-       (let [ct       (jvm/chacha20-poly1305-encrypt k (aead-nonce n) plaintext h)
+       (let [ct       (impl/chacha20-poly1305-encrypt k (aead-nonce n) plaintext h)
              state'   (-> state (assoc :n (inc n)) (mix-hash ct))]
          [state' ct])
        (let [state' (mix-hash state plaintext)]
@@ -133,7 +180,7 @@
       compute the same h regardless of who decrypted."
      [{:keys [k n h] :as state} ^bytes ciphertext]
      (if k
-       (let [pt     (jvm/chacha20-poly1305-decrypt k (aead-nonce n) ciphertext h)
+       (let [pt     (impl/chacha20-poly1305-decrypt k (aead-nonce n) ciphertext h)
              state' (-> state (assoc :n (inc n)) (mix-hash ciphertext))]
          [state' pt])
        (let [state' (mix-hash state ciphertext)]
@@ -147,13 +194,21 @@
       symmetric state (ck, k, n, h) is no longer needed — only the two
       32-byte transport keys remain, each with its own monotonic
       nonce counter."
-     [{:keys [ck role]}]
-     (let [out (jvm/hkdf-sha-256 (byte-array 0) ck (byte-array 0) 64)
+     [{:keys [ck k role local-ephemeral-kp]}]
+     (let [out (impl/hkdf-sha-256 (byte-array 0) ck (byte-array 0) 64)
            t1  (java.util.Arrays/copyOfRange out 0 32)
            t2  (java.util.Arrays/copyOfRange out 32 64)
            [send recv] (case role
                          :initiator [t1 t2]
                          :responder [t2 t1])]
+       ;; Forward secrecy: the ephemeral private key and the handshake
+       ;; secrets have done their job. Wipe them; only the two transport
+       ;; keys survive. (This mutates the consumed handshake state, which
+       ;; must not be reused anyway.)
+       (wipe! (:d local-ephemeral-kp))
+       (wipe! ck)
+       (wipe! k)
+       (wipe! out)
        {:phase :transport
         :role  role
         :send  {:k send :n 0}
@@ -165,19 +220,82 @@
 ;; ============================================================
 
 #?(:clj
+   (do
+     ;; Ephemeral keys are their own types, so code can tell them apart
+     ;; from identity keys: dh/edh check them, and signet.key/register!
+     ;; refuses them. Private to this namespace.
+     (defrecord EphemeralKeyPair [type crv x d])
+     (defrecord EphemeralPublicKey [type crv x])))
+
+#?(:clj
+   (def ^:private ephemeral-types
+     #{:signet/ephemeral-x25519-keypair :signet/ephemeral-x25519-public-key}))
+
+#?(:clj
+   (defn- ephemeral? [k] (contains? ephemeral-types (:type k))))
+
+#?(:clj
    (defn- ->x25519-public-bytes
-     "Extract the 32-byte X25519 public key from any signet key
-      record. Ed25519 records are auto-converted via signet.key."
+     "Extract the 32-byte X25519 public key from any signet key record.
+      X25519 records (including ephemerals) are used as-is; only static
+      Ed25519 identity keys go through signet.key's conversion."
      [k]
-     (:x (key/encryption-public-key k))))
+     (case (:type k)
+       (:signet/x25519-public-key :signet/x25519-keypair
+                                  :signet/ephemeral-x25519-keypair :signet/ephemeral-x25519-public-key) (:x k)
+       (:x (key/encryption-public-key k)))))
+
+#?(:clj
+   (defn- ->x25519-private-bytes
+     "The 32-byte X25519 private key of an X25519 keypair (ephemeral or
+      static) or, via conversion, of a static Ed25519 identity keypair."
+     [k]
+     (case (:type k)
+       (:signet/x25519-keypair :signet/ephemeral-x25519-keypair) (:d k)
+       (:d (key/encryption-private-key k)))))
+
+#?(:clj
+   (defn- fresh-ephemeral
+     "A new X25519 ephemeral keypair, straight from the backend. Never
+      registered anywhere; lives only in handshake state and is wiped at
+      Split. Callers of the public API never see it."
+     []
+     (let [[pub priv] (impl/generate-x25519-keypair)]
+       (->EphemeralKeyPair :signet/ephemeral-x25519-keypair :X25519 pub priv))))
+
+#?(:clj
+   (defn- x25519-dh*
+     "The raw X25519 computation behind dh and edh, by the backend
+      directly: nothing is registered anywhere. Static Ed25519 identity
+      keys are converted to X25519 first."
+     [local-kp remote-pub]
+     (impl/x25519-dh (->x25519-private-bytes local-kp)
+                     (->x25519-public-bytes remote-pub))))
 
 #?(:clj
    (defn- dh
-     "DH(local-priv, remote-pub) returning the 32-byte shared secret.
-      Both inputs may be Ed25519 records — signet.key handles the
-      X25519 conversion under the hood."
+     "Static-static DH — Noise token ss. Returns the 32-byte shared
+      secret, which mix-key consumes and wipes. Never registers keys.
+      Throws ::ephemeral-in-dh if either side is ephemeral: that is edh's
+      job, and mixing them up must fail loudly, not silently."
+     [local-static-kp remote-static-pub]
+     (when (or (ephemeral? local-static-kp) (ephemeral? remote-static-pub))
+       (throw (ex-info "dh is for static keys only (Noise ss); use edh for es/ee/se"
+                       {:type ::ephemeral-in-dh})))
+     (x25519-dh* local-static-kp remote-static-pub)))
+
+#?(:clj
+   (defn- edh
+     "Ephemeral DH — Noise tokens es, ee, se: at least one side is an
+      ephemeral key. Never registers keys; the output is consumed and
+      wiped by mix-key, and the local ephemeral private key is wiped at
+      Split. Ephemerals never leave this namespace. Throws
+      ::no-ephemeral-in-edh if neither side is ephemeral (that is dh)."
      [local-kp remote-pub]
-     (:k (key/raw-shared-secret local-kp remote-pub))))
+     (when-not (or (ephemeral? local-kp) (ephemeral? remote-pub))
+       (throw (ex-info "edh needs an ephemeral key on at least one side (Noise es/ee/se); use dh for ss"
+                       {:type ::no-ephemeral-in-edh})))
+     (x25519-dh* local-kp remote-pub)))
 
 ;; ============================================================
 ;; Initial state construction (Noise spec §5.3 init steps)
@@ -221,6 +339,7 @@
        (-> (initial-symmetric-state)
            (assoc :phase             :handshake
                   :role              role
+                  :consumed          (fresh-marker)
                   :pos               0
                   :local-static-kp   local-static-kp
                   :remote-static-pub remote-static-pub
@@ -292,12 +411,12 @@
       - EncryptAndHash(payload). After 'es' the AEAD key exists,
         so the payload is now encrypted under the chained ck."
      [{:keys [local-static-kp remote-static-pub] :as state} payload]
-     (let [eph-kp     (key/encryption-keypair)
+     (let [eph-kp     (fresh-ephemeral)
            eph-pub-bs (:x eph-kp)
            state      (-> state
                           (assoc :local-ephemeral-kp eph-kp)
                           (mix-hash eph-pub-bs)                                       ; "e"
-                          (mix-key (dh eph-kp remote-static-pub))                     ; "es"
+                          (mix-key (edh eph-kp remote-static-pub))                    ; "es"
                           (mix-key (dh local-static-kp remote-static-pub)))           ; "ss"
            [state ct] (encrypt-and-hash state (or payload (byte-array 0)))
            buf        (byte-array (+ 32 (alength ^bytes ct)))]
@@ -319,13 +438,12 @@
                         :length (alength msg)
                         :min    48})))
      (let [eph-pub-bs (java.util.Arrays/copyOfRange msg 0 32)
-           remote-eph (key/encryption-public-key
-                       {:type :signet/x25519-public-key :crv :X25519 :x eph-pub-bs})
+           remote-eph (->EphemeralPublicKey :signet/ephemeral-x25519-public-key :X25519 eph-pub-bs)
            ct         (java.util.Arrays/copyOfRange msg 32 (alength msg))
            state      (-> state
                           (assoc :remote-ephemeral-pub remote-eph)
                           (mix-hash eph-pub-bs)                                  ; "e"
-                          (mix-key (dh local-static-kp remote-eph))              ; "es"
+                          (mix-key (edh local-static-kp remote-eph))             ; "es"
                           (mix-key (dh local-static-kp remote-static-pub)))      ; "ss"
            [state pt] (decrypt-and-hash state ct)]
        [(assoc state :pos 1) pt])))
@@ -352,13 +470,13 @@
         static, not the local sender's.
       - EncryptAndHash(payload). After both DHs, Split into transport."
      [{:keys [remote-static-pub remote-ephemeral-pub] :as state} payload]
-     (let [eph-kp     (key/encryption-keypair)
+     (let [eph-kp     (fresh-ephemeral)
            eph-pub-bs (:x eph-kp)
            state      (-> state
                           (assoc :local-ephemeral-kp eph-kp)
                           (mix-hash eph-pub-bs)                                  ; "e"
-                          (mix-key (dh eph-kp remote-ephemeral-pub))             ; "ee"
-                          (mix-key (dh eph-kp remote-static-pub)))               ; "se"
+                          (mix-key (edh eph-kp remote-ephemeral-pub))            ; "ee"
+                          (mix-key (edh eph-kp remote-static-pub)))              ; "se"
            [state ct] (encrypt-and-hash state (or payload (byte-array 0)))
            buf        (byte-array (+ 32 (alength ^bytes ct)))]
        (System/arraycopy eph-pub-bs 0 buf 0 32)
@@ -379,14 +497,13 @@
                         :length (alength msg)
                         :min    48})))
      (let [eph-pub-bs (java.util.Arrays/copyOfRange msg 0 32)
-           remote-eph (key/encryption-public-key
-                       {:type :signet/x25519-public-key :crv :X25519 :x eph-pub-bs})
+           remote-eph (->EphemeralPublicKey :signet/ephemeral-x25519-public-key :X25519 eph-pub-bs)
            ct         (java.util.Arrays/copyOfRange msg 32 (alength msg))
            state      (-> state
                           (assoc :remote-ephemeral-pub remote-eph)
                           (mix-hash eph-pub-bs)                                  ; "e"
-                          (mix-key (dh local-ephemeral-kp remote-eph))           ; "ee"
-                          (mix-key (dh local-static-kp remote-eph)))             ; "se"
+                          (mix-key (edh local-ephemeral-kp remote-eph))          ; "ee"
+                          (mix-key (edh local-static-kp remote-eph)))            ; "se"
            [state pt] (decrypt-and-hash state ct)]
        [(split state) pt])))
 
@@ -396,7 +513,7 @@
       counter increments; no transcript hash is involved post-Split."
      [{:keys [send] :as state} ^bytes plaintext]
      (let [{:keys [k n]} send
-           ct (jvm/chacha20-poly1305-encrypt k (aead-nonce n) plaintext nil)]
+           ct (impl/chacha20-poly1305-encrypt k (aead-nonce n) plaintext nil)]
        [(assoc-in state [:send :n] (inc n)) ct])))
 
 #?(:clj
@@ -404,11 +521,11 @@
      "Inverse of write-message-transport. Throws on AEAD auth failure."
      [{:keys [recv] :as state} ^bytes ciphertext]
      (let [{:keys [k n]} recv
-           pt (jvm/chacha20-poly1305-decrypt k (aead-nonce n) ciphertext nil)]
+           pt (impl/chacha20-poly1305-decrypt k (aead-nonce n) ciphertext nil)]
        [(assoc-in state [:recv :n] (inc n)) pt])))
 
 #?(:clj
-   (defn write-message
+   (defn- write-message*
      "Produce one outbound Noise message. During handshake the message
       includes the local ephemeral pub plus an AEAD-tagged payload;
       after Split, transport messages are pure AEAD ciphertext.
@@ -436,7 +553,7 @@
                         :phase  phase :role role :pos pos})))))
 
 #?(:clj
-   (defn read-message
+   (defn- read-message*
      "Process one inbound Noise message. Inverse of write-message.
       Throws on AEAD authentication failure (tampered ciphertext,
       wrong peer, wrong shared key) or wrong message phase."
@@ -455,3 +572,32 @@
        (throw (ex-info "Noise session: read-message in wrong phase"
                        {:reason :reason/wrong-message-phase
                         :phase  phase :role role :pos pos})))))
+
+#?(:clj
+   (defn write-message
+     "Produce one outbound Noise message: returns [next-state ciphertext].
+
+      Impure — consumes `state`: each state value is single-use. Always
+      continue with the returned next-state. Writing again from a state
+      already used throws ::stale-session-state instead of reusing its
+      nonce (see consume!). Throws if the state is not currently
+      expecting an outbound message.
+
+      `plaintext` — application payload bytes. Empty (or nil) is fine.
+      During the handshake the message carries the local ephemeral public
+      key plus an AEAD-tagged payload; after Split, transport messages are
+      pure AEAD ciphertext."
+     [state plaintext]
+     (consume! state #(write-message* state plaintext))))
+
+#?(:clj
+   (defn read-message
+     "Process one inbound Noise message: returns [next-state plaintext].
+
+      Impure — a successful read consumes `state` (single-use, like
+      write-message): reading again from it throws ::stale-session-state,
+      which also refuses a replayed ciphertext. A failed read (tampered or
+      forged message, wrong peer, wrong phase) throws and leaves `state`
+      usable for the genuine message."
+     [state ciphertext]
+     (consume! state #(read-message* state ciphertext))))

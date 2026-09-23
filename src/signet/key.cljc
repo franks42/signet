@@ -31,7 +31,7 @@
      (encryption-keypair? k) (encryption-public-key? k) (encryption-private-key? k)"
   (:require [clojure.string :as str]
             [signet.encoding :as enc]
-            #?(:clj [signet.impl.jvm :as jvm])))
+            #?(:clj [signet.impl :as impl])))
 
 ;; -- Records
 
@@ -171,12 +171,16 @@
    multiplication directly); such keys register without a kid."
   ([k] (register! default-key-store k))
   ([store k]
+   ;; Ephemeral keys (signet.session) must never be kept: refuse loudly
+   ;; rather than silently ignoring them like other unknown types.
+   (when (#{:signet/ephemeral-x25519-keypair :signet/ephemeral-x25519-public-key} (:type k))
+     (throw (ex-info "Ephemeral keys must never be registered" {:type ::ephemeral-key})))
    (when (and k (:type k) (known-key-types (:type k)))
      (let [;; Need public key bytes for kid — may need derivation for private-only keys
            x-bytes (or (:x k)
                        #?(:clj (case (:type k)
-                                 :signet/ed25519-private-key   (jvm/ed25519-seed->public-key (:d k))
-                                 :signet/x25519-private-key    (jvm/x25519-private->public-key (:d k))
+                                 :signet/ed25519-private-key   (impl/ed25519-seed->public-key (:d k))
+                                 :signet/x25519-private-key    (impl/x25519-private->public-key (:d k))
                                  :signet/secp256k1-private-key nil ; TODO: requires EC point mul
                                  nil)
                           :cljs nil))
@@ -194,27 +198,34 @@
    (auto-set-default! k)
    k))
 
+(defn- parse-kid
+  "The public key record a self-describing kid URN names, or nil for
+   anything malformed (unknown algorithm, bad base64, wrong length).
+   Pure; never throws, never touches the store."
+  [kid-str]
+  (when (and (string? kid-str) (str/starts-with? kid-str "urn:signet:pk:"))
+    (let [[_ _ _ alg b64 & more] (str/split kid-str #":")
+          x (when (and b64 (empty? more))
+              (try (enc/base64url->bytes b64) (catch #?(:clj Exception :cljs :default) _ nil)))]
+      (when x
+        (case [alg (alength ^bytes x)]
+          ["ed25519" 32]   (->Ed25519PublicKey :signet/ed25519-public-key :Ed25519 x)
+          ["x25519" 32]    (->X25519PublicKey :signet/x25519-public-key :X25519 x)
+          ["secp256k1" 33] (->Secp256k1PublicKey :signet/secp256k1-public-key :secp256k1 x) ; compressed point
+          nil)))))
+
 (defn lookup
-  "Look up a key by kid URN string. Returns the best key record or nil.
-   If not found in the store but the URN contains the public key,
-   parses it and auto-registers."
+  "Look up a key by kid URN string. Returns the best registered key record,
+   else the public key the self-describing URN names, else nil.
+
+   Never registers anything: the store holds only keys the caller put
+   there deliberately. Parsing a kid from an untrusted envelope must not
+   grow the verifier's memory. A parsed key is not a trusted key; see
+   signet.sign/verify-edn's :signer option."
   ([kid-str] (lookup default-key-store kid-str))
   ([store kid-str]
    (or (get @store kid-str)
-       ;; URN is self-describing — extract public key if not in store
-       (when (and (string? kid-str) (.startsWith ^String kid-str "urn:signet:pk:"))
-         (let [[_ _ _ alg b64] (str/split kid-str #":")
-               pub (case alg
-                     "ed25519"   (->Ed25519PublicKey :signet/ed25519-public-key :Ed25519
-                                                     (enc/base64url->bytes b64))
-                     "x25519"    (->X25519PublicKey :signet/x25519-public-key :X25519
-                                                    (enc/base64url->bytes b64))
-                     "secp256k1" (->Secp256k1PublicKey :signet/secp256k1-public-key :secp256k1
-                                                       (enc/base64url->bytes b64))
-                     nil)]
-           (when pub
-             (register! store pub)
-             pub))))))
+       (parse-kid kid-str))))
 
 (defn registered-keys
   "Return all registered keys as a seq."
@@ -305,12 +316,12 @@
 ;; -- Ed25519 (default curve)
 
 (defmethod -signing-keypair [:generate] [& _]
-  #?(:clj  (let [[pub-bytes seed-bytes] (jvm/generate-ed25519-keypair)]
+  #?(:clj  (let [[pub-bytes seed-bytes] (impl/generate-ed25519-keypair)]
              (->Ed25519KeyPair :signet/ed25519-keypair :Ed25519 pub-bytes seed-bytes))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
 (defmethod -signing-keypair [:generate :Ed25519] [& _]
-  #?(:clj  (let [[pub-bytes seed-bytes] (jvm/generate-ed25519-keypair)]
+  #?(:clj  (let [[pub-bytes seed-bytes] (impl/generate-ed25519-keypair)]
              (->Ed25519KeyPair :signet/ed25519-keypair :Ed25519 pub-bytes seed-bytes))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -325,7 +336,7 @@
 
 (defmethod -signing-keypair [:map :signet/ed25519-private-key] [& [m]]
   #?(:clj  (let [d (:d m)
-                 x (jvm/ed25519-seed->public-key d)]
+                 x (impl/ed25519-seed->public-key d)]
              (->Ed25519KeyPair :signet/ed25519-keypair :Ed25519 x d))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -384,7 +395,7 @@
   ([x d] (register! (-encryption-keypair x d))))
 
 (defmethod -encryption-keypair [:generate] [& _]
-  #?(:clj  (let [[pub-bytes priv-bytes] (jvm/generate-x25519-keypair)]
+  #?(:clj  (let [[pub-bytes priv-bytes] (impl/generate-x25519-keypair)]
              (->X25519KeyPair :signet/x25519-keypair :X25519 pub-bytes priv-bytes))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -396,7 +407,7 @@
 
 (defmethod -encryption-keypair [:map :signet/x25519-private-key] [& [m]]
   #?(:clj  (let [d (:d m)
-                 x (jvm/x25519-private->public-key d)]
+                 x (impl/x25519-private->public-key d)]
              (->X25519KeyPair :signet/x25519-keypair :X25519 x d))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -405,13 +416,13 @@
 ;; Private key: SHA-512(seed)[0..31] with clamping
 
 (defmethod -encryption-keypair [:map :signet/ed25519-keypair] [& [m]]
-  #?(:clj  (let [[x-pub x-priv] (jvm/ed25519-keypair->x25519-keypair (:x m) (:d m))]
+  #?(:clj  (let [[x-pub x-priv] (impl/ed25519-keypair->x25519-keypair (:x m) (:d m))]
              (->X25519KeyPair :signet/x25519-keypair :X25519 x-pub x-priv))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
 (defmethod -encryption-keypair [:map :signet/ed25519-private-key] [& [m]]
-  #?(:clj  (let [x-priv (jvm/ed25519-seed->x25519-private (:d m))
-                 x-pub (jvm/x25519-private->public-key x-priv)]
+  #?(:clj  (let [x-priv (impl/ed25519-seed->x25519-private (:d m))
+                 x-pub (impl/x25519-private->public-key x-priv)]
              (->X25519KeyPair :signet/x25519-keypair :X25519 x-pub x-priv))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -432,7 +443,7 @@
 (defmethod -signing-public-key :signet/ed25519-public-key [k] k)
 
 (defmethod -signing-public-key :signet/ed25519-private-key [k]
-  #?(:clj  (let [x (jvm/ed25519-seed->public-key (:d k))]
+  #?(:clj  (let [x (impl/ed25519-seed->public-key (:d k))]
              (->Ed25519PublicKey :signet/ed25519-public-key :Ed25519 x))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -484,7 +495,7 @@
 (defmethod -encryption-public-key :signet/x25519-public-key [k] k)
 
 (defmethod -encryption-public-key :signet/x25519-private-key [k]
-  #?(:clj  (let [x (jvm/x25519-private->public-key (:d k))]
+  #?(:clj  (let [x (impl/x25519-private->public-key (:d k))]
              (->X25519PublicKey :signet/x25519-public-key :X25519 x))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -492,17 +503,17 @@
 
 (defmethod -encryption-public-key :signet/ed25519-keypair [kp]
   #?(:clj  (->X25519PublicKey :signet/x25519-public-key :X25519
-                              (jvm/ed25519-pub->x25519-pub (:x kp)))
+                              (impl/ed25519-pub->x25519-pub (:x kp)))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
 (defmethod -encryption-public-key :signet/ed25519-public-key [k]
   #?(:clj  (->X25519PublicKey :signet/x25519-public-key :X25519
-                              (jvm/ed25519-pub->x25519-pub (:x k)))
+                              (impl/ed25519-pub->x25519-pub (:x k)))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
 (defmethod -encryption-public-key :signet/ed25519-private-key [k]
-  #?(:clj  (let [x-priv (jvm/ed25519-seed->x25519-private (:d k))
-                 x-pub (jvm/x25519-private->public-key x-priv)]
+  #?(:clj  (let [x-priv (impl/ed25519-seed->x25519-private (:d k))
+                 x-pub (impl/x25519-private->public-key x-priv)]
              (->X25519PublicKey :signet/x25519-public-key :X25519 x-pub))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -527,12 +538,12 @@
 
 (defmethod -encryption-private-key :signet/ed25519-keypair [kp]
   #?(:clj  (->X25519PrivateKey :signet/x25519-private-key :X25519
-                               (jvm/ed25519-seed->x25519-private (:d kp)))
+                               (impl/ed25519-seed->x25519-private (:d kp)))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
 (defmethod -encryption-private-key :signet/ed25519-private-key [k]
   #?(:clj  (->X25519PrivateKey :signet/x25519-private-key :X25519
-                               (jvm/ed25519-seed->x25519-private (:d k)))
+                               (impl/ed25519-seed->x25519-private (:d k)))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
 ;; ============================================================
@@ -561,12 +572,36 @@
 ;; kid — key identifier
 ;; ============================================================
 
+(defn as-public-key
+  "The public key record for any key (keypair, private-only or public).
+   Pure: unlike public-key / signing-public-key, it never registers
+   anything in the key store."
+  [k]
+  (case (:crv k)
+    (:Ed25519 :secp256k1) (if (signing-public-key? k) k (-signing-public-key k))
+    :X25519               (if (encryption-public-key? k) k (-encryption-public-key k))))
+
+(defn as-encryption-public-key
+  "The X25519 public key record for any key: X25519 as-is, Ed25519 via the
+   birational map. Pure: never registers anything (unlike
+   encryption-public-key)."
+  [k]
+  (if (encryption-public-key? k) k (-encryption-public-key k)))
+
+(defn as-encryption-private-key
+  "The X25519 private key record for any key holding a private part: X25519
+   as-is, Ed25519 via SHA-512 + clamping. Pure: never registers anything
+   (unlike encryption-private-key)."
+  [k]
+  (if (encryption-private-key? k) k (-encryption-private-key k)))
+
 (defn kid
   "Return the key identifier as a URN: urn:signet:pk:<algorithm>:<base64url-public-key>.
    Self-describing — the receiver can parse the URN to extract the algorithm
-   and the public key bytes directly."
+   and the public key bytes directly. Pure: computing a kid never registers
+   the key (so kids of ephemeral keys leave no trace in the store)."
   [k]
-  (let [pub (public-key k)]
+  (let [pub (as-public-key k)]
     (str "urn:signet:pk:" (urn-algorithm (:crv pub)) ":" (enc/bytes->base64url (:x pub)))))
 
 (defn kid->public-key
@@ -625,7 +660,7 @@
 (defn- do-raw-shared-secret
   "Perform DH given X25519 private bytes, X25519 public bytes, and both kids."
   [our-priv their-pub kid-a kid-b]
-  #?(:clj  (let [k (jvm/x25519-dh our-priv their-pub)]
+  #?(:clj  (let [k (impl/x25519-dh our-priv their-pub)]
              (->X25519SharedKey :signet/x25519-shared-secret :X25519 k kid-a kid-b))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 

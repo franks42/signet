@@ -23,7 +23,7 @@
   (:require [cedn.core :as cedn]
             [com.github.franks42.uuidv7.core :as uuidv7]
             [signet.key :as key]
-            #?(:clj [signet.impl.jvm :as jvm])))
+            #?(:clj [signet.impl :as impl])))
 
 ;; ============================================================
 ;; Low-level: raw bytes — dispatch on (:crv k)
@@ -53,7 +53,7 @@
       (throw (ex-info "Key has no private bytes (:d)" {:type (:type k)})))
     (case (:crv k)
       :Ed25519
-      #?(:clj  (jvm/ed25519-sign d message-bytes)
+      #?(:clj  (impl/ed25519-sign d message-bytes)
          :cljs (throw (js/Error. "Not yet implemented for ClojureScript")))
 
       :secp256k1
@@ -68,11 +68,11 @@
    For secp256k1, the signature may be raw 64-byte r||s OR DER —
    auto-detected on input."
   [k message-bytes signature-bytes]
-  (let [pub (if (key/signing-public-key? k) k (key/signing-public-key k))
+  (let [pub (key/as-public-key k) ; pure: verifying never registers keys
         x (:x pub)]
     (case (:crv pub)
       :Ed25519
-      #?(:clj  (jvm/ed25519-verify x message-bytes signature-bytes)
+      #?(:clj  (impl/ed25519-verify x message-bytes signature-bytes)
          :cljs (throw (js/Error. "Not yet implemented for ClojureScript")))
 
       :secp256k1
@@ -127,40 +127,76 @@
   [x]
   (and (map? x) (= :signet/signed (:type x))))
 
+(defn- expected-kid?
+  "Does kid satisfy the caller's expectation: a kid string or a set of them?"
+  [expected kid]
+  (if (set? expected) (contains? expected kid) (= expected kid)))
+
 (defn verify-edn
-  "Verify a signed EDN envelope. Returns a result map:
-     :valid?          boolean — signature check passed
-     :message         the original payload
-     :signer          kid URN of the signer
-     :request-id      the UUIDv7
-     :timestamp       epoch-ms extracted from UUIDv7
-     :age-ms          milliseconds since signing
-     :expires         epoch-ms (if set)
-     :expired?        boolean (if :expires set)
-     :digest          SHA-256 of canonical envelope (unique per signer+time)
-     :message-digest  SHA-256 of canonical message (same across signers)"
-  [signed-envelope]
-  (let [{:keys [envelope signature]} signed-envelope
-        {:keys [message signer request-id expires]} envelope
-        ;; Look up signer's public key via kid URN
-        pub-key (key/lookup signer)
-        ;; Canonicalize and verify
-        canonical (cedn/canonical-bytes envelope)
-        valid? (and (some? pub-key)
-                    (verify pub-key canonical signature))
-        ;; Timestamps
-        ts (uuidv7/extract-ts request-id)
-        now #?(:clj  (System/currentTimeMillis)
-               :cljs (.getTime (js/Date.)))]
-    (cond-> {:valid?         valid?
-             :message        message
-             :signer         signer
-             :request-id     request-id
-             :timestamp      ts
-             :age-ms         (- now ts)
-             :digest         #?(:clj  (jvm/sha-256 canonical)
-                                :cljs nil)
-             :message-digest #?(:clj  (jvm/sha-256 (cedn/canonical-bytes message))
-                                :cljs nil)}
-      (some? expires) (assoc :expires expires
-                             :expired? (> now expires)))))
+  "Check a signed EDN envelope. Never throws: malformed input yields
+   {:valid? false :error <reason>}.
+
+   Terms (see also signet.chain/verify):
+     :valid?           well-formed, the signature checks out under the key
+                       named in :signer, and not expired. Self-consistency
+                       only — a stranger's envelope can be valid.
+     :verified?        present only when opts has :signer: valid AND the
+                       signer is the expected identity. With :signer given,
+                       :valid? also requires it.
+     authorization     whether that signer may do this — not signet's job
+                       (a policy decision point, e.g. stroopwafel's).
+
+   opts (optional):
+     :signer  expected signer: a kid URN string, or a set of acceptable kids
+     :now     epoch-ms to judge expiry against. Without it this function is
+              impure: it reads the system clock.
+
+   Result keys: :valid? :signature-valid? :verified? (with :signer)
+   :message :signer :request-id :timestamp :age-ms :expires :expired?
+   :digest (SHA-256 of canonical envelope, unique per signer+time)
+   :message-digest (SHA-256 of canonical message, same across signers)
+   :error (when not valid)."
+  ([signed-envelope] (verify-edn signed-envelope nil))
+  ([signed-envelope {expected :signer now :now}]
+   (let [invalid (fn [reason & [extra]] (merge {:valid? false :error reason} extra))
+         {:keys [envelope signature]} (when (map? signed-envelope) signed-envelope)
+         {:keys [message signer request-id expires]} (when (map? envelope) envelope)]
+     (cond
+       (not (map? envelope))            (invalid :malformed-envelope)
+       (not (bytes? signature))         (invalid :missing-signature)
+       (not (uuidv7/uuidv7? request-id)) (invalid :bad-request-id)
+       (and (some? expires) (not (int? expires))) (invalid :bad-expires)
+       :else
+       (let [pub-key   (key/lookup signer)
+             canonical (try (cedn/canonical-bytes envelope)
+                            (catch #?(:clj Exception :cljs :default) _ nil))]
+         (cond
+           (nil? pub-key)   (invalid :unknown-signer {:signer signer})
+           (nil? canonical) (invalid :not-canonicalizable {:signer signer})
+           :else
+           (let [sig-ok?  (boolean (try (verify pub-key canonical signature)
+                                        (catch #?(:clj Exception :cljs :default) _ false)))
+                 ts       (uuidv7/extract-ts request-id)
+                 now      (or now #?(:clj  (System/currentTimeMillis)
+                                     :cljs (.getTime (js/Date.))))
+                 expired? (and (some? expires) (> now expires))
+                 verified (when (some? expected)
+                            (and sig-ok? (not expired?) (expected-kid? expected signer)))
+                 valid?   (and sig-ok? (not expired?) (if (some? expected) verified true))]
+             (cond-> {:valid?           valid?
+                      :signature-valid? sig-ok?
+                      :message          message
+                      :signer           signer
+                      :request-id       request-id
+                      :timestamp        ts
+                      :age-ms           (- now ts)
+                      :digest           #?(:clj  (impl/sha-256 canonical)
+                                           :cljs nil)
+                      :message-digest   #?(:clj  (try (impl/sha-256 (cedn/canonical-bytes message))
+                                                      (catch Exception _ nil))
+                                           :cljs nil)}
+               (some? expected) (assoc :verified? verified)
+               (some? expires)  (assoc :expires expires :expired? expired?)
+               (not valid?)     (assoc :error (cond (not sig-ok?) :bad-signature
+                                                    expired?      :expired
+                                                    :else         :unexpected-signer))))))))))

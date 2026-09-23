@@ -1,5 +1,5 @@
-{:deps  {com.github.franks42/cedn    {:mvn/version "1.2.0"}
-         com.github.franks42/uuidv7  {:mvn/version "0.5.0"}}
+{:deps  {com.github.franks42/cedn    {:mvn/version "1.5.2"}
+         com.github.franks42/uuidv7  {:mvn/version "0.7.1"}}
 
  :paths ["src" "test"]
 
@@ -15,6 +15,39 @@
    :task (let [r (t/run-tests 'signet.bb-smoke-test)]
            (when (pos? (+ (:fail r 0) (:error r 0)))
              (System/exit 1)))}
+
+  test:jvm
+  {:doc  "Full test suite on the JVM, JCA backend (default)"
+   :task (shell "clojure" "-M:test")}
+
+  test:jvm-sodium
+  {:doc  "Full test suite on the JVM, libsodium backend (needs libsodium >= 1.0.19, JDK 25+, and the sodium.cljc snapshot: bb install in ../sodium.cljc)"
+   :task (do (shell "clojure" "-M:test:sodium")
+             (shell "clojure" "-Sdeps" "{:aliases {:t {:extra-paths [\"test\"]}}}"
+                    "-M:t:sodium" "-m" "signet.backend-parity" "sodium"))}
+
+  test:bb-sodium
+  {:doc  "Full test suite on babashka, libsodium backend (all but secp256k1)"
+   ;; A subprocess keeps this bb.edn's :paths and :deps; -cp would replace
+   ;; them. sodium.cljc comes from the local snapshot jar (bb install in
+   ;; ../sodium.cljc) via add-deps. Its pom's org.babashka/ffi dependency is
+   ;; ignored by bb, which always uses its built-in babashka.ffi. No parity
+   ;; run here: its JCA oracle cannot derive keys from seeds on bb.
+   :task (shell {:extra-env {"SIGNET_BACKEND" "sodium"}}
+                "bb" "-e" (str "(babashka.deps/add-deps '{:deps {com.github.franks42/sodium {:mvn/version \"0.1.0-SNAPSHOT\"}}})"
+                               "(require 'signet.suite) (signet.suite/-main \"sodium\")"))}
+
+  lint
+  {:doc  "clj-kondo on every Clojure file (config: :clj branch only, see .clj-kondo/config.edn)"
+   :task (shell "clj-kondo" "--lint" "src" "test" "build.clj" "bb.edn" "deps.edn")}
+
+  fmt
+  {:doc  "cljfmt check on every Clojure file"
+   :task (shell "cljfmt" "check" "src" "test" "build.clj" "bb.edn" "deps.edn")}
+
+  fmt:fix
+  {:doc  "cljfmt fix on every Clojure file"
+   :task (shell "cljfmt" "fix" "src" "test" "build.clj" "bb.edn" "deps.edn")}
 
   verify
   {:doc  "Verify an ECDSA / Ed25519 signature. secp256k1 verification
