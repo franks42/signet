@@ -140,11 +140,13 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   ephemeral key (the user's rule: "the creation and usage of nonces were
   hidden from the calling consumer"). `signet.impl*` are `^:no-doc`
   INTERNAL namespaces (raw AEAD with explicit nonces).
-- Open: finding 7 (`box` uses one key in both directions) plus box's random
-  96-bit nonces, safe to about 2^32 messages per key pair. Both point to a
-  "box v2": directional keys (e.g. crypto_kx) and XChaCha20-Poly1305
-  (192-bit nonces, libsodium only). It changes the wire format, so version
-  it.
+- **box v2 implemented** (finding 7 closed): an EDN map with optional
+  `:from`/`:to` kid slots (default on), an `:aad` slot (any EDN) and a
+  24-byte nonce. The key is HKDF(DH, salt = nonce, info = v2 ‖ sender_x ‖
+  recipient_x), so it is directional and unique per message. The
+  cedn-canonical header is the AAD. v1 was dropped (no reader or writer).
+  See `docs/06-box-v2-design.md` and `encryption_test.clj` (14 tests,
+  injection-checked).
 
 ## Testing, lint, format
 

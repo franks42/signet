@@ -1,110 +1,198 @@
 (ns signet.encryption
-  "Authenticated encryption between signet identities.
+  "box v2 — authenticated encryption between signet identities, as a
+   self-describing EDN value (design: docs/06-box-v2-design.md).
 
-   Layered on signet.key's X25519 Diffie–Hellman, with HKDF-SHA-256
-   key derivation and ChaCha20-Poly1305 AEAD. Bb-compatible (JCA only,
-   no BouncyCastle required for symmetric primitives).
+     (box   sender-kp recipient-pub plaintext)        → boxed (an EDN map)
+     (box   sender-kp recipient-pub plaintext opts)
+     (unbox recipient-kp-or-kps boxed)                → {:valid? … :plaintext …}
+     (unbox recipient-kp-or-kps boxed opts)
 
-   Two patterns:
+   The box carries what the receiver needs: a 24-byte nonce (always) and,
+   by default, the sender's and recipient's kids. The caller never sees
+   or supplies a nonce. Kids may be Ed25519 or X25519 (Ed25519 identities
+   are converted internally).
 
-     (box sender-kp recipient-pub plaintext)         → ciphertext
-     (unbox recipient-kp sender-pub ciphertext)      → plaintext
-       — sender-authenticated. Static-static X25519 DH between sender's
-         private and recipient's public. Either side can compute the
-         same shared secret; an attacker without sender's private key
-         cannot. Replay-protected only by the embedded random nonce —
-         use a session abstraction (or unique AAD per message) for
-         strong replay protection.
+     {:type :signet/box :v 2
+      :from \"urn:signet:pk:…\"  :to \"urn:signet:pk:…\"   ; optional, default on
+      :aad  <any EDN>                                    ; optional caller context
+      :nonce #bytes \"…\" :ct #bytes \"…\"}
 
-     (seal recipient-pub plaintext)                  → ciphertext
-     (unseal recipient-kp ciphertext)                → plaintext
-       — anonymous-sender (libsodium sealed-box style). Sender
-         generates a fresh ephemeral keypair; ephemeral pub is included
-         in the ciphertext envelope; recipient decrypts via their
-         static private key + the embedded ephemeral pub. (Coming in
-         a future version; stubbed for now.)
+   Keys are directional and unique per message:
+     k = HKDF-SHA-256(X25519(sender, recipient), salt = nonce,
+                      info = \"signet/box/v2\" ‖ sender_x25519 ‖ recipient_x25519)
+   and the whole header (every field but :ct, cedn-canonical) is the AEAD's
+   associated data. So a box cannot be reflected back to its sender, and no
+   slot can be swapped, added or removed. Omitted kids are still bound
+   through info.
 
-   Wire format for box:
-     12-byte nonce || ChaCha20-Poly1305(key=HKDF(dh,info), nonce, pt, aad)
-
-   The HKDF info field is set to a fixed protocol tag
-   (\"signet/box/v1\") so future versions can be distinguished without
-   key collision. AAD (additional authenticated data) is supported
-   via opts {:aad <bytes>} and authenticated alongside the plaintext."
-  (:require [signet.key :as key]
+   Slots are hints, not credentials. unbox reports :valid? (decrypts and
+   authenticates). With {:from expected-kid-or-set} it also reports
+   :verified? (the sender is who you expected), and :valid? then requires
+   it. Whether that sender may do anything is policy: not box's job.
+   unbox never throws on malformed input."
+  (:require [cedn.core :as cedn]
+            [signet.key :as key]
             #?(:clj [signet.impl :as impl])))
 
-(def ^:private ^String box-info-v1 "signet/box/v1")
-
 #?(:clj
-   (defn- info-bytes [^String s]
-     (.getBytes s "UTF-8")))
+   (do
+     (def ^:private ^"[B" info-prefix (.getBytes "signet/box/v2" "UTF-8"))
+     (def ^:private header-slots #{:type :v :from :to :aad :nonce})
 
-#?(:clj
-   (defn- derive-aead-key
-     "HKDF-Expand the 32-byte X25519 shared secret to a 32-byte
-      ChaCha20-Poly1305 key. Different `info` tags isolate keyspaces
-      across protocol versions / use cases."
-     [^bytes shared-secret ^String info]
-     (impl/hkdf-sha-256 shared-secret
-                        (byte-array 0)        ; salt: empty
-                        (info-bytes info)     ; info: protocol tag
-                        32)))                 ; output: 32 bytes (ChaCha20 key)
+     (defn- x-pub [k] (:x (key/as-encryption-public-key k)))
+     (defn- x-priv [k] (:d (key/as-encryption-private-key k)))
+
+     (defn- wipe!
+       "Zero a secret byte array whose purpose has ended. Impure."
+       [bs]
+       (when bs (java.util.Arrays/fill ^bytes bs (byte 0))))
+
+     (defn- message-key
+       "HKDF key for one message, bound to its direction. Consumes (wipes)
+        the DH output."
+       [^bytes shared ^bytes nonce ^bytes sender-xpk ^bytes recipient-xpk]
+       (let [info (byte-array (+ (alength info-prefix) 64))]
+         (System/arraycopy info-prefix 0 info 0 (alength info-prefix))
+         (System/arraycopy sender-xpk 0 info (alength info-prefix) 32)
+         (System/arraycopy recipient-xpk 0 info (+ (alength info-prefix) 32) 32)
+         (let [k (impl/hkdf-sha-256 shared nonce info 32)]
+           (wipe! shared)
+           k)))
+
+     (def ^:private zero-nonce
+       "AEAD nonce: always zero, because every message has its own key."
+       (byte-array 12))))
 
 (defn box
-  "Encrypt `plaintext-bytes` from `sender-kp` to `recipient-pub`.
-   Returns ciphertext bytes: nonce(12) || aead-ciphertext-with-tag.
+  "Encrypt plaintext bytes from sender-kp (must hold a private key) to
+   recipient-pub (a public key or keypair; Ed25519 or X25519). Returns the
+   box as an EDN map.
 
-   `sender-kp` must contain a private key (any signing or encryption
-   keypair — Ed25519 keypairs are auto-converted to X25519).
-   `recipient-pub` may be a public key or keypair; only the public part
-   is used. Ed25519 keys are auto-converted.
+   opts:
+     :from?  include the sender's kid (default true)
+     :to?    include the recipient's kid (default true)
+     :aad    caller context, any CEDN-P EDN value: carried in the header,
+             authenticated, NOT secret (it travels in the clear)
 
-   `opts` (optional):
-     :aad <bytes>  Additional authenticated data — covered by the AEAD
-                   tag but not encrypted. Useful for binding the
-                   ciphertext to a context (ceremony id, recipient
-                   identity, sequence number, etc)."
-  ([sender-kp recipient-pub plaintext-bytes]
-   (box sender-kp recipient-pub plaintext-bytes nil))
-  ([sender-kp recipient-pub plaintext-bytes {:keys [aad] :as _opts}]
-   #?(:clj
-      (let [shared      (key/raw-shared-secret sender-kp recipient-pub)
-            shared-bytes (:k shared)
-            aead-key    (derive-aead-key shared-bytes box-info-v1)
-            nonce       (impl/random-bytes 12)
-            ct          (impl/chacha20-poly1305-encrypt aead-key nonce plaintext-bytes aad)
-            out         (byte-array (+ 12 (count ct)))]
-        (System/arraycopy nonce 0 out 0 12)
-        (System/arraycopy ct 0 out 12 (count ct))
-        out)
-      :cljs
-      (throw (js/Error. "signet.encryption not yet implemented for ClojureScript")))))
+   Impure: draws a random nonce."
+  ([sender-kp recipient-pub plaintext]
+   (box sender-kp recipient-pub plaintext nil))
+  ([sender-kp recipient-pub plaintext {:keys [aad] from? :from? to? :to? :or {from? true to? true} :as opts}]
+   #?@(:clj
+       [(when-not (:d sender-kp)
+          (throw (ex-info "box: sender key has no private part" {:type ::no-private-key})))
+        (let [nonce  (impl/random-bytes 24)
+              s-xpk  (x-pub sender-kp)
+              r-xpk  (x-pub recipient-pub)
+              header (cond-> {:type :signet/box :v 2 :nonce nonce}
+                       from?                 (assoc :from (key/kid sender-kp))
+                       to?                   (assoc :to (key/kid recipient-pub))
+                       (contains? opts :aad) (assoc :aad aad))
+              k      (message-key (impl/x25519-dh (x-priv sender-kp) r-xpk) nonce s-xpk r-xpk)
+              ct     (try (impl/chacha20-poly1305-encrypt k zero-nonce plaintext
+                                                          (cedn/canonical-bytes header))
+                          (finally (wipe! k)))]
+          (assoc header :ct ct))]
+       :cljs
+       [(throw (js/Error. "signet.encryption not yet implemented for ClojureScript"))])))
+
+#?(:clj
+   (do
+     (defn- expected-set [e] (cond (set? e) e (some? e) #{e}))
+
+     (defn- same-identity?
+       "Do kid string kid and key record pub name the same X25519 key? The
+        kid form (Ed25519 or X25519) does not matter."
+       [kid pub]
+       (when-let [p (key/lookup kid)]
+         (java.util.Arrays/equals (x-pub p) (x-pub pub))))
+
+     (defn- invalid [reason & [extra]]
+       (merge {:valid? false :error reason} extra))
+
+     (defn- shape-error
+       "Why boxed is not a well-formed v2 box, or nil."
+       [boxed]
+       (cond
+         (not (map? boxed))                                  :malformed
+         (not= :signet/box (:type boxed))                    :not-a-box
+         (not= 2 (:v boxed))                                 :unsupported-version
+         (seq (remove (conj header-slots :ct) (keys boxed))) :unknown-slot
+         (not (and (bytes? (:nonce boxed)) (= 24 (alength ^bytes (:nonce boxed))))) :bad-nonce
+         (not (and (bytes? (:ct boxed)) (<= 16 (alength ^bytes (:ct boxed)))))       :bad-ciphertext
+         (and (contains? boxed :from) (not (string? (:from boxed)))) :bad-from
+         (and (contains? boxed :to) (not (string? (:to boxed))))     :bad-to))
+
+     (defn- try-open
+       "Plaintext if the box opens for this recipient/sender pair, else nil."
+       [boxed recipient sender]
+       (let [nonce (:nonce boxed)
+             k     (message-key (impl/x25519-dh (x-priv recipient) (x-pub sender))
+                                nonce (x-pub sender) (x-pub recipient))]
+         (try
+           (impl/chacha20-poly1305-decrypt k zero-nonce (:ct boxed)
+                                           (cedn/canonical-bytes (dissoc boxed :ct)))
+           (catch Exception _ nil)
+           (finally (wipe! k)))))))
 
 (defn unbox
-  "Decrypt a `box`-formatted ciphertext using `recipient-kp` (must
-   contain a private key) and `sender-pub` (the claimed sender's
-   public key — the AEAD authentication will fail if this doesn't
-   match the actual sender). Returns plaintext bytes.
+  "Open a box. recipient-kp-or-kps is a keypair or a collection of
+   keypairs; with several, the :to slot picks one, or each is tried when
+   the box has no :to. Never throws: malformed input yields
+   {:valid? false :error <reason>}.
 
-   Throws on tampered ciphertext / wrong sender / wrong recipient.
+   opts:
+     :from  expected sender: a kid, or a set of kids. Needed when the box
+            has no :from slot. With it the result has :verified?, and
+            :valid? also requires it.
+     :aad   expected caller context: must equal the box's :aad slot
 
-   `opts`:
-     :aad <bytes>  Same AAD that was supplied to `box`. Must match
-                   exactly or decryption fails."
-  ([recipient-kp sender-pub ciphertext-bytes]
-   (unbox recipient-kp sender-pub ciphertext-bytes nil))
-  ([recipient-kp sender-pub ciphertext-bytes {:keys [aad] :as _opts}]
+   Result: {:valid? :verified? (with :from) :plaintext :from :to :aad :error}"
+  ([recipient-kp-or-kps boxed]
+   (unbox recipient-kp-or-kps boxed nil))
+  ([recipient-kp-or-kps boxed {expected-from :from :as opts}]
    #?(:clj
-      (let [shared      (key/raw-shared-secret recipient-kp sender-pub)
-            shared-bytes (:k shared)
-            aead-key    (derive-aead-key shared-bytes box-info-v1)
-            n           (count ciphertext-bytes)
-            _           (when (< n 28) ; 12 nonce + ≥ 16 tag
-                          (throw (ex-info "ciphertext too short for box format"
-                                          {:length n})))
-            nonce       (java.util.Arrays/copyOfRange ciphertext-bytes 0 12)
-            ct          (java.util.Arrays/copyOfRange ciphertext-bytes 12 n)]
-        (impl/chacha20-poly1305-decrypt aead-key nonce ct aad))
+      (try
+        (if-let [err (shape-error boxed)]
+          (invalid err)
+          (let [candidates (filter :d (if (map? recipient-kp-or-kps) [recipient-kp-or-kps] recipient-kp-or-kps))
+                to-kid     (:to boxed)
+                recipients (if to-kid
+                             (filter #(same-identity? to-kid %) candidates)
+                             candidates)
+                from-kid   (:from boxed)
+                expected   (expected-set expected-from)
+                senders    (if from-kid
+                             (keep key/lookup [from-kid])
+                             (keep key/lookup expected))
+                aad-ok?    (or (not (contains? opts :aad))
+                               (and (contains? boxed :aad)
+                                    (= (cedn/canonical-str (:aad opts))
+                                       (cedn/canonical-str (:aad boxed)))))]
+            (cond
+              (empty? candidates) (invalid :no-recipient-key)
+              (empty? recipients) (invalid :not-for-these-keys {:to to-kid})
+              (empty? senders)    (invalid (if from-kid :bad-from :unknown-sender))
+              :else
+              (if-let [[sender pt] (first (for [r recipients s senders
+                                                :let [pt (try-open boxed r s)]
+                                                :when pt]
+                                            [s pt]))]
+                (let [sender-kid (or from-kid (key/kid sender))
+                      verified?  (when expected
+                                   (boolean (some #(same-identity? % sender) expected)))
+                      valid?     (and aad-ok? (if expected verified? true))]
+                  (cond-> {:valid?    valid?
+                           :plaintext pt
+                           :from      sender-kid
+                           :to        to-kid
+                           :aad       (:aad boxed)}
+                    expected                   (assoc :verified? verified?)
+                    (not aad-ok?)              (assoc :error :aad-mismatch)
+                    (and aad-ok? (not valid?)) (assoc :error :unexpected-sender)))
+                (invalid :authentication-failed
+                         (when expected {:verified? false}))))))
+        (catch Exception e
+          (invalid :malformed {:message (ex-message e)})))
       :cljs
       (throw (js/Error. "signet.encryption not yet implemented for ClojureScript")))))

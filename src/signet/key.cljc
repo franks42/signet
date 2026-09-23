@@ -581,6 +581,20 @@
     (:Ed25519 :secp256k1) (if (signing-public-key? k) k (-signing-public-key k))
     :X25519               (if (encryption-public-key? k) k (-encryption-public-key k))))
 
+(defn as-encryption-public-key
+  "The X25519 public key record for any key: X25519 as-is, Ed25519 via the
+   birational map. Pure: never registers anything (unlike
+   encryption-public-key)."
+  [k]
+  (if (encryption-public-key? k) k (-encryption-public-key k)))
+
+(defn as-encryption-private-key
+  "The X25519 private key record for any key holding a private part: X25519
+   as-is, Ed25519 via SHA-512 + clamping. Pure: never registers anything
+   (unlike encryption-private-key)."
+  [k]
+  (if (encryption-private-key? k) k (-encryption-private-key k)))
+
 (defn kid
   "Return the key identifier as a URN: urn:signet:pk:<algorithm>:<base64url-public-key>.
    Self-describing — the receiver can parse the URN to extract the algorithm

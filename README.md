@@ -27,6 +27,25 @@ signet keeps three questions apart:
 `:valid? false` with an `:error`. Both take `:now` (epoch-ms) to judge
 expiry deterministically; without it they read the clock.
 
+## Boxes (authenticated encryption)
+
+`signet.encryption/box` returns a self-describing EDN map (box v2, see
+`docs/06-box-v2-design.md`):
+
+```clojure
+(box alice bob (.getBytes "hi"))           ; => {:type :signet/box :v 2 :from … :to … :nonce … :ct …}
+(box alice bob pt {:aad {:req 42} :from? false :to? false})
+(unbox bob boxed)                          ; => {:valid? true :plaintext … :from … :aad …}
+(unbox [bob carol] boxed {:from alice-kid :aad {:req 42}})  ; also :verified?
+```
+
+- **Directional keys:** a box cannot be reflected back to its sender.
+- **Unique key per message:** a random 24-byte salt, so random nonces are
+  safe at any volume. The caller never handles a nonce.
+- The optional `:from` and `:to` kid slots (on by default) and `:aad` are
+  authenticated. Omitted kids are still bound.
+- `unbox` never throws on malformed input.
+
 ## Keys: what is stored, what is not
 
 - The key store holds only keys you create or register deliberately.

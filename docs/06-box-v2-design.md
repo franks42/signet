@@ -1,7 +1,8 @@
 # box v2 — self-describing, directional, nonce-safe
 
-Status: **design note, not implemented** (2026-09-23; decisions settled the
-same day, see "Decisions"). **v2 replaces v1 entirely:** signet is its own
+Status: **implemented** in `signet.encryption` on branch
+`libsodium-backend` (2026-09-23), with decisions settled the same day (see
+"Decisions"). **v2 replaces v1 entirely:** signet is its own
 ecosystem, so there is no v1 reader or writer to keep.
 
 ## Background
@@ -140,7 +141,12 @@ Two consequences:
   the value for the caller to inspect.
 
 Size overhead versus v1: about 24 bytes of nonce plus about 60 bytes per
-kid included, plus the EDN framing. Negligible for the intended uses.
+kid included, plus the EDN framing. As canonical EDN *text*, cedn writes
+`#bytes` in hex, so `:nonce` and `:ct` take twice their byte size. That is
+negligible for signet's typical messages (commands, tokens, small
+payloads), but a real cost for large ones. A compact binary transport
+framing could be added later without changing the cryptography: the AAD
+stays `cedn-bytes(header)`.
 
 ## API sketch
 
@@ -192,6 +198,25 @@ identity by definition, so it can be valid but never "verified as" anyone.
 - **Robustness:** every malformed input gives `:valid? false`, never a
   throw. Resolving kids registers nothing in the store.
 - **Nonce uniqueness:** 10^6 boxes, all nonces distinct.
+
+## Implementation notes
+
+- `signet.encryption/box` and `unbox`, 14 tests in `encryption_test.clj`.
+  All failed against v1 first. v1 demonstrably allowed reflection: Alice
+  accepted her own "transfer 100 to bob" as if sent by Bob.
+- **The enforcement bites (checked by injection):**
+  - Making the key undirected (sorting the two keys in info) fails
+    `reflection-fails`. That required adding the *slot-less* reflection
+    case: with slots, header binding alone already rejects a reflected box,
+    which masked the missing direction binding.
+  - Dropping the header from the AAD fails the tampering and kid-form
+    tests.
+- Spec conformance: a test rebuilds `k` from the formula above using raw
+  primitives and decrypts `box`'s output. Run under both backends, it is
+  also a parity check.
+- Ed25519 → X25519 conversion uses the pure `key/as-encryption-public-key`
+  and `key/as-encryption-private-key`: box and unbox register nothing.
+- The DH output and message key are wiped after use.
 
 ## Decisions (2026-09-23)
 
