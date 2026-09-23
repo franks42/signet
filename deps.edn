@@ -13,10 +13,11 @@
          :main-opts ["-m" "cognitect.test-runner"]
          :exec-fn cognitect.test-runner.api/test}
 
-;; libsodium backend (signet.impl.sodium). Needs libsodium >= 1.0.19
-  ;; installed and JDK 25+. sodium.cljc is local for now (not yet published).
-  ;; Use with :test, e.g. clojure -M:test:sodium
-  :sodium {:extra-deps {sodium/sodium {:local/root "../sodium.cljc"}}
+  ;; libsodium backend (signet.impl.sodium). Needs libsodium >= 1.0.19
+  ;; installed and JDK 25+. sodium.cljc is not published: this is the local
+  ;; snapshot from `bb install` in ../sodium.cljc (re-install after changing
+  ;; it). Use with :test, e.g. clojure -M:test:sodium
+  :sodium {:extra-deps {com.github.franks42/sodium {:mvn/version "0.1.0-SNAPSHOT"}}
            :jvm-opts   ["--enable-native-access=ALL-UNNAMED"
                         "-Dsignet.backend=sodium"]}
 

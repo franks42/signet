@@ -19,11 +19,11 @@ keys and ciphertexts.
 | Backend | Namespace | Needs | Notes |
 |---|---|---|---|
 | `jca` (default) | `signet.impl.jvm` | a JDK | No native dependency. Deriving a public key from a seed does not work on babashka. |
-| `sodium` | `signet.impl.sodium` | libsodium >= 1.0.19 (`brew install libsodium`), [sodium.cljc](../sodium.cljc) (local for now), JDK 25+ with `--enable-native-access=ALL-UNNAMED`, or bb >= 1.13.220 | The full test suite also passes on babashka. |
+| `sodium` | `signet.impl.sodium` | libsodium >= 1.0.19 (`brew install libsodium`), [sodium.cljc](https://github.com/franks42/sodium.cljc) as a local snapshot jar (`bb install` in sodium.cljc; not published yet), JDK 25+ with `--enable-native-access=ALL-UNNAMED`, or bb >= 1.13.220 | The full test suite also passes on babashka. |
 
 ```bash
 clojure -M:test:sodium      # the :sodium alias adds sodium.cljc and selects the backend
-SIGNET_BACKEND=sodium bb …  # on babashka, with ../sodium.cljc/src on the classpath
+SIGNET_BACKEND=sodium bb …  # on babashka, with com.github.franks42/sodium 0.1.0-SNAPSHOT added (see bb test:bb-sodium)
 ```
 
 ## Development

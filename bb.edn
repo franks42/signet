@@ -21,7 +21,7 @@
    :task (shell "clojure" "-M:test")}
 
   test:jvm-sodium
-  {:doc  "Full test suite on the JVM, libsodium backend (needs libsodium >= 1.0.19, JDK 25+, ../sodium.cljc)"
+  {:doc  "Full test suite on the JVM, libsodium backend (needs libsodium >= 1.0.19, JDK 25+, and the sodium.cljc snapshot: bb install in ../sodium.cljc)"
    :task (do (shell "clojure" "-M:test:sodium")
              (shell "clojure" "-Sdeps" "{:aliases {:t {:extra-paths [\"test\"]}}}"
                     "-M:t:sodium" "-m" "signet.backend-parity" "sodium"))}
@@ -29,10 +29,12 @@
   test:bb-sodium
   {:doc  "Full test suite on babashka, libsodium backend (all but secp256k1)"
    ;; A subprocess keeps this bb.edn's :paths and :deps; -cp would replace
-   ;; them. sodium.cljc is added with add-classpath instead. No parity run
-   ;; here: its JCA oracle cannot derive keys from seeds on bb.
+   ;; them. sodium.cljc comes from the local snapshot jar (bb install in
+   ;; ../sodium.cljc) via add-deps. Its pom's org.babashka/ffi dependency is
+   ;; ignored by bb, which always uses its built-in babashka.ffi. No parity
+   ;; run here: its JCA oracle cannot derive keys from seeds on bb.
    :task (shell {:extra-env {"SIGNET_BACKEND" "sodium"}}
-                "bb" "-e" (str "(babashka.classpath/add-classpath \"../sodium.cljc/src\")"
+                "bb" "-e" (str "(babashka.deps/add-deps '{:deps {com.github.franks42/sodium {:mvn/version \"0.1.0-SNAPSHOT\"}}})"
                                "(require 'signet.suite) (signet.suite/-main \"sodium\")"))}
 
   lint
