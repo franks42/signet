@@ -32,7 +32,7 @@
    key collision. AAD (additional authenticated data) is supported
    via opts {:aad <bytes>} and authenticated alongside the plaintext."
   (:require [signet.key :as key]
-            #?(:clj [signet.impl.jvm :as jvm])))
+            #?(:clj [signet.impl :as impl])))
 
 (def ^:private ^String box-info-v1 "signet/box/v1")
 
@@ -46,10 +46,10 @@
       ChaCha20-Poly1305 key. Different `info` tags isolate keyspaces
       across protocol versions / use cases."
      [^bytes shared-secret ^String info]
-     (jvm/hkdf-sha-256 shared-secret
-                       (byte-array 0)        ; salt: empty
-                       (info-bytes info)     ; info: protocol tag
-                       32)))                 ; output: 32 bytes (ChaCha20 key)
+     (impl/hkdf-sha-256 shared-secret
+                        (byte-array 0)        ; salt: empty
+                        (info-bytes info)     ; info: protocol tag
+                        32)))                 ; output: 32 bytes (ChaCha20 key)
 
 (defn box
   "Encrypt `plaintext-bytes` from `sender-kp` to `recipient-pub`.
@@ -72,8 +72,8 @@
       (let [shared      (key/raw-shared-secret sender-kp recipient-pub)
             shared-bytes (:k shared)
             aead-key    (derive-aead-key shared-bytes box-info-v1)
-            nonce       (jvm/random-bytes 12)
-            ct          (jvm/chacha20-poly1305-encrypt aead-key nonce plaintext-bytes aad)
+            nonce       (impl/random-bytes 12)
+            ct          (impl/chacha20-poly1305-encrypt aead-key nonce plaintext-bytes aad)
             out         (byte-array (+ 12 (count ct)))]
         (System/arraycopy nonce 0 out 0 12)
         (System/arraycopy ct 0 out 12 (count ct))
@@ -105,6 +105,6 @@
                                           {:length n})))
             nonce       (java.util.Arrays/copyOfRange ciphertext-bytes 0 12)
             ct          (java.util.Arrays/copyOfRange ciphertext-bytes 12 n)]
-        (jvm/chacha20-poly1305-decrypt aead-key nonce ct aad))
+        (impl/chacha20-poly1305-decrypt aead-key nonce ct aad))
       :cljs
       (throw (js/Error. "signet.encryption not yet implemented for ClojureScript")))))

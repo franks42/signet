@@ -16,6 +16,25 @@
            (when (pos? (+ (:fail r 0) (:error r 0)))
              (System/exit 1)))}
 
+  test:jvm
+  {:doc  "Full test suite on the JVM, JCA backend (default)"
+   :task (shell "clojure" "-M:test")}
+
+  test:jvm-sodium
+  {:doc  "Full test suite on the JVM, libsodium backend (needs libsodium >= 1.0.19, JDK 25+, ../sodium.cljc)"
+   :task (do (shell "clojure" "-M:test:sodium")
+             (shell "clojure" "-Sdeps" "{:aliases {:t {:extra-paths [\"test\"]}}}"
+                    "-M:t:sodium" "-m" "signet.backend-parity" "sodium"))}
+
+  test:bb-sodium
+  {:doc  "Full test suite on babashka, libsodium backend (all but secp256k1)"
+   ;; A subprocess keeps this bb.edn's :paths and :deps; -cp would replace
+   ;; them. sodium.cljc is added with add-classpath instead. No parity run
+   ;; here: its JCA oracle cannot derive keys from seeds on bb.
+   :task (shell {:extra-env {"SIGNET_BACKEND" "sodium"}}
+                "bb" "-e" (str "(babashka.classpath/add-classpath \"../sodium.cljc/src\")"
+                               "(require 'signet.suite) (signet.suite/-main \"sodium\")"))}
+
   lint
   {:doc  "clj-kondo on every Clojure file (config: :clj branch only, see .clj-kondo/config.edn)"
    :task (shell "clj-kondo" "--lint" "src" "test" "build.clj" "bb.edn" "deps.edn")}

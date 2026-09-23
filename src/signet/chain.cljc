@@ -35,7 +35,7 @@
   (:require [cedn.core :as cedn]
             [signet.key :as key]
             [signet.sign :as sign]
-            #?(:clj [signet.impl.jvm :as jvm])))
+            #?(:clj [signet.impl :as impl])))
 
 ;; ============================================================
 ;; Internal: block creation helpers
@@ -46,7 +46,7 @@
    Only the PUBLIC key is registered in the key store — the private key
    stays internal to the chain and is never registered."
   []
-  #?(:clj  (let [[pub-bytes seed-bytes] (jvm/generate-ed25519-keypair)
+  #?(:clj  (let [[pub-bytes seed-bytes] (impl/generate-ed25519-keypair)
                   ;; Register only the public key so verifiers can look it up
                  _ (key/register! (key/->Ed25519PublicKey
                                    :signet/ed25519-public-key :Ed25519 pub-bytes))
@@ -461,7 +461,7 @@
               ;; Open: verify the proof (eph-sk) corresponds to last block's next-key
               ;; Check by deriving public key from proof and comparing
               #?(:clj
-                 (let [derived-pub (jvm/ed25519-seed->public-key (:proof token))]
+                 (let [derived-pub (impl/ed25519-seed->public-key (:proof token))]
                    (java.util.Arrays/equals
                     ^bytes (:x last-pub)
                     ^bytes derived-pub))

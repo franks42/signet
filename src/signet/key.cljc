@@ -31,7 +31,7 @@
      (encryption-keypair? k) (encryption-public-key? k) (encryption-private-key? k)"
   (:require [clojure.string :as str]
             [signet.encoding :as enc]
-            #?(:clj [signet.impl.jvm :as jvm])))
+            #?(:clj [signet.impl :as impl])))
 
 ;; -- Records
 
@@ -175,8 +175,8 @@
      (let [;; Need public key bytes for kid — may need derivation for private-only keys
            x-bytes (or (:x k)
                        #?(:clj (case (:type k)
-                                 :signet/ed25519-private-key   (jvm/ed25519-seed->public-key (:d k))
-                                 :signet/x25519-private-key    (jvm/x25519-private->public-key (:d k))
+                                 :signet/ed25519-private-key   (impl/ed25519-seed->public-key (:d k))
+                                 :signet/x25519-private-key    (impl/x25519-private->public-key (:d k))
                                  :signet/secp256k1-private-key nil ; TODO: requires EC point mul
                                  nil)
                           :cljs nil))
@@ -305,12 +305,12 @@
 ;; -- Ed25519 (default curve)
 
 (defmethod -signing-keypair [:generate] [& _]
-  #?(:clj  (let [[pub-bytes seed-bytes] (jvm/generate-ed25519-keypair)]
+  #?(:clj  (let [[pub-bytes seed-bytes] (impl/generate-ed25519-keypair)]
              (->Ed25519KeyPair :signet/ed25519-keypair :Ed25519 pub-bytes seed-bytes))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
 (defmethod -signing-keypair [:generate :Ed25519] [& _]
-  #?(:clj  (let [[pub-bytes seed-bytes] (jvm/generate-ed25519-keypair)]
+  #?(:clj  (let [[pub-bytes seed-bytes] (impl/generate-ed25519-keypair)]
              (->Ed25519KeyPair :signet/ed25519-keypair :Ed25519 pub-bytes seed-bytes))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -325,7 +325,7 @@
 
 (defmethod -signing-keypair [:map :signet/ed25519-private-key] [& [m]]
   #?(:clj  (let [d (:d m)
-                 x (jvm/ed25519-seed->public-key d)]
+                 x (impl/ed25519-seed->public-key d)]
              (->Ed25519KeyPair :signet/ed25519-keypair :Ed25519 x d))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -384,7 +384,7 @@
   ([x d] (register! (-encryption-keypair x d))))
 
 (defmethod -encryption-keypair [:generate] [& _]
-  #?(:clj  (let [[pub-bytes priv-bytes] (jvm/generate-x25519-keypair)]
+  #?(:clj  (let [[pub-bytes priv-bytes] (impl/generate-x25519-keypair)]
              (->X25519KeyPair :signet/x25519-keypair :X25519 pub-bytes priv-bytes))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -396,7 +396,7 @@
 
 (defmethod -encryption-keypair [:map :signet/x25519-private-key] [& [m]]
   #?(:clj  (let [d (:d m)
-                 x (jvm/x25519-private->public-key d)]
+                 x (impl/x25519-private->public-key d)]
              (->X25519KeyPair :signet/x25519-keypair :X25519 x d))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -405,13 +405,13 @@
 ;; Private key: SHA-512(seed)[0..31] with clamping
 
 (defmethod -encryption-keypair [:map :signet/ed25519-keypair] [& [m]]
-  #?(:clj  (let [[x-pub x-priv] (jvm/ed25519-keypair->x25519-keypair (:x m) (:d m))]
+  #?(:clj  (let [[x-pub x-priv] (impl/ed25519-keypair->x25519-keypair (:x m) (:d m))]
              (->X25519KeyPair :signet/x25519-keypair :X25519 x-pub x-priv))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
 (defmethod -encryption-keypair [:map :signet/ed25519-private-key] [& [m]]
-  #?(:clj  (let [x-priv (jvm/ed25519-seed->x25519-private (:d m))
-                 x-pub (jvm/x25519-private->public-key x-priv)]
+  #?(:clj  (let [x-priv (impl/ed25519-seed->x25519-private (:d m))
+                 x-pub (impl/x25519-private->public-key x-priv)]
              (->X25519KeyPair :signet/x25519-keypair :X25519 x-pub x-priv))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -432,7 +432,7 @@
 (defmethod -signing-public-key :signet/ed25519-public-key [k] k)
 
 (defmethod -signing-public-key :signet/ed25519-private-key [k]
-  #?(:clj  (let [x (jvm/ed25519-seed->public-key (:d k))]
+  #?(:clj  (let [x (impl/ed25519-seed->public-key (:d k))]
              (->Ed25519PublicKey :signet/ed25519-public-key :Ed25519 x))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -484,7 +484,7 @@
 (defmethod -encryption-public-key :signet/x25519-public-key [k] k)
 
 (defmethod -encryption-public-key :signet/x25519-private-key [k]
-  #?(:clj  (let [x (jvm/x25519-private->public-key (:d k))]
+  #?(:clj  (let [x (impl/x25519-private->public-key (:d k))]
              (->X25519PublicKey :signet/x25519-public-key :X25519 x))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -492,17 +492,17 @@
 
 (defmethod -encryption-public-key :signet/ed25519-keypair [kp]
   #?(:clj  (->X25519PublicKey :signet/x25519-public-key :X25519
-                              (jvm/ed25519-pub->x25519-pub (:x kp)))
+                              (impl/ed25519-pub->x25519-pub (:x kp)))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
 (defmethod -encryption-public-key :signet/ed25519-public-key [k]
   #?(:clj  (->X25519PublicKey :signet/x25519-public-key :X25519
-                              (jvm/ed25519-pub->x25519-pub (:x k)))
+                              (impl/ed25519-pub->x25519-pub (:x k)))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
 (defmethod -encryption-public-key :signet/ed25519-private-key [k]
-  #?(:clj  (let [x-priv (jvm/ed25519-seed->x25519-private (:d k))
-                 x-pub (jvm/x25519-private->public-key x-priv)]
+  #?(:clj  (let [x-priv (impl/ed25519-seed->x25519-private (:d k))
+                 x-pub (impl/x25519-private->public-key x-priv)]
              (->X25519PublicKey :signet/x25519-public-key :X25519 x-pub))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
@@ -527,12 +527,12 @@
 
 (defmethod -encryption-private-key :signet/ed25519-keypair [kp]
   #?(:clj  (->X25519PrivateKey :signet/x25519-private-key :X25519
-                               (jvm/ed25519-seed->x25519-private (:d kp)))
+                               (impl/ed25519-seed->x25519-private (:d kp)))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
 (defmethod -encryption-private-key :signet/ed25519-private-key [k]
   #?(:clj  (->X25519PrivateKey :signet/x25519-private-key :X25519
-                               (jvm/ed25519-seed->x25519-private (:d k)))
+                               (impl/ed25519-seed->x25519-private (:d k)))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 
 ;; ============================================================
@@ -625,7 +625,7 @@
 (defn- do-raw-shared-secret
   "Perform DH given X25519 private bytes, X25519 public bytes, and both kids."
   [our-priv their-pub kid-a kid-b]
-  #?(:clj  (let [k (jvm/x25519-dh our-priv their-pub)]
+  #?(:clj  (let [k (impl/x25519-dh our-priv their-pub)]
              (->X25519SharedKey :signet/x25519-shared-secret :X25519 k kid-a kid-b))
      :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
 

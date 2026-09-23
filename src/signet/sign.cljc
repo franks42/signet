@@ -23,7 +23,7 @@
   (:require [cedn.core :as cedn]
             [com.github.franks42.uuidv7.core :as uuidv7]
             [signet.key :as key]
-            #?(:clj [signet.impl.jvm :as jvm])))
+            #?(:clj [signet.impl :as impl])))
 
 ;; ============================================================
 ;; Low-level: raw bytes — dispatch on (:crv k)
@@ -53,7 +53,7 @@
       (throw (ex-info "Key has no private bytes (:d)" {:type (:type k)})))
     (case (:crv k)
       :Ed25519
-      #?(:clj  (jvm/ed25519-sign d message-bytes)
+      #?(:clj  (impl/ed25519-sign d message-bytes)
          :cljs (throw (js/Error. "Not yet implemented for ClojureScript")))
 
       :secp256k1
@@ -72,7 +72,7 @@
         x (:x pub)]
     (case (:crv pub)
       :Ed25519
-      #?(:clj  (jvm/ed25519-verify x message-bytes signature-bytes)
+      #?(:clj  (impl/ed25519-verify x message-bytes signature-bytes)
          :cljs (throw (js/Error. "Not yet implemented for ClojureScript")))
 
       :secp256k1
@@ -158,9 +158,9 @@
              :request-id     request-id
              :timestamp      ts
              :age-ms         (- now ts)
-             :digest         #?(:clj  (jvm/sha-256 canonical)
+             :digest         #?(:clj  (impl/sha-256 canonical)
                                 :cljs nil)
-             :message-digest #?(:clj  (jvm/sha-256 (cedn/canonical-bytes message))
+             :message-digest #?(:clj  (impl/sha-256 (cedn/canonical-bytes message))
                                 :cljs nil)}
       (some? expires) (assoc :expires expires
                              :expired? (> now expires)))))

@@ -36,7 +36,7 @@
    `encrypted-payload` is ChaCha20-Poly1305 ciphertext-with-tag (16-byte
    tag at end). Empty payloads are valid; the tag is still 16 bytes."
   (:require [signet.key :as key]
-            #?(:clj [signet.impl.jvm :as jvm])))
+            #?(:clj [signet.impl :as impl])))
 
 ;; ============================================================
 ;; Constants — protocol name and pattern fixed at compile time
@@ -72,7 +72,7 @@
 
 #?(:clj
    (defn- sha-256-bytes [^bytes data]
-     (jvm/sha-256 data)))
+     (impl/sha-256 data)))
 
 #?(:clj
    (defn- mix-hash
@@ -93,7 +93,7 @@
       salt: first 32 output bytes become new ck; last 32 become new k.
       Resets the nonce counter to zero."
      [{:keys [ck] :as state} ^bytes ikm]
-     (let [out  (jvm/hkdf-sha-256 ikm ck (byte-array 0) 64)
+     (let [out  (impl/hkdf-sha-256 ikm ck (byte-array 0) 64)
            ck'  (java.util.Arrays/copyOfRange out 0 32)
            k'   (java.util.Arrays/copyOfRange out 32 64)]
        (assoc state :ck ck' :k k' :n 0))))
@@ -118,7 +118,7 @@
       [new-state ciphertext-bytes]."
      [{:keys [k n h] :as state} ^bytes plaintext]
      (if k
-       (let [ct       (jvm/chacha20-poly1305-encrypt k (aead-nonce n) plaintext h)
+       (let [ct       (impl/chacha20-poly1305-encrypt k (aead-nonce n) plaintext h)
              state'   (-> state (assoc :n (inc n)) (mix-hash ct))]
          [state' ct])
        (let [state' (mix-hash state plaintext)]
@@ -133,7 +133,7 @@
       compute the same h regardless of who decrypted."
      [{:keys [k n h] :as state} ^bytes ciphertext]
      (if k
-       (let [pt     (jvm/chacha20-poly1305-decrypt k (aead-nonce n) ciphertext h)
+       (let [pt     (impl/chacha20-poly1305-decrypt k (aead-nonce n) ciphertext h)
              state' (-> state (assoc :n (inc n)) (mix-hash ciphertext))]
          [state' pt])
        (let [state' (mix-hash state ciphertext)]
@@ -148,7 +148,7 @@
       32-byte transport keys remain, each with its own monotonic
       nonce counter."
      [{:keys [ck role]}]
-     (let [out (jvm/hkdf-sha-256 (byte-array 0) ck (byte-array 0) 64)
+     (let [out (impl/hkdf-sha-256 (byte-array 0) ck (byte-array 0) 64)
            t1  (java.util.Arrays/copyOfRange out 0 32)
            t2  (java.util.Arrays/copyOfRange out 32 64)
            [send recv] (case role
@@ -396,7 +396,7 @@
       counter increments; no transcript hash is involved post-Split."
      [{:keys [send] :as state} ^bytes plaintext]
      (let [{:keys [k n]} send
-           ct (jvm/chacha20-poly1305-encrypt k (aead-nonce n) plaintext nil)]
+           ct (impl/chacha20-poly1305-encrypt k (aead-nonce n) plaintext nil)]
        [(assoc-in state [:send :n] (inc n)) ct])))
 
 #?(:clj
@@ -404,7 +404,7 @@
      "Inverse of write-message-transport. Throws on AEAD auth failure."
      [{:keys [recv] :as state} ^bytes ciphertext]
      (let [{:keys [k n]} recv
-           pt (jvm/chacha20-poly1305-decrypt k (aead-nonce n) ciphertext nil)]
+           pt (impl/chacha20-poly1305-decrypt k (aead-nonce n) ciphertext nil)]
        [(assoc-in state [:recv :n] (inc n)) pt])))
 
 #?(:clj

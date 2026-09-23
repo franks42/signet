@@ -9,8 +9,11 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 
 ## Key Decisions Made
 - **Name**: signet (like a signet ring — personal key for signing/sealing)
-- **Platform strategy**: Java JCA on JVM (Ed25519 Java 15+, X25519 Java 11+), WebCrypto on JS (all browsers 2025+), @noble/curves as JS fallback
-- **Dependencies**: canonical-edn (cedn) for deterministic serialization, uuidv7 for request IDs. No libsodium, no Bouncy Castle.
+- **Crypto backends** (`signet.impl` facade, selected once at load: `-Dsignet.backend` / `SIGNET_BACKEND`, default `jca`):
+  - `:jca` — `signet.impl.jvm`, Java JCA. No native dependency. Its seed→public-key path (a `proxy [SecureRandom]` trick) does not work on babashka.
+  - `:sodium` — `signet.impl.sodium`, libsodium via `sodium.core` (`../sodium.cljc`, babashka.ffi). Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
+  - ClojureScript: not implemented (every `:cljs` branch throws). The browser plan is libsodium.js (see `../sodium.cljc/docs/feasibility.md`).
+- **Dependencies**: canonical-edn (cedn) for deterministic serialization, uuidv7 for request IDs. Bouncy Castle for secp256k1 only (JVM). sodium.cljc for the `:sodium` backend (alias `:sodium`, local for now).
 - **Key fields**: JWK-inspired — `:x` (public), `:d` (private), `:crv` (:Ed25519/:X25519), `:type` (dispatch tag)
 - **kid format**: URN — `urn:signet:pk:<algorithm>:<base64url-public-key>` — self-describing, receiver can extract pk directly
 - **Key store**: Auto-registering, kid-based lookup, most-info-wins (keypair > private > public)
@@ -63,6 +66,15 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 ### signet.encoding — Base64url
 - `bytes->base64url` / `base64url->bytes`
 
+### signet.impl — backend facade
+- The 16 crypto functions every other namespace calls (`impl/…`), forwarded to the selected backend
+- `impl/backend` — `:jca` or `:sodium`
+- Unknown backend, or `:sodium` without libsodium/sodium.cljc → loud error at load (no silent fallback)
+
+### signet.impl.sodium — libsodium backend
+- Same 16 functions and contracts as `signet.impl.jvm`, on `sodium.core`
+- Fixed-size inputs length-checked (libsodium reads them blindly)
+
 ### signet.impl.jvm — JCA backend
 - Ed25519 key generation, sign, verify
 - X25519 key generation, DH key agreement
@@ -87,3 +99,17 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `docs/02-prior-art-analysis.md` — Analysis of naclj, caesium, stroopwafel, cedn, uuidv7
 - `docs/03-design-ideas.md` — Detailed design: namespace structure, key representation, envelope format
 - `docs/04-jca-seed-to-public-key-trick.md` — SecureRandom trick for deriving public keys without reflection
+
+## Testing, lint, format
+
+```bash
+bb test:jvm          # full suite, JCA backend (clojure -M:test): 102 tests / 436 assertions
+bb test:jvm-sodium   # full suite, libsodium backend + JCA-vs-libsodium parity (54 checks)
+bb test:bb-sodium    # full suite on babashka, libsodium backend: 93 / 415 (all but secp256k1)
+bb smoke             # bb smoke suite (JCA): 9 tests
+bb lint / bb fmt     # clj-kondo / cljfmt on every Clojure file
+```
+
+`.clj-kondo/config.edn` lints only the `:clj` branch of `.cljc` files, because
+the `:cljs` branches are stubs. Remove that when ClojureScript lands. A
+user-level Claude Code hook runs cljfmt + clj-kondo after every edit.
