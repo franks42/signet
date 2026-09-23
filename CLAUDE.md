@@ -13,7 +13,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   - `:jca` — `signet.impl.jvm`, Java JCA. No native dependency. Its seed→public-key path (a `proxy [SecureRandom]` trick) does not work on babashka.
   - `:sodium` — `signet.impl.sodium`, libsodium via `sodium.core` (github.com/franks42/sodium.cljc, used as the local snapshot `com.github.franks42/sodium 0.1.0-SNAPSHOT` from `bb install` there — re-install after changing sodium.cljc; babashka.ffi). Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
   - ClojureScript: not implemented (every `:cljs` branch throws). The browser plan is libsodium.js (see `../sodium.cljc/docs/feasibility.md`).
-- **Dependencies**: canonical-edn (cedn) 1.5.2 for deterministic serialization, uuidv7 0.7.1 for request IDs (bumped from 1.2.0 / 0.5.0 on branch `libsodium-backend`; see README "Compatibility"). Bouncy Castle for secp256k1 only (JVM). sodium.cljc for the `:sodium` backend (alias `:sodium`: local snapshot jar, not published).
+- **Dependencies**: canonical-edn (cedn) 1.5.2 for deterministic serialization, uuidv7 0.7.1 for request IDs (bumped from 1.2.0 / 0.5.0 in 0.7.0-SNAPSHOT; see README "Compatibility"). Bouncy Castle for secp256k1 only (JVM). sodium.cljc for the `:sodium` backend (alias `:sodium`: local snapshot jar, not published).
 - **Key fields**: JWK-inspired — `:x` (public), `:d` (private), `:crv` (:Ed25519/:X25519), `:type` (dispatch tag)
 - **kid format**: URN — `urn:signet:pk:<algorithm>:<base64url-public-key>` — self-describing, receiver can extract pk directly
 - **Key store**: Auto-registering, kid-based lookup, most-info-wins (keypair > private > public)
@@ -102,7 +102,18 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `docs/05-noise-kk-session-design.md` — Noise_KK session design
 - `docs/06-box-v2-design.md` — box v2, design only: optional kid/nonce slots, directional HKDF-bound keys, per-message salt; closes finding 7 and the 96-bit nonce limit
 
-## Trust model and key-store rules (branch libsodium-backend)
+## Current state (2026-09-23)
+
+- `main` includes PR #1 (merged): the libsodium backend, trust and
+  key-store fixes, dh/edh enforcement, single-use sessions and box v2.
+  Build version 0.7.0-SNAPSHOT, installed locally with
+  `clojure -T:build install`. Not on Clojars.
+- Verified from the installed jar in a scratch consumer (signet's tests
+  only, no src): JVM jca 122/572, JVM sodium 122/572 + parity 54/54,
+  bb sodium 112/548.
+- No CI yet. It would need libsodium >= 1.0.19 for the sodium runs.
+
+## Trust model and key-store rules
 
 - **valid** = well-formed, signature ok under the key named in :signer, not
   expired: self-consistency only. **verified** = valid AND the signer/root

@@ -85,7 +85,7 @@ SIGNET_BACKEND=sodium bb …  # on babashka, with com.github.franks42/sodium 0.1
 
 ## Compatibility
 
-**Trust fixes (branch `libsodium-backend`):** an expired envelope is no
+**Trust fixes (0.7.0-SNAPSHOT, PR #1):** an expired envelope is no
 longer `:valid?`. The raw signature check is now `:signature-valid?`, and
 `:error` says why an envelope is invalid. `key/lookup` no longer registers
 the keys it parses from kids, and `key/kid` no longer registers anything.
@@ -94,8 +94,8 @@ explicitly.
 
 ### cedn 1.5.2
 
-signet signs canonical EDN bytes produced by cedn. Since the branch
-`libsodium-backend` it depends on cedn 1.5.2 (before: 1.2.0). cedn 1.4.0
+signet signs canonical EDN bytes produced by cedn. Since 0.7.0-SNAPSHOT
+(PR #1) it depends on cedn 1.5.2 (before: 1.2.0). cedn 1.4.0
 changed the canonical bytes for some inputs to fix determinism and
 injectivity bugs. Those inputs are sets or maps containing `#inst` values,
 integers above 2^53, and integers next to doubles near 2^53. A signature

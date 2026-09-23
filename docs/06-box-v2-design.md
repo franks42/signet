@@ -1,7 +1,7 @@
 # box v2 — self-describing, directional, nonce-safe
 
-Status: **implemented** in `signet.encryption` on branch
-`libsodium-backend` (2026-09-23), with decisions settled the same day (see
+Status: **implemented** in `signet.encryption` (PR #1, merged to main
+2026-09-23; build 0.7.0-SNAPSHOT), with decisions settled the same day (see
 "Decisions"). **v2 replaces v1 entirely:** signet is its own
 ecosystem, so there is no v1 reader or writer to keep.
 
