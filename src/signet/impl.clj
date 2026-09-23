@@ -39,11 +39,14 @@
 (try
   (require backend-ns)
   (catch Throwable t
-    (throw (ex-info (str "signet backend " backend " failed to load"
-                         (when (= :sodium backend)
-                           " — needs libsodium >= 1.0.19 and sodium.cljc on the classpath (alias :sodium)"))
-                    {:backend backend :ns backend-ns}
-                    t))))
+    (let [root (loop [e t] (if-let [c (ex-cause e)] (recur c) e))]
+      (throw (ex-info (str "signet backend " backend " failed to load"
+                           (when (= :sodium backend)
+                             " — needs libsodium >= 1.0.19 and sodium.cljc on the classpath (alias :sodium)")
+                           ". Cause: " (ex-message root))
+                      {:backend backend :ns backend-ns
+                       :cause-class (str (class root)) :cause (ex-message root)}
+                      t)))))
 
 (defn- f
   "The selected backend's function named sym."
