@@ -78,6 +78,42 @@
      (when bs (java.util.Arrays/fill ^bytes bs (byte 0)))))
 
 #?(:clj
+   (defn- fresh-marker
+     "A one-shot marker for a session state value. Every state
+      write-message / read-message returns gets a fresh one."
+     []
+     ;; A Clojure atom, not AtomicBoolean: bb does not expose the latter,
+     ;; and compare-and-set! is an atomic CAS on both platforms.
+     (atom false)))
+
+#?(:clj
+   (defn- consume!
+     "Run op (which returns [next-state output]) on state, then mark state
+      consumed; return [next-state-with-fresh-marker output].
+
+      A state is single-use: using a consumed state again throws
+      ::stale-session-state. Reusing a sending state would reuse its AEAD
+      nonce (plaintext XOR leak, forgeries); reusing a receiving state
+      would accept a replay. The marker is set only after op succeeds, so
+      a failed read (forged or tampered message) leaves the state usable.
+      Under a race, compare-and-set lets exactly one caller win; the
+      losers' outputs are discarded, never returned. Impure: mutates the
+      marker of the state passed in."
+     [state op]
+     (let [m (:consumed state)]
+       (when-not (instance? clojure.lang.Atom m)
+         (throw (ex-info "Not a signet session state (missing single-use marker)"
+                         {:type ::not-a-session-state})))
+       (when @m
+         (throw (ex-info "Stale session state: it was already used. Use the state returned by the previous write-message/read-message"
+                         {:type ::stale-session-state})))
+       (let [[next-state out] (op)]
+         (when-not (compare-and-set! m false true)
+           (throw (ex-info "Stale session state: another call consumed it first"
+                           {:type ::stale-session-state})))
+         [(assoc next-state :consumed (fresh-marker)) out]))))
+
+#?(:clj
    (defn- sha-256-bytes [^bytes data]
      (impl/sha-256 data)))
 
@@ -303,6 +339,7 @@
        (-> (initial-symmetric-state)
            (assoc :phase             :handshake
                   :role              role
+                  :consumed          (fresh-marker)
                   :pos               0
                   :local-static-kp   local-static-kp
                   :remote-static-pub remote-static-pub
@@ -488,7 +525,7 @@
        [(assoc-in state [:recv :n] (inc n)) pt])))
 
 #?(:clj
-   (defn write-message
+   (defn- write-message*
      "Produce one outbound Noise message. During handshake the message
       includes the local ephemeral pub plus an AEAD-tagged payload;
       after Split, transport messages are pure AEAD ciphertext.
@@ -516,7 +553,7 @@
                         :phase  phase :role role :pos pos})))))
 
 #?(:clj
-   (defn read-message
+   (defn- read-message*
      "Process one inbound Noise message. Inverse of write-message.
       Throws on AEAD authentication failure (tampered ciphertext,
       wrong peer, wrong shared key) or wrong message phase."
@@ -535,3 +572,32 @@
        (throw (ex-info "Noise session: read-message in wrong phase"
                        {:reason :reason/wrong-message-phase
                         :phase  phase :role role :pos pos})))))
+
+#?(:clj
+   (defn write-message
+     "Produce one outbound Noise message: returns [next-state ciphertext].
+
+      Impure — consumes `state`: each state value is single-use. Always
+      continue with the returned next-state. Writing again from a state
+      already used throws ::stale-session-state instead of reusing its
+      nonce (see consume!). Throws if the state is not currently
+      expecting an outbound message.
+
+      `plaintext` — application payload bytes. Empty (or nil) is fine.
+      During the handshake the message carries the local ephemeral public
+      key plus an AEAD-tagged payload; after Split, transport messages are
+      pure AEAD ciphertext."
+     [state plaintext]
+     (consume! state #(write-message* state plaintext))))
+
+#?(:clj
+   (defn read-message
+     "Process one inbound Noise message: returns [next-state plaintext].
+
+      Impure — a successful read consumes `state` (single-use, like
+      write-message): reading again from it throws ::stale-session-state,
+      which also refuses a replayed ciphertext. A failed read (tampered or
+      forged message, wrong peer, wrong phase) throws and leaves `state`
+      usable for the genuine message."
+     [state ciphertext]
+     (consume! state #(read-message* state ciphertext))))

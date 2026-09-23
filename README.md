@@ -37,6 +37,15 @@ expiry deterministically; without it they read the clock.
   ephemerals, and every DH output, are zeroed as soon as they have been
   used. Without that there is no forward secrecy. An open chain's
   ephemeral key lives in the token's `:proof` until the chain is sealed.
+- **Nonces are never the caller's job.** `box` draws its nonce internally,
+  and a session counts its own nonces. Session states are single-use:
+  `write-message` / `read-message` consume the state they are given and
+  return the one to use next. Using a consumed state again throws
+  `::stale-session-state`, so a nonce can never be reused and a replayed
+  message cannot be accepted twice from a stale state. A failed read
+  (tampered or forged message) does not consume the state.
+  `signet.impl*` namespaces expose raw AEAD with explicit nonces for
+  signet's own use only. They are internal, not public API.
 
 ## Crypto backends
 

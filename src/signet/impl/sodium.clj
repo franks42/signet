@@ -1,5 +1,12 @@
-(ns signet.impl.sodium
-  "libsodium backend for signet, via sodium.core (babashka.ffi): the same
+(ns ^:no-doc signet.impl.sodium
+  "INTERNAL — not part of signet's public API. These functions take raw
+   keys and caller-chosen AEAD nonces; misusing them (e.g. reusing a nonce)
+   breaks confidentiality and integrity. Use signet.sign, signet.chain,
+   signet.encryption and signet.session instead, which create and manage
+   nonces and ephemeral keys internally. Public only because signet's own
+   namespaces call them.
+
+   libsodium backend for signet, via sodium.core (babashka.ffi): the same
    16 functions and contracts as signet.impl.jvm (JCA). Selected through
    signet.impl; do not require directly.
 

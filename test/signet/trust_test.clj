@@ -199,3 +199,58 @@
 (deftest ephemerals-cannot-be-registered
   (is (= :signet.key/ephemeral-key (throws-type #(key/register! (fresh-ephemeral))))
       "register! refuses ephemeral keys loudly instead of ignoring them"))
+
+;; ---------------------------------------------------------------------------
+;; Session states are single-use: a reused state can never reuse a nonce
+;; ---------------------------------------------------------------------------
+
+(defn- stale? [f]
+  (= :signet.session/stale-session-state (throws-type f)))
+
+(defn- transport-pair
+  "Established [initiator responder] transport states."
+  []
+  (let [{:keys [i2 r2]} (handshake (key/encryption-keypair) (key/encryption-keypair))]
+    [i2 r2]))
+
+(deftest second-write-from-same-state-is-refused
+  (let [[alice _bob] (transport-pair)
+        [alice' _c1] (session/write-message alice (.getBytes "first" "UTF-8"))]
+    (is (stale? #(session/write-message alice (.getBytes "second" "UTF-8")))
+        "writing again from the consumed state would reuse its nonce")
+    (is (vector? (session/write-message alice' (.getBytes "second" "UTF-8")))
+        "the returned state is the one to use")))
+
+(deftest second-write-from-handshake-state-is-refused
+  (let [a  (key/encryption-keypair)
+        b  (key/encryption-keypair)
+        i0 (session/initiator a (key/public-key b))]
+    (session/write-message i0 (.getBytes "m1" "UTF-8"))
+    (is (stale? #(session/write-message i0 (.getBytes "m1'" "UTF-8"))))))
+
+(deftest replay-into-stale-receiver-state-is-refused
+  (let [[alice bob] (transport-pair)
+        [_ ct] (session/write-message alice (.getBytes "pay 10" "UTF-8"))]
+    (session/read-message bob ct)
+    (is (stale? #(session/read-message bob ct))
+        "the same ciphertext cannot be accepted twice from a stale state")))
+
+(deftest failed-read-does-not-consume-the-state
+  (let [[alice bob] (transport-pair)
+        [_ ct] (session/write-message alice (.getBytes "genuine" "UTF-8"))
+        forged (let [c (aclone ^bytes ct)] (aset-byte c 0 (unchecked-byte (bit-xor (aget c 0) 1))) c)]
+    (is (thrown? Exception (session/read-message bob forged)) "forgery rejected")
+    (let [[_ pt] (session/read-message bob ct)]
+      (is (= "genuine" (String. ^bytes pt "UTF-8"))
+          "the genuine message still decrypts: a failed read left the state usable"))))
+
+(deftest concurrent-writes-from-one-state-yield-one-ciphertext
+  (let [[alice _] (transport-pair)
+        results (->> (range 16)
+                     (mapv (fn [i] (future
+                                     (try (second (session/write-message alice (.getBytes (str i) "UTF-8")))
+                                          (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))))
+                     (mapv deref))
+        cts (filter bytes? results)]
+    (is (= 1 (count cts)) "exactly one writer wins; no second ciphertext under the same nonce")
+    (is (every? #{:signet.session/stale-session-state} (remove bytes? results)))))

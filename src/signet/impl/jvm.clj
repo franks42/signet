@@ -1,5 +1,12 @@
-(ns signet.impl.jvm
-  "JVM implementation of Ed25519/X25519 key operations using Java JCA.
+(ns ^:no-doc signet.impl.jvm
+  "INTERNAL — not part of signet's public API. These functions take raw
+   keys and caller-chosen AEAD nonces; misusing them (e.g. reusing a nonce)
+   breaks confidentiality and integrity. Use signet.sign, signet.chain,
+   signet.encryption and signet.session instead, which create and manage
+   nonces and ephemeral keys internally. Public only because signet's own
+   namespaces call them.
+
+   JVM implementation of Ed25519/X25519 key operations using Java JCA.
 
    secp256k1 ECDSA lives in signet.impl.jvm-secp256k1 (JVM-only,
    BouncyCastle-backed). Kept separate so this namespace stays

@@ -1,5 +1,12 @@
-(ns signet.impl
-  "Crypto backend facade. signet's namespaces call these 16 functions; they
+(ns ^:no-doc signet.impl
+  "INTERNAL — not part of signet's public API. These functions take raw
+   keys and caller-chosen AEAD nonces; misusing them (e.g. reusing a nonce)
+   breaks confidentiality and integrity. Use signet.sign, signet.chain,
+   signet.encryption and signet.session instead, which create and manage
+   nonces and ephemeral keys internally. Public only because signet's own
+   namespaces call them.
+
+   Crypto backend facade. signet's namespaces call these 16 functions; they
    forward to the backend selected once, when this namespace loads:
 
      :jca     signet.impl.jvm    — Java JCA (default; no native dependency)

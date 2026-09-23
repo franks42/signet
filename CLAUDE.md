@@ -127,8 +127,22 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - Still registering as a side effect: `key/raw-shared-secret` registers
   both parties, and the keypair and extraction constructors register their
   results. They are user-facing identity operations; revisit.
-- Open review findings: 5 (reusing a stale session state reuses a nonce)
-  and 7 (`box` uses one key in both directions).
+- **Session states are single-use** (finding 5, closed): each state carries
+  a one-shot marker (an atom, since bb has no AtomicBoolean), and
+  `consume!` in `signet.session` checks it, runs the op, then
+  `compare-and-set!`s it. A stale state throws `::stale-session-state`; the
+  losers of a race get their output discarded; a failed read does not
+  consume. Disabling `consume!` makes exactly the 4 reuse tests fail
+  (checked).
+- **Take the gun away:** the public API never hands callers a nonce or an
+  ephemeral key (the user's rule: "the creation and usage of nonces were
+  hidden from the calling consumer"). `signet.impl*` are `^:no-doc`
+  INTERNAL namespaces (raw AEAD with explicit nonces).
+- Open: finding 7 (`box` uses one key in both directions) plus box's random
+  96-bit nonces, safe to about 2^32 messages per key pair. Both point to a
+  "box v2": directional keys (e.g. crypto_kx) and XChaCha20-Poly1305
+  (192-bit nonces, libsodium only). It changes the wire format, so version
+  it.
 
 ## Testing, lint, format
 
