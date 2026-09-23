@@ -26,6 +26,18 @@ clojure -M:test:sodium      # the :sodium alias adds sodium.cljc and selects the
 SIGNET_BACKEND=sodium bb …  # on babashka, with com.github.franks42/sodium 0.1.0-SNAPSHOT added (see bb test:bb-sodium)
 ```
 
+## Compatibility
+
+signet signs canonical EDN bytes produced by cedn. Since the branch
+`libsodium-backend` it depends on cedn 1.5.2 (before: 1.2.0). cedn 1.4.0
+changed the canonical bytes for some inputs to fix determinism and
+injectivity bugs. Those inputs are sets or maps containing `#inst` values,
+integers above 2^53, and integers next to doubles near 2^53. A signature
+made with cedn 1.2.0 over such a payload no longer verifies. cedn 1.4.0+
+also rejects payloads 1.2.0 accepted ambiguously, such as `(symbol "nil")`,
+which serialized like `nil`. Other payloads are unaffected. See cedn's
+CHANGELOG for 1.4.0 and 1.5.0.
+
 ## Development
 
 ```bash
