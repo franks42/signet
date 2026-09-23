@@ -37,6 +37,48 @@
                 "bb" "-e" (str "(babashka.deps/add-deps '{:deps {com.github.franks42/sodium {:mvn/version \"0.1.0-SNAPSHOT\"}}})"
                                "(require 'signet.suite) (signet.suite/-main \"sodium\")"))}
 
+  sodium:install
+  {:doc  "Build and install the sodium.cljc snapshot (com.github.franks42/sodium 0.1.0-SNAPSHOT) into ~/.m2 from a checkout. Arg: checkout dir (default ../sodium.cljc)"
+   :task (let [dir (or (first *command-line-args*) "../sodium.cljc")]
+           (shell {:dir dir} "clojure" "-T:build" "install"))}
+
+  test:no-sodium
+  {:doc  "Everything that needs no native libsodium: lint, fmt, JCA suite, bb smoke"
+   :task (do (run 'lint) (run 'fmt) (run 'test:jvm) (run 'smoke))}
+
+  test:all
+  {:doc  "Everything: test:no-sodium plus the libsodium backend on the JVM (with parity) and on bb. Needs libsodium >= 1.0.19 and the sodium.cljc snapshot (bb sodium:install)"
+   :task (do (run 'test:no-sodium) (run 'test:jvm-sodium) (run 'test:bb-sodium))}
+
+  test:jar
+  {:doc  "Install signet's jar locally, then run signet's own tests against the jar from a scratch consumer (tests only, no src): JVM jca, JVM sodium + parity, bb sodium"
+   :requires ([babashka.fs :as fs])
+   :task (let [_       (shell "clojure" "-T:build" "install")
+               version (second (re-find (re-pattern "\\(def version \"([^\"]+)\"\\)") (slurp "build.clj")))
+               tests   (str (fs/absolutize "test"))
+               dir     (str (fs/create-temp-dir {:prefix "signet-consumer-"}))
+               coord   (str "com.github.franks42/signet {:mvn/version \"" version "\"}")
+               sodium  "com.github.franks42/sodium {:mvn/version \"0.1.0-SNAPSHOT\"}"]
+           (spit (str dir "/deps.edn")
+                 (str "{:paths [\"" tests "\"] :deps {" coord "}"
+                      " :aliases {:sodium {:extra-deps {" sodium "}"
+                      " :jvm-opts [\"--enable-native-access=ALL-UNNAMED\" \"-Dsignet.backend=sodium\"]}}}"))
+           (try
+             (let [from-jar? (fn [out] (re-find (re-pattern "signet-from jar:file:") out))
+                   where "(println :signet-from (str (clojure.java.io/resource \"signet/key.cljc\")))"
+                   jvm-src (:out (shell {:dir dir :out :string} "clojure" "-M" "-e" where))]
+               (when-not (from-jar? jvm-src)
+                 (println "ERROR: signet did not load from the jar:" jvm-src) (System/exit 1))
+               (println "signet loads from the installed jar" version)
+               (shell {:dir dir} "clojure" "-M" "-m" "signet.suite" "jca")
+               (shell {:dir dir} "clojure" "-M:sodium" "-m" "signet.suite" "sodium")
+               (shell {:dir dir} "clojure" "-M:sodium" "-m" "signet.backend-parity" "sodium")
+               (shell {:dir dir :extra-env {"SIGNET_BACKEND" "sodium"}}
+                      "bb" "-e" (str "(babashka.deps/add-deps '{:deps {" coord " " sodium "}})"
+                                     "(babashka.classpath/add-classpath \"" tests "\")"
+                                     "(require 'signet.suite) (signet.suite/-main \"sodium\")")))
+             (finally (fs/delete-tree dir))))}
+
   lint
   {:doc  "clj-kondo on every Clojure file (config: :clj branch only, see .clj-kondo/config.edn)"
    :task (shell "clj-kondo" "--lint" "src" "test" "build.clj" "bb.edn" "deps.edn")}
