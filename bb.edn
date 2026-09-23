@@ -39,7 +39,10 @@
 
   sodium:install
   {:doc  "Build and install the sodium.cljc snapshot (com.github.franks42/sodium 0.1.0-SNAPSHOT) into ~/.m2 from a checkout. Arg: checkout dir (default ../sodium.cljc)"
+   ;; clojure -P first: tools.build's basis (tool mode) cannot download the
+   ;; project's deps itself, so on a fresh machine install fails without it.
    :task (let [dir (or (first *command-line-args*) "../sodium.cljc")]
+           (shell {:dir dir} "clojure" "-P")
            (shell {:dir dir} "clojure" "-T:build" "install"))}
 
   test:no-sodium
@@ -53,7 +56,8 @@
   test:jar
   {:doc  "Install signet's jar locally, then run signet's own tests against the jar from a scratch consumer (tests only, no src): JVM jca, JVM sodium + parity, bb sodium"
    :requires ([babashka.fs :as fs])
-   :task (let [_       (shell "clojure" "-T:build" "install")
+   :task (let [_       (shell "clojure" "-P") ; fresh machines: see sodium:install
+               _       (shell "clojure" "-T:build" "install")
                version (second (re-find (re-pattern "\\(def version \"([^\"]+)\"\\)") (slurp "build.clj")))
                tests   (str (fs/absolutize "test"))
                dir     (str (fs/create-temp-dir {:prefix "signet-consumer-"}))
