@@ -99,6 +99,8 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `docs/02-prior-art-analysis.md` — Analysis of naclj, caesium, stroopwafel, cedn, uuidv7
 - `docs/03-design-ideas.md` — Detailed design: namespace structure, key representation, envelope format
 - `docs/04-jca-seed-to-public-key-trick.md` — SecureRandom trick for deriving public keys without reflection
+- `docs/05-noise-kk-session-design.md` — Noise_KK session design
+- `docs/06-box-v2-design.md` — box v2, design only: optional kid/nonce slots, directional HKDF-bound keys, per-message salt; closes finding 7 and the 96-bit nonce limit
 
 ## Trust model and key-store rules (branch libsodium-backend)
 
