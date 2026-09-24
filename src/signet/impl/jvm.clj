@@ -308,3 +308,11 @@
     (when aad (.updateAAD cipher ^bytes aad))
     (.doFinal cipher ciphertext)))
 
+(defn destroy-material!
+  "Release secret material whose purpose has ended: overwrite a byte array
+   with zeros. (The JCA backend only ever handles byte arrays.) Impure:
+   writes its argument. Returns nil."
+  [x]
+  (when (bytes? x) (java.util.Arrays/fill ^bytes x (byte 0)))
+  nil)
+

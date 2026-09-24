@@ -53,7 +53,8 @@
 (defprotocol Provider
   "Holds secret key material. Implementations never return it, except
    through -export."
-  (-put! [p kid alg material] "Take ownership of material (bytes) for kid.")
+  (-generate! [p alg] "Create a new key of alg (:ed25519 or :x25519) inside the provider. Returns its public key record.")
+  (-import! [p alg secret-bytes] "Take a copy of secret-bytes as a key of alg. Returns its public key record.")
   (-has? [p kid] "Does this provider hold kid?")
   (-kids [p] "The kids this provider holds.")
   (-alg [p kid] "The algorithm of kid (:ed25519 or :x25519).")
@@ -66,16 +67,34 @@
 
 (defn- copy-bytes [^bytes bs] #?(:clj (java.util.Arrays/copyOf bs (alength bs)) :cljs bs))
 
+(defn- public-key-record
+  "The public key record for an Ed25519 seed or an X25519 secret key (bytes,
+   or whatever the backend accepts in their place)."
+  [alg material]
+  #?(:clj  (case alg
+             :ed25519 (key/->Ed25519PublicKey :signet/ed25519-public-key :Ed25519
+                                              (impl/ed25519-seed->public-key material))
+             :x25519  (key/->X25519PublicKey :signet/x25519-public-key :X25519
+                                             (impl/x25519-private->public-key material)))
+     :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
+
 (defn memory-provider
   "A provider that keeps secrets on the Clojure heap, inside the vault only.
    Each operation gets a copy, wiped as soon as it returns. Destroying a key
-   wipes the stored bytes. Pure: returns a new, empty provider."
+   wipes the stored bytes. Impure: returns a new, empty provider (its
+   state is mutable)."
   []
-  (let [secrets (atom {})]
+  (let [secrets (atom {})
+        store!  (fn [alg ^bytes material]
+                  (let [pub (public-key-record alg material)]
+                    (swap! secrets assoc (key/kid pub) {:alg alg :material (copy-bytes material)})
+                    pub))]
     (reify Provider
-      (-put! [_ kid alg material]
-        (swap! secrets assoc kid {:alg alg :material (copy-bytes material)})
-        nil)
+      (-generate! [_ alg]
+        #?(:clj  (let [m (impl/random-bytes 32)]
+                   (try (store! alg m) (finally (wipe! m))))
+           :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
+      (-import! [_ alg secret-bytes] (store! alg secret-bytes))
       (-has? [_ kid] (contains? @secrets kid))
       (-kids [_] (set (keys @secrets)))
       (-alg [_ kid] (:alg (get @secrets kid)))
@@ -90,6 +109,16 @@
             #?(:clj (wipe! m))
             true))))))
 
+(defn default-provider
+  "The provider a vault gets when none is given: :sodium (secrets in
+   libsodium's guarded memory, via nacljc) when signet runs on the libsodium
+   backend, else :memory. Impure: returns a new provider."
+  []
+  #?(:clj  (if (= :sodium impl/backend)
+             ((requiring-resolve 'signet.vault.sodium/sodium-provider))
+             (memory-provider))
+     :cljs (memory-provider)))
+
 ;; ============================================================
 ;; Vault registry
 ;; ============================================================
@@ -97,10 +126,10 @@
 (defonce ^:private vaults (atom {}))
 
 (defn register-vault!
-  "Register vault id with provider (default: a new memory-provider). Returns
-   id. Impure: writes the vault registry. Throws ex-info
-   {:type ::vault-exists} if id is already registered."
-  ([id] (register-vault! id (memory-provider)))
+  "Register vault id with provider (default: default-provider). Returns id.
+   Impure: writes the vault registry. Throws ex-info {:type ::vault-exists}
+   if id is already registered."
+  ([id] (register-vault! id (default-provider)))
   ([id provider]
    (let [v {:id id :provider provider :public (atom {}) :defaults (atom {})}
          [old _] (swap-vals! vaults (fn [m] (if (contains? m id) m (assoc m id v))))]
@@ -134,7 +163,7 @@
 
 (defn reset-default-vault!
   "Destroy every secret in the :default vault and start it empty with a new
-   memory provider. For tests and REPL sessions. Impure."
+   default-provider. For tests and REPL sessions. Impure."
   []
   (unregister-vault! :default)
   (register-vault! :default)
@@ -208,45 +237,39 @@
 ;; Keys are born in the vault
 ;; ============================================================
 
-(defn- put-key!
-  "Store a new key: the secret in the provider, the public key on the
-   public side. Returns its handle."
-  [vault-id alg pub material]
-  (let [v   (vault vault-id)
-        kid (key/kid pub)]
-    (-put! (:provider v) kid alg material)
-    (swap! (:public v) assoc kid pub)
+(defn- add-key!
+  "Record a key the provider now holds: its public key on the public side.
+   Returns its handle."
+  [vault-id pub]
+  (let [kid (key/kid pub)]
+    (swap! (:public (vault vault-id)) assoc kid pub)
     (->handle vault-id kid)))
 
 (defn generate-signing-key!
   "Create a new Ed25519 signing key inside vault (default :default) and
-   return its handle. The seed never leaves the vault.
+   return its handle. The seed is born in the provider and never leaves it
+   (under :sodium it never touches the Clojure heap).
    Impure: draws from the CSPRNG and writes the vault."
   ([] (generate-signing-key! :default))
   ([vault-id]
-   #?(:clj  (let [seed (impl/random-bytes 32)
-                  pub  (key/->Ed25519PublicKey :signet/ed25519-public-key :Ed25519
-                                               (impl/ed25519-seed->public-key seed))]
-              (try (put-key! vault-id :ed25519 pub seed)
-                   (finally (wipe! seed))))
-      :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))))
+   (add-key! vault-id (-generate! (:provider (vault vault-id)) :ed25519))))
 
 (defn generate-encryption-key!
   "Create a new X25519 encryption key inside vault (default :default) and
    return its handle. Impure: draws from the CSPRNG and writes the vault."
   ([] (generate-encryption-key! :default))
   ([vault-id]
-   #?(:clj  (let [sk  (impl/random-bytes 32)
-                  pub (key/->X25519PublicKey :signet/x25519-public-key :X25519
-                                             (impl/x25519-private->public-key sk))]
-              (try (put-key! vault-id :x25519 pub sk)
-                   (finally (wipe! sk))))
-      :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))))
+   (add-key! vault-id (-generate! (:provider (vault vault-id)) :x25519))))
 
 (defn- check-secret-bytes [x what]
   (when-not (and #?(:clj (bytes? x) :cljs false) (= 32 (alength ^bytes x)))
     (throw (ex-info (str what " must be 32 bytes")
                     {:type ::bad-secret :what what :got (str (type x))}))))
+
+(defn- import-key! [vault-id alg secret-bytes]
+  (try
+    (add-key! vault-id (-import! (:provider (vault vault-id)) alg secret-bytes))
+    (finally #?(:clj (wipe! secret-bytes)))))
 
 (defn import-signing-key!
   "Import an Ed25519 seed (32 bytes) into vault (default :default) and
@@ -258,11 +281,7 @@
   ([seed] (import-signing-key! :default seed))
   ([vault-id seed]
    (check-secret-bytes seed "Ed25519 seed")
-   #?(:clj  (let [pub (key/->Ed25519PublicKey :signet/ed25519-public-key :Ed25519
-                                              (impl/ed25519-seed->public-key seed))]
-              (try (put-key! vault-id :ed25519 pub seed)
-                   (finally (wipe! seed))))
-      :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))))
+   (import-key! vault-id :ed25519 seed)))
 
 (defn import-encryption-key!
   "Import an X25519 secret key (32 bytes) into vault (default :default) and
@@ -273,11 +292,7 @@
   ([sk] (import-encryption-key! :default sk))
   ([vault-id sk]
    (check-secret-bytes sk "X25519 secret key")
-   #?(:clj  (let [pub (key/->X25519PublicKey :signet/x25519-public-key :X25519
-                                             (impl/x25519-private->public-key sk))]
-              (try (put-key! vault-id :x25519 pub sk)
-                   (finally (wipe! sk))))
-      :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))))
+   (import-key! vault-id :x25519 sk)))
 
 (def ^:private export-acknowledgement {:i-understand :exposes-secret})
 
@@ -327,8 +342,9 @@
 (defn ^:no-doc x25519-dh
   "INTERNAL to signet's crypto code (box, shared keys): the X25519 shared
    secret of h's key (X25519, or Ed25519 converted inside the call) and
-   their X25519 public key bytes. The caller must wipe the result as soon
-   as it is consumed. Impure: reads the vault.
+   their X25519 public key bytes: a byte array, or under the :sodium
+   provider a nacljc secret. The caller must release it with
+   impl/destroy-material! as soon as it is consumed. Impure: reads the vault.
    Throws ::not-a-handle, ::unknown-vault or ::destroyed-key."
   [h their-x25519-pub]
   (check-handle h "x25519-dh")
@@ -340,7 +356,7 @@
                   :x25519  (impl/x25519-dh m their-x25519-pub)
                   :ed25519 (let [xsk (impl/ed25519-seed->x25519-private m)]
                              (try (impl/x25519-dh xsk their-x25519-pub)
-                                  (finally (wipe! xsk)))))))
+                                  (finally (impl/destroy-material! xsk)))))))
        :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))))
 
 (defn sign

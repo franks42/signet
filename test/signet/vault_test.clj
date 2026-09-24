@@ -173,3 +173,42 @@
         r   (sign/verify-edn env {:signer (:kid h)})]
     (is (:valid? r))
     (is (:verified? r))))
+
+;; ---- providers agree (run with the libsodium backend) ----
+
+(deftest memory-and-sodium-providers-agree
+  (if-not (= :sodium @(requiring-resolve 'signet.impl/backend))
+    (is true "the :sodium provider needs the libsodium backend; covered by test:jvm-sodium / test:bb-sodium")
+    (let [sodium-provider @(requiring-resolve 'signet.vault.sodium/sodium-provider)
+          secret?         @(requiring-resolve 'nacljc.core/secret?)
+          encrypt         @(requiring-resolve 'signet.encryption/box)
+          decrypt         @(requiring-resolve 'signet.encryption/unbox)
+          _    (vault/register-vault! :mem (vault/memory-provider))
+          _    (vault/register-vault! :native (sodium-provider))
+          kp   (key/signing-keypair)
+          m    (vault/import-signing-key! :mem (aclone ^bytes (:d kp)))
+          n    (vault/import-signing-key! :native (aclone ^bytes (:d kp)))
+          msg  (.getBytes "same key, two enclaves" "UTF-8")]
+      (is (= (:kid m) (:kid n) (key/kid kp)))
+      (is (= (hex (sign/sign kp msg)) (hex (vault/sign m msg)) (hex (vault/sign n msg)))
+          "byte-identical signatures")
+      (is (vault/with-material n secret?) ":native lends a nacljc secret")
+      (is (bytes? (vault/with-material m identity)) ":memory lends bytes")
+      (testing "boxes pass between the two enclaves both ways"
+        (let [xm (vault/import-encryption-key! :mem (aclone ^bytes (:d (key/encryption-keypair))))
+              xn (vault/generate-encryption-key! :native)]
+          (is (= "m->n" (String. ^bytes (:plaintext (decrypt xn (encrypt xm (vault/public-key xn) (.getBytes "m->n" "UTF-8")))) "UTF-8")))
+          (is (= "n->m" (String. ^bytes (:plaintext (decrypt xm (encrypt xn (vault/public-key xm) (.getBytes "n->m" "UTF-8")))) "UTF-8")))))
+      (testing "export and destroy behave the same"
+        (is (= (hex (vault/export-secret m ack)) (hex (vault/export-secret n ack))))
+        (vault/destroy! n)
+        (is (= ::vault/destroyed-key (error-type #(vault/sign n msg))))))))
+
+(deftest the-memory-provider-wipes-what-it-lends
+  (vault/register-vault! :mem (vault/memory-provider))
+  (let [h      (vault/generate-signing-key! :mem)
+        leaked (atom nil)]
+    (vault/with-material h #(reset! leaked %))
+    (is (bytes? @leaked))
+    (is (every? zero? @leaked) "the lent copy is zeroed as soon as the operation returns")
+    (is (= 64 (alength ^bytes (vault/sign h (byte-array 1)))) "the stored key is unaffected")))

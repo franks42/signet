@@ -64,14 +64,16 @@
          (some? (:d k))))
 
      (defn- wipe!
-       "Zero a secret byte array whose purpose has ended. Impure."
-       [bs]
-       (when bs (java.util.Arrays/fill ^bytes bs (byte 0))))
+       "Release secret material whose purpose has ended: a byte array is
+        zeroed; a nacljc secret (under the vault's :sodium provider) is
+        destroyed. Impure."
+       [x]
+       (when x (impl/destroy-material! x)))
 
      (defn- message-key!
        "HKDF key for one message, bound to its direction. Consumes (wipes)
         the DH output."
-       [^bytes shared ^bytes nonce ^bytes sender-xpk ^bytes recipient-xpk]
+       [shared ^bytes nonce ^bytes sender-xpk ^bytes recipient-xpk]
        (let [info (byte-array (+ (alength info-prefix) 64))]
          (System/arraycopy info-prefix 0 info 0 (alength info-prefix))
          (System/arraycopy sender-xpk 0 info (alength info-prefix) 32)

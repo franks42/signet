@@ -16,7 +16,7 @@
   ;; libsodium backend (signet.impl.sodium), through nacljc from Clojars.
   ;; Needs libsodium >= 1.0.19 installed and JDK 25+. Use with :test, e.g.
   ;; clojure -M:test:sodium
-  :sodium {:extra-deps {com.github.franks42/nacljc {:mvn/version "0.1.0"}}
+  :sodium {:extra-deps {com.github.franks42/nacljc {:mvn/version "0.2.0"}}
            :jvm-opts   ["--enable-native-access=ALL-UNNAMED"
                         "-Dsignet.backend=sodium"]}
 

@@ -122,3 +122,16 @@
   "AEAD decrypt. Throws on auth failure or tampered AAD."
   [key nonce ciphertext aad]
   (na/chacha20-poly1305-decrypt key nonce ciphertext aad))
+
+(defn destroy-material!
+  "Release secret material whose purpose has ended: overwrite a byte array
+   with zeros, or destroy a nacljc secret (zeroes and frees its guarded
+   memory). Under the vault's :sodium provider, derived secrets (DH
+   outputs, message keys) are nacljc secrets. Impure: writes or frees its
+   argument. Returns nil."
+  [x]
+  (cond
+    (bytes? x)      (java.util.Arrays/fill ^bytes x (byte 0))
+    (na/secret? x)  (na/secret-destroy! x))
+  nil)
+
