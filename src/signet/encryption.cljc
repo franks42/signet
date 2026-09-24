@@ -32,6 +32,7 @@
    unbox never throws on malformed input."
   (:require [cedn.core :as cedn]
             [signet.key :as key]
+            [signet.vault :as vault]
             #?(:clj [signet.impl :as impl])))
 
 #?(:clj
@@ -39,8 +40,28 @@
      (def ^:private ^"[B" info-prefix (.getBytes "signet/box/v2" "UTF-8"))
      (def ^:private header-slots #{:type :v :from :to :aad :nonce})
 
-     (defn- x-pub [k] (:x (key/encryption-public-key k)))
+     (defn- x-pub
+       "The X25519 public key bytes of a key record or a vault handle."
+       [k]
+       (:x (key/encryption-public-key (if (vault/handle? k) (vault/public-key k) k))))
+
      (defn- x-priv [k] (:d (key/encryption-private-key k)))
+
+     (defn- dh
+       "X25519 of our key (a keypair, or a handle: the DH then runs on
+        material the vault lends for this call) with their X25519 public key
+        bytes. The caller wipes the result."
+       [ours their-xpk]
+       (if (vault/handle? ours)
+         (vault/x25519-dh ours their-xpk)
+         (impl/x25519-dh (x-priv ours) their-xpk)))
+
+     (defn- has-private?
+       "A keypair with its private part, or a handle whose vault holds it."
+       [k]
+       (if (vault/handle? k)
+         (some? (vault/handle (:vault k) (:kid k)))
+         (some? (:d k))))
 
      (defn- wipe!
        "Zero a secret byte array whose purpose has ended. Impure."
@@ -64,9 +85,10 @@
        (byte-array 12))))
 
 (defn box
-  "Encrypt plaintext bytes from sender-kp (must hold a private key) to
-   recipient-pub (a public key or keypair; Ed25519 or X25519). Returns the
-   box as an EDN map.
+  "Encrypt plaintext bytes from sender-kp (a vault handle, or a keypair
+   holding a private key) to recipient-pub (a public key, keypair or
+   handle; Ed25519 or X25519). Returns the box as an EDN map. With a
+   handle, the key agreement runs inside the vault.
 
    opts:
      :from?  include the sender's kid (default true)
@@ -81,7 +103,7 @@
    (box sender-kp recipient-pub plaintext nil))
   ([sender-kp recipient-pub plaintext {:keys [aad] from? :from? to? :to? :or {from? true to? true} :as opts}]
    #?@(:clj
-       [(when-not (:d sender-kp)
+       [(when-not (has-private? sender-kp)
           (throw (ex-info "box: sender key has no private part" {:type ::no-private-key})))
         (let [nonce  (impl/random-bytes 24)
               s-xpk  (x-pub sender-kp)
@@ -90,7 +112,7 @@
                        from?                 (assoc :from (key/kid sender-kp))
                        to?                   (assoc :to (key/kid recipient-pub))
                        (contains? opts :aad) (assoc :aad aad))
-              k      (message-key! (impl/x25519-dh (x-priv sender-kp) r-xpk) nonce s-xpk r-xpk)
+              k      (message-key! (dh sender-kp r-xpk) nonce s-xpk r-xpk)
               ct     (try (impl/chacha20-poly1305-encrypt k zero-nonce plaintext
                                                           (cedn/canonical-bytes header))
                           (finally (wipe! k)))]
@@ -106,8 +128,20 @@
        "Do kid string kid and key record pub name the same X25519 key? The
         kid form (Ed25519 or X25519) does not matter."
        [kid pub]
-       (when-let [p (key/lookup kid)]
+       (when-let [p (vault/lookup kid)]
          (java.util.Arrays/equals (x-pub p) (x-pub pub))))
+
+     (defn- recipient-candidates
+       "The keys unbox may try: a vault id (every key that vault holds), a
+        handle, a keypair, or a collection of handles and keypairs. Handles
+        whose key is gone and keys without a private part are dropped."
+       [x]
+       (->> (cond (keyword? x)       (vault/handles x)
+                  (vault/handle? x)  [x]
+                  (map? x)           [x]
+                  (coll? x)          x
+                  :else              [])
+            (filter has-private?)))
 
      (defn- invalid [reason & [extra]]
        (merge {:valid? false :error reason} extra))
@@ -129,7 +163,7 @@
        "Plaintext if the box opens for this recipient/sender pair, else nil."
        [boxed recipient sender]
        (let [nonce (:nonce boxed)
-             k     (message-key! (impl/x25519-dh (x-priv recipient) (x-pub sender))
+             k     (message-key! (dh recipient (x-pub sender))
                                  nonce (x-pub sender) (x-pub recipient))]
          (try
            (impl/chacha20-poly1305-decrypt k zero-nonce (:ct boxed)
@@ -138,9 +172,10 @@
            (finally (wipe! k)))))))
 
 (defn unbox
-  "Open a box. recipient-kp-or-kps is a keypair or a collection of
-   keypairs; with several, the :to slot picks one, or each is tried when
-   the box has no :to. Never throws: malformed input yields
+  "Open a box. recipient-kp-or-kps is a vault id (e.g. :default: every
+   key that vault holds), a handle, a keypair, or a collection of handles
+   and keypairs. With several, the :to slot picks one, or each is tried
+   when the box has no :to. Never throws: malformed input yields
    {:valid? false :error <reason>}.
 
    opts:
@@ -152,7 +187,8 @@
    Result: {:valid? :verified? (with :from) :plaintext :from :to :aad :error}
 
    Never throws: malformed input gives {:valid? false :error <reason>}.
-   Impure: reads the key store to resolve kid slots; never writes it."
+   Impure: reads the vault (and the key store) to resolve kids; never
+   writes either."
   ([recipient-kp-or-kps boxed]
    (unbox recipient-kp-or-kps boxed nil))
   ([recipient-kp-or-kps boxed {expected-from :from :as opts}]
@@ -160,7 +196,7 @@
       (try
         (if-let [err (shape-error boxed)]
           (invalid err)
-          (let [candidates (filter :d (if (map? recipient-kp-or-kps) [recipient-kp-or-kps] recipient-kp-or-kps))
+          (let [candidates (recipient-candidates recipient-kp-or-kps)
                 to-kid     (:to boxed)
                 recipients (if to-kid
                              (filter #(same-identity? to-kid %) candidates)
@@ -168,8 +204,8 @@
                 from-kid   (:from boxed)
                 expected   (expected-set expected-from)
                 senders    (if from-kid
-                             (keep key/lookup [from-kid])
-                             (keep key/lookup expected))
+                             (keep vault/lookup [from-kid])
+                             (keep vault/lookup expected))
                 aad-ok?    (or (not (contains? opts :aad))
                                (and (contains? boxed :aad)
                                     (= (cedn/canonical-str (:aad opts))

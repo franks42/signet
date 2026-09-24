@@ -6,9 +6,10 @@
             [clojure.test :refer [deftest is testing use-fixtures]]
             [signet.encryption :as enc]
             [signet.impl :as impl]
-            [signet.key :as key]))
+            [signet.key :as key]
+            [signet.vault :as vault]))
 
-(use-fixtures :each (fn [f] (key/clear-key-store!) (f)))
+(use-fixtures :each (fn [f] (key/clear-key-store!) (vault/reset-default-vault!) (f)))
 
 (defn- utf8 [^String s] (.getBytes s "UTF-8"))
 (defn- text [^bytes bs] (String. bs "UTF-8"))
@@ -201,3 +202,58 @@
         n      20000
         nonces (into #{} (map (fn [_] (vec (:nonce (enc/box alice bob (byte-array 0)))))) (range n))]
     (is (= n (count nonces)))))
+
+;; ---------------------------------------------------------------------------
+;; Vault handles (0.8.0): the key agreement runs inside the vault
+;; ---------------------------------------------------------------------------
+
+(deftest handles-box-and-unbox
+  (let [alice (vault/generate-signing-key!)
+        bob   (vault/generate-encryption-key!)]
+    (testing "handle to handle"
+      (let [boxed (enc/box alice (vault/public-key bob) (utf8 "via vault"))
+            r     (enc/unbox bob boxed)]
+        (is (true? (:valid? r)))
+        (is (= "via vault" (plaintext r)))
+        (is (= (:kid alice) (:from r)))))
+    (testing "the recipient may be named by its vault: :to picks the key"
+      (let [carol (vault/generate-encryption-key!)
+            boxed (enc/box alice (vault/public-key carol) (utf8 "for carol"))]
+        (is (= "for carol" (plaintext (enc/unbox :default boxed))))))
+    (testing "no :to slot: every key the vault holds is tried"
+      (let [boxed (enc/box alice (vault/public-key bob) (utf8 "quiet") {:to? false})]
+        (is (= "quiet" (plaintext (enc/unbox :default boxed))))))
+    (testing "a set of handles"
+      (let [boxed (enc/box alice (vault/public-key bob) (utf8 "set"))]
+        (is (= "set" (plaintext (enc/unbox #{bob (vault/generate-encryption-key!)} boxed))))))))
+
+(deftest handles-and-keypairs-interoperate
+  (let [kp (key/encryption-keypair)
+        h  (vault/import-encryption-key! (aclone ^bytes (:d kp)))
+        peer (key/encryption-keypair)]
+    (is (= (key/kid kp) (:kid h)))
+    (is (= "k->h" (plaintext (enc/unbox h (enc/box peer (key/public-key kp) (utf8 "k->h"))))))
+    (is (= "h->k" (plaintext (enc/unbox peer (enc/box h (key/public-key peer) (utf8 "h->k"))))))
+    (is (= "same key" (plaintext (enc/unbox kp (enc/box peer (vault/public-key h) (utf8 "same key")))))
+        "the handle and the keypair are the same key")))
+
+(deftest destroyed-and-foreign-handles
+  (let [alice (vault/generate-signing-key!)
+        bob   (vault/generate-encryption-key!)
+        boxed (enc/box alice (vault/public-key bob) (utf8 "x"))]
+    (vault/destroy! bob)
+    (is (= :no-recipient-key (:error (enc/unbox bob boxed))) "a destroyed handle is not a candidate")
+    (is (false? (:valid? (enc/unbox :default boxed))))
+    (is (= :signet.encryption/no-private-key
+           (try (enc/box bob (vault/public-key alice) (utf8 "y")) :no-throw
+                (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
+        "a destroyed handle cannot send")
+    (is (false? (:valid? (enc/unbox :nowhere boxed))) "an unknown vault id: invalid, never a throw")))
+
+(deftest unbox-with-a-vault-resolves-senders-from-its-public-side
+  (let [alice (vault/generate-signing-key!)
+        bob   (vault/generate-encryption-key!)
+        boxed (enc/box alice (vault/public-key bob) (utf8 "hi") {:from? false})]
+    (is (false? (:valid? (enc/unbox bob boxed))) "no :from and no expectation")
+    (is (true? (:verified? (enc/unbox bob boxed {:from (:kid alice)}))))))
+

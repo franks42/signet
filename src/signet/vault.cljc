@@ -324,6 +324,25 @@
 ;; Operations
 ;; ============================================================
 
+(defn ^:no-doc x25519-dh
+  "INTERNAL to signet's crypto code (box, shared keys): the X25519 shared
+   secret of h's key (X25519, or Ed25519 converted inside the call) and
+   their X25519 public key bytes. The caller must wipe the result as soon
+   as it is consumed. Impure: reads the vault.
+   Throws ::not-a-handle, ::unknown-vault or ::destroyed-key."
+  [h their-x25519-pub]
+  (check-handle h "x25519-dh")
+  (let [p (provider-of h) kid (:kid h)]
+    #?(:clj  (-with-material
+              p kid
+              (fn [m]
+                (case (-alg p kid)
+                  :x25519  (impl/x25519-dh m their-x25519-pub)
+                  :ed25519 (let [xsk (impl/ed25519-seed->x25519-private m)]
+                             (try (impl/x25519-dh xsk their-x25519-pub)
+                                  (finally (wipe! xsk)))))))
+       :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))))
+
 (defn sign
   "Ed25519 signature (64 bytes) of message bytes with h's key. The seed is
    lent to the signing call only. Impure: reads the vault.
