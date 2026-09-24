@@ -240,12 +240,20 @@ Rules:
    long as both long-term keys. If either leaks, everything protected by
    that shared key is exposed. The docstring states this. Conversations that
    need forward secrecy use `signet.session`.
-5. **A deterministic id both sides agree on.** A symmetric key has no
-   public part, so it cannot use a public-key kid. Its id is computed the
-   same way by both parties, for example
-   `urn:signet:sk:<base64url(SHA-256(\"signet/shared/v1\" ‖ sorted kids ‖ context))>`.
-   Each side can then name "our key" without exchanging anything. The id
-   reveals nothing about the key.
+5. **A key-derived id that only holders can compute** (settled
+   2026-09-23, decision 16). A symmetric key has no public part, so its id
+   is derived from the shared secret by the same HKDF that produces the
+   encryption and MAC keys:
+   `kid = HKDF-Expand(PRK, "signet/shared/v1/kid", 32)`, written
+   `urn:signet:shared:<base64url>` ("shared" rather than "sk", which reads
+   like "secret key"). Every holder computes the same id, no one else can,
+   and it reveals nothing about the other derived keys (independent HKDF
+   outputs). It names the relationship as a whole; the encryption keys
+   underneath stay directional. Not a plain hash of the key (see decision
+   16), and not a hash of both parties' kids, which anyone could compute
+   and which would show who talks to whom. Locally the vault also keeps a
+   private index from (my kid, peer kid, context) to the handle; that
+   index never leaves the vault.
 6. **It lives in the vault only.** It never goes into today's key store,
    which is a plain map where the key would be visible. `export-secret` is
    the only way out, as for any secret.
@@ -461,6 +469,36 @@ libsodium 1.0.22 has it today, and the JDK has ML-KEM for a JCA
 provider. Hybrid signatures come after, as they need ML-DSA through
 nacljc (libsodium has none), or through the JDK or Bouncy Castle.
 
+## Future: names for keys
+
+Raised 2026-09-23, **not for 0.8.0**. Kids are global, self-certifying
+identifiers, but people want to say "Bob". A later version should let
+callers find keys by name, and do it in a way that fits trust and policy
+rather than a flat lookup table:
+
+- **Names are local, kids are global.** In SDSI/SPKI terms, "Bob" means
+  *my* Bob: a name in my namespace, bound to a kid. Linked names compose:
+  "Alice's Bob" is the key Alice's namespace binds to "Bob". This avoids
+  a global naming authority and fits Zooko's triangle (names that are
+  human-readable and secure, but local).
+- **Bindings are signed assertions,** not store entries: a naming
+  assertion (issuer kid, name, subject kid, validity) as a signed EDN
+  envelope. Resolving a name is then a verification that returns evidence
+  (which assertions, from whom, valid until when), with the same valid /
+  verified / authorized distinction as everything else: a correctly
+  signed binding from an issuer you do not trust resolves to nothing.
+- **Local petnames first:** the simplest form is my own unsigned binding
+  of "Bob" to a kid on the vault's public side. Signed, shareable naming
+  assertions (SDSI/SPKI-style) come next.
+- **stroopwafel:** naming assertions are facts, and authorization rules
+  can refer to names ("members of Alice's group may …"). That makes name
+  resolution a natural part of the policy decision point rather than a
+  separate lookup.
+- **X.509 at most as an import:** reading an X.509 certificate's binding as
+  a naming assertion for interop, never as signet's own model.
+- Names never replace kids on the wire or in signatures: they resolve to
+  kids, and kids are what gets verified.
+
 ## Future: persistence and password unlocking
 
 Raised 2026-09-23, **not for 0.8.0**; to be discussed. An encrypted vault
@@ -636,4 +674,10 @@ a human password is a long-standing weak spot in many designs. Topics:
       key carried in a message is registered only after its kid is verified
       (`SHA-256(key) = kid`) and only when the caller asks, so untrusted
       input cannot grow memory.
+16. **Symmetric-key ids are key-derived through HKDF** (`"signet/shared/v1/kid"`),
+    not a plain hash of the key. A plain hash of a key derived from a
+    password would let an observer test guesses offline. Independent HKDF
+    outputs keep the id unrelated to the encryption and MAC keys. And
+    unlike a hash of both kids, only holders can compute it, so it does
+    not reveal who talks to whom.
 
