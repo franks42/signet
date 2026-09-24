@@ -335,6 +335,92 @@ signet's `:sodium` provider is built on this. The JCA backend gets the
 4. **Later:** `:memory-encrypted` where native is unavailable, `:webcrypto`
    for signet's ClojureScript side, then agent, keychain and HSM providers.
 
+## Post-quantum suites
+
+Proposed 2026-09-23. A quantum computer running Shor's algorithm breaks
+X25519, Ed25519 and secp256k1. It does not meaningfully break the
+symmetric layer: Grover's algorithm at best halves a symmetric key's
+effective strength, so the 256-bit-key AEADs (ChaCha20-Poly1305,
+AEGIS-256) keep about 128-bit security, and HKDF-SHA-256 and HMAC stay.
+(AEGIS-128L's 128-bit key would drop to about 64 bits: one more reason to
+prefer AEGIS-256.) **So a post-quantum suite keeps its AEAD component and
+replaces the signing and key-exchange components.** But it still changes
+the protocol, for the reasons below.
+
+### Available now [verified 2026-09-23]
+
+| Library | Key exchange | Signatures |
+|---|---|---|
+| libsodium 1.0.22 | ML-KEM-768; **X-Wing** (ML-KEM-768 + X25519 hybrid, "the recommended KEM for most" uses per its ChangeLog) | none |
+| JDK 25 | ML-KEM (SunJCE) | ML-DSA (SUN) |
+| Bouncy Castle 1.86 | ML-KEM | ML-DSA |
+
+X-Wing sizes (libsodium headers): public key 1,216 bytes, ciphertext
+1,120 bytes, secret key 32 bytes (a seed), shared secret 32 bytes.
+ML-KEM-768: public key 1,184, ciphertext 1,088. ML-DSA-65: public key
+1,952, signature 3,309.
+
+### What changes, and why it is more than swapping primitives
+
+1. **A KEM is not Diffie-Hellman.** ML-KEM (and X-Wing) *encapsulate* a
+   secret to the recipient's public key. There is no value that both
+   sides compute non-interactively from their static keys, as
+   DH(sender, recipient) is today. Three designs rely on that:
+   - **box v2** authenticates the sender through that DH. A PQ box carries
+     a KEM ciphertext in its header *and* authenticates the sender
+     separately: a signature by the sender's (hybrid) signing key over the
+     header and ciphertext, or an authenticated-KEM construction like
+     HPKE's auth mode.
+   - **`shared-key!`** (see "Shared symmetric keys") derives the same key
+     on both sides with no exchange. With a KEM, one side must first send
+     the other a ciphertext: a small handshake, whose result is then kept
+     in the vault as before.
+   - **Noise KK's `ss` token** is a static-static DH. Post-quantum Noise
+     variants are different handshakes, not a swapped primitive.
+2. **"The kid is the key" no longer holds.** A kid URN embeds a 32-byte
+   Curve25519 key today, so `lookup` rebuilds the key from the kid alone.
+   PQ public keys (1,184–1,952 bytes) are too large for that. PQ kids are
+   a hash of the key, e.g. `urn:signet:pk:xwing:<base64url(SHA-256(pk))>`,
+   and the full key comes from somewhere else: the vault, a directory,
+   or the message itself. That affects `lookup`, box's kid slots, and
+   chain blocks' `:next-key`. **0.8.0's lookup design should allow for
+   kids that do not contain their key**, even before any PQ suite exists.
+3. **Hybrid, not replacement.** Combine a classical and a PQ component, so
+   the result stays secure if either holds, as TLS's X25519MLKEM768 and
+   libsodium's X-Wing do for key exchange. For signatures, a hybrid carries
+   both an Ed25519 and an ML-DSA signature, and verification requires
+   both.
+4. **Sizes grow a lot.** Compared with 32-byte keys and 64-byte signatures
+   today: a PQ box header gains about 1.1 KB (the X-Wing ciphertext) plus
+   the sender authentication, and a hybrid signature is about 3.4 KB. That
+   is roughly 50 times larger per signature, which matters most for
+   chains (one signature per block).
+5. **Urgency differs.** Key exchange first: boxes and sessions recorded
+   today can be decrypted later ("harvest now, decrypt later").
+   Signatures are less urgent, since forging one needs a quantum computer
+   when it is verified. The exception is long-lived signed objects:
+   chains, stored envelopes.
+
+### Suites (as in "Algorithm agility")
+
+Each suite still names the whole protocol, because the header layout,
+kid resolution and sender authentication change with it:
+
+| Suite | Key exchange | Sender authentication | KDF | AEAD |
+|---|---|---|---|---|
+| box v2 (today) | X25519 static-static | implicit in the DH | HKDF-SHA-256 | ChaCha20-Poly1305 |
+| box v3 (proposed) | X25519 static-static | implicit in the DH | HKDF-SHA-256 | AEGIS-256 + key commitment |
+| box v4 (post-quantum) | X-Wing encapsulation | hybrid signature (Ed25519 + ML-DSA) or an authenticated KEM | HKDF-SHA-256 | AEGIS-256 (or ChaCha20-Poly1305) |
+| envelope v2 | — | hybrid signature (Ed25519 + ML-DSA) | — | — |
+
+The AEAD column changes independently of the PQ question: the same
+AEADs serve classical and post-quantum suites.
+
+**First step:** box v4's key exchange with X-Wing. It is the urgent part,
+libsodium 1.0.22 has it today, and the JDK has ML-KEM for a JCA
+provider. Hybrid signatures come after, as they need ML-DSA through
+nacljc (libsodium has none), or through the JDK or Bouncy Castle.
+
 ## Open questions
 
 1. Handle shape: a plain map, or a record with a type tag? Should the
@@ -398,6 +484,11 @@ signet's `:sodium` provider is built on this. The JCA backend gets the
       the algorithm in the kid URN, a post-quantum hybrid (X25519 + ML-KEM)
       would be box v4, and sessions bind the full Noise protocol name into
       the transcript (an AEGIS session would be a signet-specific name).
+12. **Post-quantum** (see "Post-quantum suites"): how does a PQ kid (a hash
+    of the key) resolve to its key: vault, directory, or carried in the
+    message? Sender authentication in box v4: a hybrid signature, or an
+    authenticated KEM? Where does ML-DSA come from, given libsodium has
+    none: the JDK, Bouncy Castle, or a future libsodium?
 
 ## Decisions so far (2026-09-23)
 
