@@ -115,7 +115,7 @@ Operations the vault must support, over a handle:
 | Operation | Returns |
 |---|---|
 | `sign` handle msg | signature |
-| `dh` handle their-public-key | shared secret, **kept in the vault** as a new handle (see "Derived secrets") |
+| `dh` handle their-public-key | shared secret, **kept in the vault** as a new handle (see "Derived secrets" and "Shared symmetric keys") |
 | `open-box` handle boxed | plaintext |
 | `public-key` handle | public key |
 | `generate!` algorithm | handle |
@@ -198,6 +198,65 @@ operating system protects.
 rule: **a secret derived from a vault secret stays in the vault** and is
 returned as a handle. The pure core (`impl`, `mix-key!`) still works on
 bytes, inside the provider.
+
+### Shared symmetric keys (from a DH exchange)
+
+Proposed 2026-09-23. Two parties that talk often want to agree once, keep
+the result, and then encrypt, decrypt and authenticate messages cheaply,
+without a full box or session each time. The derived key stays in the
+vault under a handle, like every other secret:
+
+```clojure
+(def h (vault/shared-key! my-handle their-pub {:context "app/v1"}))
+(vault/seal h plaintext)          ; → EDN box: per-message salt, directional key
+(vault/open h boxed)              ; → {:valid? … :plaintext …}; never throws
+(vault/mac h msg)                 ; → tag
+(vault/verify-mac? h msg tag)     ; → boolean; never throws
+(vault/destroy! h)
+```
+
+Rules:
+
+1. **Never use the raw DH output as a key.** `shared-key!` runs it through
+   HKDF with a context (both kids, a purpose label, and the caller's
+   `:context`) and derives **separate keys per purpose**: one for
+   encryption, one for MAC. It also derives **separate keys per
+   direction**, as box v2 does, so a message cannot be reflected back to
+   its sender as if the peer had sent it. The raw output is wiped
+   immediately.
+2. **No caller-chosen nonces, ever.** A long-lived symmetric key with
+   caller-chosen nonces is exactly how nonce reuse happens. Two safe modes:
+   - **Stateless (the default):** every `seal` derives a one-message key
+     from a fresh random salt, as box v2 does. It is safe at any volume,
+     needs no shared state, and survives restarts.
+   - **Stateful:** counters with single-use states, which is what
+     `signet.session` already does. Sessions remain the tool for that.
+3. **A MAC is not a signature.** Both parties hold the key, so either could
+   have produced a tag. `mac` authenticates between the two parties, but
+   proves nothing to a third party about which of them wrote a message. The
+   API says `mac` / `verify-mac?`, never `sign`, and its docstring says so.
+   For non-repudiation, use `sign-edn`.
+4. **No forward secrecy.** A key derived from static-static DH lives as
+   long as both long-term keys. If either leaks, everything protected by
+   that shared key is exposed. The docstring states this. Conversations that
+   need forward secrecy use `signet.session`.
+5. **A deterministic id both sides agree on.** A symmetric key has no
+   public part, so it cannot use a public-key kid. Its id is computed the
+   same way by both parties, for example
+   `urn:signet:sk:<base64url(SHA-256(\"signet/shared/v1\" ‖ sorted kids ‖ context))>`.
+   Each side can then name "our key" without exchanging anything. The id
+   reveals nothing about the key.
+6. **It lives in the vault only.** It never goes into today's key store,
+   which is a plain map where the key would be visible. `export-secret` is
+   the only way out, as for any secret.
+
+Relation to what exists: `key/raw-shared-secret` returns the bare DH
+output today. That is fine as a primitive, but it is not a key to use
+directly. `shared-key!` is the safe, vault-resident way to get one.
+
+Open: the AEAD for `seal`. The default is ChaCha20-Poly1305 with a
+per-message HKDF key, as in box v2. AEGIS (see Open questions) could
+replace that construction.
 
 ### Defaults
 
@@ -292,6 +351,9 @@ signet's `:sodium` provider is built on this. The JCA backend gets the
    example `(export-secret handle :i-understand)`, or is the name enough?
 7. secp256k1 (Bouncy Castle) keys live in the `:memory` provider only.
    Acceptable?
+8. Shared symmetric keys: is the stateless mode enough for 0.8.0, with
+   stateful counters left to sessions? Which AEAD should `seal` use
+   (ChaCha20-Poly1305 with a per-message key, or AEGIS)?
 
 ## Decisions so far (2026-09-23)
 
