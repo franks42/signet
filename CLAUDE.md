@@ -123,6 +123,11 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   sign/box/chain, `signet.shared`. Phases 1–5 done (see CHANGELOG). Sessions
   move onto handles in the release after. Key records remain the raw layer;
   they are deprecated in that release (decision 17), not removed.
+- **Next: 0.9.0 (main is 0.9.0-SNAPSHOT):** sessions on vault handles
+  (chaining and transport keys in the vault, decision 9) and deprecating
+  key records (decision 17). Open design topics (AEGIS suites, box key
+  commitment, post-quantum, persistence and password unlocking, names for
+  keys) are in docs/07-secret-handles-design.md.
   **After every release, bump build.clj to the next -SNAPSHOT.**
 - Verified from the installed jar in a scratch consumer (`bb test:jar`,
   signet's tests only, no src): JVM jca 131/652, JVM sodium 131/652 +
