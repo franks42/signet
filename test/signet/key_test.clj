@@ -414,9 +414,7 @@
 ;; === Pure functions never touch the store; the ! twins register ===
 
 (defn- store+defaults []
-  [(set (map key/kid (key/registered-keys)))
-   (key/default-signing-keypair)
-   (key/default-encryption-keypair)])
+  (set (map key/kid (key/registered-keys))))
 
 (deftest pure-functions-leave-store-and-defaults-alone
   (let [ed  (key/signing-keypair)
@@ -453,12 +451,10 @@
   (testing "encryption-keypair! registers and returns the keypair"
     (let [kp (key/encryption-keypair!)]
       (is (key/encryption-keypair? (key/lookup (key/kid kp))))))
-  (testing "registering never sets a default"
-    (key/signing-keypair!)
-    (key/encryption-keypair!)
-    (key/register! (key/signing-keypair))
-    (is (nil? (key/default-signing-keypair)))
-    (is (nil? (key/default-encryption-keypair)))))
+  (testing "registering a keypair twice keeps one entry"
+    (let [kp (key/signing-keypair!)]
+      (key/register! kp)
+      (is (= 1 (count (filter #(= (key/kid kp) (key/kid %)) (key/registered-keys))))))))
 
 (deftest key-store-most-info-wins-test
   (testing "keypair is not overwritten by public key"
@@ -520,58 +516,6 @@
       (key/register! kp)
       (key/register! kp)
       (is (= 1 (count (key/registered-keys)))))))
-
-;; === Default keys: set explicitly, never by registering ===
-
-(deftest default-signing-keypair-test
-  (testing "no default initially, and creating keys does not set one"
-    (is (nil? (key/default-signing-keypair)))
-    (key/signing-keypair)
-    (key/signing-keypair!)
-    (is (nil? (key/default-signing-keypair))))
-
-  (testing "set-default-signing-keypair! sets it"
-    (let [kp (key/signing-keypair)]
-      (key/set-default-signing-keypair! kp)
-      (is (= kp (key/default-signing-keypair)))))
-
-  (testing "clear-defaults! resets"
-    (key/clear-defaults!)
-    (is (nil? (key/default-signing-keypair))))
-
-  (testing "clear-key-store! also clears defaults"
-    (key/set-default-signing-keypair! (key/signing-keypair))
-    (key/clear-key-store!)
-    (is (nil? (key/default-signing-keypair)))))
-
-(deftest ensure-default-signing-keypair!-test
-  (testing "creates, registers and sets one when there is none"
-    (let [kp (key/ensure-default-signing-keypair!)]
-      (is (key/signing-keypair? kp))
-      (is (= kp (key/default-signing-keypair)))
-      (is (= kp (key/lookup (key/kid kp))))))
-  (testing "returns the existing default afterwards"
-    (let [kp (key/default-signing-keypair)]
-      (is (= kp (key/ensure-default-signing-keypair!)))
-      (is (= 1 (count (key/registered-keys))))))
-  (testing "an explicitly set default is kept"
-    (key/clear-key-store!)
-    (let [mine (key/signing-keypair)]
-      (key/set-default-signing-keypair! mine)
-      (is (= mine (key/ensure-default-signing-keypair!)))))
-  (testing "under concurrency exactly one keypair becomes the default"
-    (key/clear-key-store!)
-    (let [results (doall (pmap (fn [_] (key/ensure-default-signing-keypair!)) (range 32)))]
-      (is (= 1 (count (set (map key/kid results)))) "every caller got the same keypair")
-      (is (= 1 (count (key/registered-keys))) "losers of the race registered nothing"))))
-
-(deftest default-encryption-keypair-test
-  (testing "set explicitly, never by creating or registering"
-    (key/encryption-keypair!)
-    (is (nil? (key/default-encryption-keypair)))
-    (let [kp (key/encryption-keypair)]
-      (key/set-default-encryption-keypair! kp)
-      (is (= kp (key/default-encryption-keypair))))))
 
 ;; === Secrets never appear in printed output or error data ===
 

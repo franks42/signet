@@ -34,6 +34,7 @@
   (:refer-clojure :exclude [extend])
   (:require [cedn.core :as cedn]
             [signet.key :as key]
+            [signet.vault :as vault]
             [signet.sign :as sign]
             #?(:clj [signet.impl :as impl])))
 
@@ -196,12 +197,12 @@
    credential, so treat it like one."
   ([content]
    ;; No token, no explicit key → use default signing keypair as root
-   (let [root-kp (key/default-signing-keypair)]
+   (let [root-kp (vault/default-signing-key)]
      (when-not root-kp
        (throw (ex-info
                "No default signing keypair. Choose one first."
                {:type ::no-default-signing-keypair
-                :hint "Call (key/set-default-signing-keypair! kp), or (key/ensure-default-signing-keypair!) to create one"})))
+                :hint "Call (vault/set-default-signing-key! h), or (vault/ensure-default-signing-key!) to create one"})))
      (create-chain root-kp content)))
   ([token-or-key content]
    (cond
@@ -212,7 +213,7 @@
          (extend-chain token-or-key content))
 
      ;; It's a keypair → create a new chain with this root key
-     (key/signing-keypair? token-or-key)
+     (or (vault/handle? token-or-key) (key/signing-keypair? token-or-key))
      (create-chain token-or-key content)
 
      :else

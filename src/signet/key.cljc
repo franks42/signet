@@ -31,8 +31,8 @@
 
    Store and defaults:
      (register! k) (unregister! kid) (lookup kid) (registered-keys)
-     (clear-key-store!) (set-default-signing-keypair! kp)
-     (default-signing-keypair) (ensure-default-signing-keypair!)
+     (clear-key-store!)
+   The default identity lives in the vault (signet.vault/default-signing-key).
 
    Convenience:
      (public-key k)     — same-curve public key extraction
@@ -86,43 +86,6 @@
 (derive :signet/ed25519-private-key  :signet/signing-private-key)
 (derive :signet/secp256k1-private-key :signet/signing-private-key)
 
-;; ============================================================
-;; Default keys — set explicitly, never as a side effect of registering
-;; ============================================================
-
-(def ^:private default-signing-keypair* (atom nil))
-(def ^:private default-encryption-keypair* (atom nil))
-
-(defn set-default-signing-keypair!
-  "Set the default signing keypair (used by signet.sign/sign-edn! and
-   signet.chain/extend without a key). Impure: writes the default."
-  [kp]
-  (reset! default-signing-keypair* kp))
-
-(defn set-default-encryption-keypair!
-  "Set the default encryption keypair. Impure: writes the default."
-  [kp]
-  (reset! default-encryption-keypair* kp))
-
-(defn default-signing-keypair
-  "Return the default signing keypair, or nil if none is set. Impure: reads
-   the default."
-  []
-  @default-signing-keypair*)
-
-(defn default-encryption-keypair
-  "Return the default encryption keypair, or nil if none is set. Impure:
-   reads the default."
-  []
-  @default-encryption-keypair*)
-
-(defn clear-defaults!
-  "Clear both default keypairs. Impure: writes the defaults."
-  []
-  (reset! default-signing-keypair* nil)
-  (reset! default-encryption-keypair* nil)
-  nil)
-
 ;; -- URN helpers
 
 (defn- urn-algorithm
@@ -162,8 +125,7 @@
 
 (defn register!
   "Register a key in the store. Idempotent — a keypair will not be
-   overwritten by a public key for the same kid. Returns the key. Does not
-   change the defaults (see set-default-signing-keypair!).
+   overwritten by a public key for the same kid. Returns the key.
 
    Impure: writes the key store.
    Throws ex-info {:type ::ephemeral-key} for an ephemeral key, which must
@@ -238,12 +200,10 @@
   ([store] (vals @store)))
 
 (defn clear-key-store!
-  "Remove all keys from the store and clear default keypairs. Impure:
-   writes the key store and the defaults."
+  "Remove all keys from the store. Impure: writes the key store."
   ([] (clear-key-store! default-key-store))
   ([store]
    (reset! store {})
-   (clear-defaults!)
    nil))
 
 (defn unregister!
@@ -332,19 +292,6 @@
    generating)."
   [& args]
   (register! (apply signing-keypair args)))
-
-(defn ensure-default-signing-keypair!
-  "The default signing keypair, creating one first if none is set: a new
-   Ed25519 keypair is registered and made the default. Safe under
-   concurrency: exactly one caller's keypair becomes the default, and every
-   caller gets that one. Impure: may draw from the CSPRNG and write the key
-   store and the default."
-  []
-  (or (default-signing-keypair)
-      (let [kp (signing-keypair)]
-        (if (compare-and-set! default-signing-keypair* nil kp)
-          (register! kp)
-          (default-signing-keypair)))))
 
 ;; -- Ed25519 (default curve)
 
@@ -619,10 +566,13 @@
   "Return the key identifier as a URN: urn:signet:pk:<algorithm>:<base64url-public-key>.
    Self-describing — the receiver can parse the URN to extract the algorithm
    and the public key bytes directly. Pure: computing a kid never registers
-   the key (so kids of ephemeral keys leave no trace in the store)."
+   the key (so kids of ephemeral keys leave no trace in the store). For a
+   vault key handle (signet.vault), its :kid."
   [k]
-  (let [pub (public-key k)]
-    (str "urn:signet:pk:" (urn-algorithm (:crv pub)) ":" (enc/bytes->base64url (:x pub)))))
+  (if (= :signet/key-handle (:type k))
+    (:kid k)
+    (let [pub (public-key k)]
+      (str "urn:signet:pk:" (urn-algorithm (:crv pub)) ":" (enc/bytes->base64url (:x pub))))))
 
 (defn kid->public-key
   "Parse a kid URN and return the public key record.

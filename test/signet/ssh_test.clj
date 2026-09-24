@@ -167,4 +167,4 @@
     (is (empty? (key/registered-keys)) "load-keypair never touches the key store")
     (is (= (key/kid kp) (key/kid (ssh/load-keypair! test-priv-path))))
     (is (some? (key/lookup (key/kid kp))) "load-keypair! registered it")
-    (is (nil? (key/default-signing-keypair)) "registering sets no default")))
+    (is (= [(key/kid kp)] (map key/kid (key/registered-keys))) "exactly the key load-keypair! registered")))

@@ -1,9 +1,10 @@
 (ns signet.sign-test
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [signet.key :as key]
-            [signet.sign :as sign]))
+            [signet.sign :as sign]
+            [signet.vault :as vault]))
 
-(use-fixtures :each (fn [f] (key/clear-key-store!) (f)))
+(use-fixtures :each (fn [f] (key/clear-key-store!) (vault/reset-default-vault!) (f)))
 
 ;; === Low-level sign/verify tests ===
 
@@ -65,23 +66,24 @@
       (is (some? (:digest result)))
       (is (some? (:message-digest result))))))
 
-(deftest sign-edn!-default-keypair-test
-  (testing "sign-edn! uses the default keypair"
-    (let [kp (key/signing-keypair)]
-      (key/set-default-signing-keypair! kp)
+(deftest sign-edn!-default-identity-test
+  (testing "sign-edn! uses the default vault's signing key"
+    (let [h (vault/generate-signing-key!)]
+      (vault/set-default-signing-key! h)
       (let [result (sign/verify-edn (sign/sign-edn! {:msg "hello"}))]
         (is (:valid? result))
-        (is (= (key/kid kp) (:signer result))))))
+        (is (= (:kid h) (:signer result))))))
 
-  (testing "sign-edn! creates, registers and sets a default if there is none"
-    (key/clear-key-store!)
+  (testing "sign-edn! generates one inside the vault if there is none"
+    (vault/reset-default-vault!)
     (let [envelope (sign/sign-edn! {:msg "hello"})
-          kp       (key/default-signing-keypair)]
+          h        (vault/default-signing-key)]
       (is (:valid? (sign/verify-edn envelope)))
-      (is (some? kp))
-      (is (= (key/kid kp) (get-in envelope [:envelope :signer])))
-      (is (= kp (key/lookup (key/kid kp))) "registered")
-      (is (= (key/kid kp) (get-in (sign/sign-edn! {:msg "again"}) [:envelope :signer]))
+      (is (some? h))
+      (is (= (:kid h) (get-in envelope [:envelope :signer])))
+      (is (some? (vault/handle (:kid h))) "the key lives in the vault")
+      (is (empty? (key/registered-keys)) "nothing went into the old key store")
+      (is (= (:kid h) (get-in (sign/sign-edn! {:msg "again"}) [:envelope :signer]))
           "later calls reuse the same identity")))
 
   (testing "sign-edn! passes opts through"
@@ -92,7 +94,7 @@
   (let [kp (key/signing-keypair)]
     (is (:valid? (sign/verify-edn (sign/sign-edn kp {:msg "x"}))))
     (is (empty? (key/registered-keys)))
-    (is (nil? (key/default-signing-keypair)))
+    (is (nil? (vault/default-signing-key)))
     (is (thrown? Throwable (#'sign/sign-edn {:msg "no key"}))
         "no key-less arity: that convenience is sign-edn!")))
 

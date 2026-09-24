@@ -24,6 +24,7 @@
   (:require [cedn.core :as cedn]
             [com.github.franks42.uuidv7.core :as uuidv7]
             [signet.key :as key]
+            [signet.vault :as vault]
             #?(:clj [signet.impl :as impl])))
 
 ;; ============================================================
@@ -44,15 +45,7 @@
                           :runtime (or (System/getProperty "babashka.version") :jvm)}
                          t))))))
 
-(defn sign
-  "Sign message bytes with a signing keypair. Returns a 64-byte signature
-   (raw 64 for Ed25519; raw r||s for secp256k1 ECDSA).
-   Dispatches on (:crv k); accepts any key that contains a private key.
-   Pure for Ed25519 (deterministic).
-
-   Throws ex-info {:type ::no-private-key} when k has no private part, or
-   {:type ::unsupported-curve} for a curve that cannot sign."
-  [k message-bytes]
+(defn- sign-with-keypair [k message-bytes]
   (let [d (:d k)]
     (when-not d
       (throw (ex-info "Key has no private bytes (:d)" {:type ::no-private-key :key-type (:type k)})))
@@ -67,6 +60,20 @@
 
       (throw (ex-info "Unsupported signing curve"
                       {:type ::unsupported-curve :crv (:crv k) :key-type (:type k)})))))
+
+(defn sign
+  "Sign message bytes with a vault key handle (signet.vault) or a signing
+   keypair. Returns a 64-byte signature (raw 64 for Ed25519; raw r||s for
+   secp256k1 ECDSA). A handle signs inside its vault. A keypair dispatches
+   on (:crv k); any key that contains a private key works.
+   Pure for an Ed25519 keypair (deterministic); a handle reads its vault.
+
+   Throws ex-info {:type ::no-private-key} when k has no private part, or
+   {:type ::unsupported-curve} for a curve that cannot sign."
+  [k message-bytes]
+  (if (vault/handle? k)
+    (vault/sign k message-bytes)
+    (sign-with-keypair k message-bytes)))
 
 (defn verify
   "Verify a signature against message bytes. Returns true if valid.
@@ -135,8 +142,8 @@
       :signature sig})))
 
 (defn sign-edn!
-  "sign-edn with the default signing keypair, creating, registering and
-   setting one first if there is none (key/ensure-default-signing-keypair!).
+  "sign-edn with the default vault's default signing key, generating one
+   inside the vault first if there is none (vault/ensure-default-signing-key!).
    The convenience for scripts and REPLs; production code should choose its
    identity deliberately and call sign-edn.
 
@@ -145,7 +152,7 @@
    Throws as sign-edn does."
   ([payload] (sign-edn! payload nil))
   ([payload opts]
-   (sign-edn (key/ensure-default-signing-keypair!) payload opts)))
+   (sign-edn (vault/ensure-default-signing-key!) payload opts)))
 
 (defn signed?
   "Returns true if x is a signed envelope (reusable key)."
