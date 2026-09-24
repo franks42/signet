@@ -463,19 +463,17 @@ nacljc (libsodium has none), or through the JDK or Bouncy Castle.
 
 ## Open questions
 
-1. Handle shape: a plain map, or a record with a type tag? Should the
-   vault name be in the handle, or implied by where the handle is used?
-2. One global default vault, or an explicit vault always, with the default
-   only in the convenience (`!`) functions?
-3. Sessions in 0.7.0, or right after?
+1. ~~Handle shape~~ **Settled** (decision 7).
+2. ~~Default vault~~ **Settled** (decision 8).
+3. ~~Sessions timing~~ **Settled**: right after 0.8.0 (decision 9).
 4. `:memory-encrypted`: worth building, given that `:sodium` covers the JVM,
    bb and nbb and WebCrypto covers the browser? Its remaining use is the
    JCA backend without libsodium.
 5. Chain tokens: keep `:proof` as exportable bearer material (today's
    design), or redesign so a token proves possession without carrying the
    secret, for example through a signature from the holder's handle?
-6. Should `export-secret` require an explicit acknowledgement argument, for
-   example `(export-secret handle :i-understand)`, or is the name enough?
+6. ~~Export guard~~ **Settled**: an explicit acknowledgement is required
+   (decision 10).
 7. secp256k1 (Bouncy Castle) keys live in the `:memory` provider only.
    Acceptable?
 8. Shared symmetric keys: is the stateless mode enough for 0.8.0, with
@@ -549,3 +547,36 @@ nacljc (libsodium has none), or through the JDK or Bouncy Castle.
 6. **This note:** handles and a vault as the direction for secrets, with
    the refinement that secrets are born in the vault. The details are open
    (see above).
+
+### Settled 2026-09-23 (vault design session)
+
+7. **Handles are typed records naming their vault.** A `KeyHandle` record,
+   `{:type :signet/key-handle :kid … :vault <vault-id>}`. Operations check
+   the type, so a key record or a plain map cannot stand in for a handle.
+   A handle is an immutable value, and the vault id is a *name* (a
+   keyword), not an object reference. So a handle can be printed,
+   serialised, sent, and survives restarts.
+8. **The vault id routes the operation.** A registry maps vault ids to
+   providers (enclaves). Each operation resolves its vault from the
+   handle's `:vault` at call time; an unknown id throws `::unknown-vault`,
+   never a fallback. `:default` is the default vault id, and
+   explicit-vault arities exist for tests and isolation. The first
+   enclave is the current runtime (`:memory`). Later ones (`:sodium`, an
+   agent, a keychain, WebCrypto, an HSM) need no API change: a handle
+   naming them routes there. Moving or copying a secret to another enclave
+   yields a new handle with the new vault id; the old handle keeps
+   referring to the old copy until it is destroyed. The same kid may live
+   in several vaults.
+   - **A handle is a reference, not a credential.** Anyone can build a
+     handle for a kid. Whether a key may be used is decided by its enclave:
+     the process boundary for `:memory`, the enclave's own policy later
+     (an agent asking the user, or a policy decision point such as
+     stroopwafel's). That is where "authorized" eventually meets the vault.
+9. **Sessions move onto vault handles right after 0.8.0**, as their own
+   release, to keep 0.8.0 reviewable. Until then session keys stay in the
+   state map, wiped after use as today.
+10. **Exporting a secret requires an explicit acknowledgement**, e.g.
+    `(export-secret h {:i-understand :exposes-secret})`. Without it the
+    call throws. It is cheap enforcement that stands out in grep and in
+    review ("take the gun away").
+
