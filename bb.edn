@@ -1,5 +1,5 @@
-{:deps  {com.github.franks42/cedn    {:mvn/version "1.5.2"}
-         com.github.franks42/uuidv7  {:mvn/version "0.7.1"}}
+{:deps  {com.github.franks42/cedn    {:mvn/version "1.6.0"}
+         com.github.franks42/uuidv7  {:mvn/version "0.7.2"}}
 
  :paths ["src" "test"]
 

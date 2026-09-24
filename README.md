@@ -123,10 +123,12 @@ the keys it parses from kids, and `key/kid` no longer registers anything.
 Code that relied on either for registration must call `key/register!`
 explicitly.
 
-### cedn 1.5.2
+### cedn 1.6.0
 
-signet signs canonical EDN bytes produced by cedn. Since 0.7.0
-(PR #1) it depends on cedn 1.5.2 (before: 1.2.0). cedn 1.4.0
+signet signs canonical EDN bytes produced by cedn. signet 0.7.1 depends
+on cedn 1.6.0. That release only renames functions (`check`, `throw-*`),
+so the canonical bytes, and therefore signatures, are identical to 1.5.2,
+which 0.7.0 used. Before 0.7.0, signet used cedn 1.2.0, and cedn 1.4.0
 changed the canonical bytes for some inputs to fix determinism and
 injectivity bugs. Those inputs are sets or maps containing `#inst` values,
 integers above 2^53, and integers next to doubles near 2^53. A signature

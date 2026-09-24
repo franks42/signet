@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.7.1 (2026-09-23)
+
+Dependency update only; no API or behaviour change.
+
+- cedn 1.6.0 (was 1.5.2). It only renames functions (`cedn/check`,
+  `cedn.error/throw-*`, with the old names deprecated), so the canonical
+  bytes, and therefore signatures, are unchanged. signet uses none of the
+  renamed functions.
+- uuidv7 0.7.2 (was 0.7.1). Its generator step is now a pure function; the
+  UUID format and distribution are unchanged.
+
+These two should have been released before signet 0.7.0; 0.7.1 catches
+up.
+
 ## 0.7.0 (2026-09-23)
 
 The first release on Clojars (`com.github.franks42/signet`). Earlier
