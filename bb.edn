@@ -46,14 +46,26 @@
    :task (do (run 'test:no-sodium) (run 'test:jvm-sodium) (run 'test:bb-sodium))}
 
   test:jar
-  {:doc  "Install signet's jar locally, then run signet's own tests against the jar from a scratch consumer (tests only, no src): JVM jca, JVM sodium + parity, bb sodium"
-   :task (do (shell "clojure" "-P")
+  {:doc  "Install signet's jar locally, then run signet's own tests against the jar from a scratch consumer (tests only, no src): JVM jca, JVM sodium + parity, bb sodium. Refuses a version already on Clojars."
+   :task (do (run 'check-not-released)
+             (shell "clojure" "-P")
              (shell "clojure" "-T:build" "install")
              (shell "bb" "-cp" "test" "-m" "signet.consumer-check" "local"))}
 
   test:clojars
   {:doc  "Run signet's own tests against a release fetched from Clojars (empty local repo): JVM jca, JVM sodium + parity, bb sodium. Arg: version"
    :task (apply shell "bb" "-cp" "test" "-m" "signet.consumer-check" "clojars" *command-line-args*)}
+
+  check-not-released
+  {:doc  "Fail if build.clj's version is already published on Clojars: installing it locally would shadow the real jar in ~/.m2"
+   :task (let [ver (second (re-find (re-pattern "\\(def version \"([^\"]+)\"\\)") (slurp "build.clj")))
+               url (str "https://repo.clojars.org/com/github/franks42/signet/" ver "/signet-" ver ".pom")
+               published? (zero? (:exit (shell {:continue true :out :string :err :string} "curl" "-sfI" url)))]
+           ;; Refuse to install a released version: the local build would shadow the
+           ;; published jar in ~/.m2 (it happened once, 2026-09-23, right after a release).
+           (when published?
+             (println "ERROR: signet" ver "is already on Clojars; bump build.clj to the next -SNAPSHOT before installing")
+             (System/exit 1)))}
 
   release-check
   {:doc  "Refuse to release unless build.clj's version is a plain X.Y.Z and CHANGELOG.md has a section for it"
