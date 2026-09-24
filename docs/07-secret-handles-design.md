@@ -501,13 +501,7 @@ a human password is a long-standing weak spot in many designs. Topics:
 7. ~~secp256k1~~ **Settled**: `:memory` provider only (decision 13).
 8. ~~Shared symmetric keys~~ **Settled**: stateless only; ChaCha20-Poly1305
    with key commitment (decision 14).
-8a. **The vault's public registry** (proposed, awaiting agreement): it
-   evolves from today's key store but holds public keys only, never
-   secrets. `lookup` checks the registry first, then falls back to parsing
-   the kid (which works for today's 25519 kids). Keys enter only through an
-   explicit `register!`. A key carried in a message is registered only
-   after its kid is verified (`SHA-256(key) = kid`) and only when the
-   caller asks, so untrusted input cannot grow memory.
+8a. ~~The vault's two sides~~ **Settled** (decision 15).
 9. **AEGIS-256 as an opt-in suite** (RFC 10032; review 2026-09-23). It has
    a 256-bit key, a 256-bit nonce ("no practical limits" for random
    nonces) and a 256-bit tag, with ~2^128 key commitment unless the
@@ -622,4 +616,24 @@ a human password is a long-standing weak spot in many designs. Topics:
     ChaCha20-Poly1305 with key commitment, the same construction as box
     v3's ChaCha variant; AEGIS-256 follows as a suite where providers have
     it.
+15. **The vault has two sides indexed by the same kid.**
+    - The **public side** holds public keys: everyone's (peers' and your
+      own). It can be shown, exported, and synced to a directory.
+      `(lookup kid)` answers from it, falling back to parsing the kid
+      (which works for today's 25519 kids).
+    - The **secret side** holds private keys, and only those you hold.
+      `(handle kid)` answers only if the secret side has the key. Bytes
+      leave only through `export-secret` with the acknowledgement.
+    - For your own keys both sides have an entry under the same kid (for
+      25519 the public half can be derived, so storing it is optional). For
+      peers only the public side does. Post-quantum kids are key hashes,
+      so their full public keys must be on the public side, even for your
+      own keys.
+    - Keeping the sides apart keeps trust levels apart: "I know this public
+      key" is weaker than "I hold this identity", and a peer's key can
+      never be mistaken for one of yours.
+    - Keys enter the public side only through an explicit `register!`. A
+      key carried in a message is registered only after its kid is verified
+      (`SHA-256(key) = kid`) and only when the caller asks, so untrusted
+      input cannot grow memory.
 
