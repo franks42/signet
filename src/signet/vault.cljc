@@ -91,8 +91,17 @@
                     pub))]
     (reify Provider
       (-generate! [_ alg]
-        #?(:clj  (let [m (impl/random-bytes 32)]
-                   (try (store! alg m) (finally (wipe! m))))
+        ;; The backend's keypair generators, not seed -> public-key: the JCA
+        ;; backend cannot derive a public key from a seed on babashka.
+        #?(:clj  (let [[x m] (case alg
+                               :ed25519 (impl/generate-ed25519-keypair)
+                               :x25519  (impl/generate-x25519-keypair))
+                       pub (case alg
+                             :ed25519 (key/->Ed25519PublicKey :signet/ed25519-public-key :Ed25519 x)
+                             :x25519  (key/->X25519PublicKey :signet/x25519-public-key :X25519 x))]
+                   (try (swap! secrets assoc (key/kid pub) {:alg alg :material (copy-bytes m)})
+                        pub
+                        (finally (wipe! m))))
            :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
       (-import! [_ alg secret-bytes] (store! alg secret-bytes))
       (-has? [_ kid] (contains? @secrets kid))
@@ -275,7 +284,9 @@
   "Import an Ed25519 seed (32 bytes) into vault (default :default) and
    return its handle. HANDLE WITH CARE: this is how secret bytes enter a
    vault (key files, backups, SSH keys: (import-signing-key! (:d kp))). The
-   caller's array is wiped afterwards.
+   caller's array is wiped afterwards. On babashka this needs the
+   libsodium backend (the JCA backend cannot derive a public key from a
+   seed there).
    Impure: writes the vault and the seed array.
    Throws ex-info {:type ::bad-secret} unless seed is 32 bytes."
   ([seed] (import-signing-key! :default seed))

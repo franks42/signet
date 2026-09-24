@@ -10,6 +10,9 @@
      (close token {:checks ...})        — add final block + seal (no more extensions)
      (close token)                      — seal without adding a block
      (verify token)                     — verify chain integrity + signatures
+     (export-token token ack)           — the sendable form: :proof as bytes
+     (import-token! token)              — a received token's :proof into the vault
+     (discard! token)                   — destroy an open token's proof
 
    The developer never touches ephemeral keys, next-key fields, prev-sig linking,
    or signatures. Each block is a signed envelope (sign/sign-edn) under the hood.
@@ -18,7 +21,18 @@
      {:type   :signet/chain
       :root   <kid URN of root authority>
       :blocks [<signed-envelope-0> <signed-envelope-1> ...]
-      :proof  <ephemeral-sk (open) or seal-signature (sealed)>}
+      :proof  <open: a vault handle (local) or the ephemeral seed (sendable form);
+               sealed: {:sealed true :signature …}>}
+
+   An open token is a bearer credential: whoever holds the proof can
+   extend it. Locally the proof is a vault handle (signet.vault), so the
+   seed stays in the vault and a token prints and serialises safely. To
+   send a token, export-token gives the form with the seed (it needs the
+   acknowledgement {:i-understand :exposes-secret}); the receiver's
+   import-token! puts it into their vault. Both forms can be extended and
+   verified. Extending leaves the old proof usable (one token can be
+   narrowed in several directions); close destroys it; discard! destroys it
+   when a token is no longer needed.
 
    Each block's :message contains:
      {:data     <developer's content — opaque EDN>
@@ -42,16 +56,30 @@
 ;; Internal: block creation helpers
 ;; ============================================================
 
-(defn- make-ephemeral-keypair
-  "Generate an ephemeral Ed25519 keypair for chain linking. Nothing is
-   registered in the key store: verifiers resolve the next block's signer
-   from its self-describing kid URN. The private key lives only in the
-   open token's :proof until the chain is sealed."
-  []
-  #?(:clj  (let [[pub-bytes seed-bytes] (impl/generate-ed25519-keypair)]
-             (key/->Ed25519KeyPair
-              :signet/ed25519-keypair :Ed25519 pub-bytes seed-bytes))
-     :cljs  (throw (js/Error. "Not yet implemented for ClojureScript"))))
+(defn- proof-vault
+  "The vault a chain's new proofs go into: the current proof's (or root
+   key's) vault when it is a handle, else :default."
+  [k]
+  (if (vault/handle? k) (:vault k) :default))
+
+(defn- make-proof!
+  "A new ephemeral Ed25519 key for chain linking, born in vault-id; returns
+   its handle. Its public kid is the next block's signer. Nothing goes into
+   the key store: verifiers resolve the kid from the URN itself."
+  [vault-id]
+  (vault/generate-signing-key! vault-id))
+
+(defn- proof-signer
+  "What signs with an open token's proof: the handle itself, or, for the
+   sendable form (the seed), a keypair rebuilt from it and the last block's
+   next-key."
+  [token]
+  (let [p (:proof token)]
+    (if (vault/handle? p)
+      p
+      (let [last-next-key (get-in (peek (:blocks token)) [:envelope :message :next-key])]
+        (key/->Ed25519KeyPair :signet/ed25519-keypair :Ed25519
+                              (:x (key/kid->public-key last-next-key)) p)))))
 
 (defn- make-block
   "Create a signed block (a signed envelope) for the chain.
@@ -88,9 +116,9 @@
 
    Returns: {:type :signet/chain :root <kid> :blocks [block-0] :proof <eph-sk>}"
   [root-kp content]
-  (let [;; Generate ephemeral keypair for the next block's signer
-        ;; This keypair links block 0 to whoever extends the chain
-        eph-kp (make-ephemeral-keypair)
+  (let [;; A new ephemeral key for the next block's signer, born in the vault:
+        ;; it links block 0 to whoever extends the chain
+        eph-kp (make-proof! (proof-vault root-kp))
 
         ;; Build and sign block 0 with the root authority key
         ;; prev-sig is nil because this is the first block
@@ -101,7 +129,7 @@
     {:type   :signet/chain
      :root   (key/kid root-kp)
      :blocks [block-0]
-     :proof  (:d eph-kp)}))  ;; ephemeral private key = ability to extend
+     :proof  eph-kp}))  ;; the handle of the ephemeral key = ability to extend
 
 (defn- extend-chain
   "Add a new block to an existing chain, signed by the current proof.
@@ -122,16 +150,11 @@
         last-block (peek (:blocks token))
         prev-sig   (:signature last-block)
 
-        ;; Reconstruct the ephemeral keypair from the proof
-        ;; We need the public key (from last block's next-key) and
-        ;; the private key (from the proof field)
-        last-next-key (get-in last-block [:envelope :message :next-key])
-        eph-pub (key/kid->public-key last-next-key)
-        eph-kp (key/->Ed25519KeyPair :signet/ed25519-keypair :Ed25519
-                                     (:x eph-pub) (:proof token))
+        ;; The current proof signs (a handle, or the sendable form's seed)
+        eph-kp (proof-signer token)
 
-        ;; Generate a fresh ephemeral keypair for the NEXT block
-        next-eph-kp (make-ephemeral-keypair)
+        ;; A fresh ephemeral key for the NEXT block, born in the vault
+        next-eph-kp (make-proof! (proof-vault (:proof token)))
 
         ;; Build and sign the new block with the current ephemeral key
         new-block (make-block eph-kp
@@ -140,7 +163,7 @@
                               prev-sig)]              ;; links to previous block
     (assoc token
            :blocks (conj (:blocks token) new-block)
-           :proof  (:d next-eph-kp))))  ;; fresh proof for next extension
+           :proof  next-eph-kp)))  ;; fresh proof for next extension
 
 ;; ============================================================
 ;; Public API: predicates
@@ -232,12 +255,12 @@
      (close token content)  — add a final block, then seal
 
    Sealing works by signing the last block's signature with the
-   current proof (ephemeral private key), then discarding the key.
-   The proof field changes from a private key to a signature.
-   After sealing, no one can extend the chain — the key is gone.
+   current proof (ephemeral private key), then destroying the key in its
+   vault. The proof field changes from a key to a signature. After
+   sealing, no one can extend the chain: the key is gone.
 
-   Pure for (close token) (Ed25519 signing is deterministic); (close token
-   content) is impure like extend.
+   Impure: signs with the proof and destroys it in its vault; (close token
+   content) also draws a key and a request id like extend.
    Throws ex-info {:type ::sealed} when the token is already sealed.
 
    Returns a sealed token: {:type :signet/chain :blocks [...] :proof {:sealed ...}}"
@@ -248,21 +271,12 @@
          last-block (peek (:blocks token))
          last-sig   (:signature last-block)
 
-         ;; Get the ephemeral public key from last block's next-key
-         ;; The proof must correspond to this key
-         last-next-key (get-in last-block [:envelope :message :next-key])
-         eph-pub (key/kid->public-key last-next-key)
-
-         ;; Build ephemeral keypair from proof + public key
-         eph-kp (key/->Ed25519KeyPair :signet/ed25519-keypair :Ed25519
-                                      (:x eph-pub) (:proof token))
-
-         ;; Sign the last block's signature with the ephemeral key
+         ;; Sign the last block's signature with the current proof
          ;; This proves we had the key, without revealing it
-         seal-sig (sign/sign eph-kp last-sig)]
+         seal-sig (sign/sign (proof-signer token) last-sig)]
 
-     ;; Return sealed token — proof is now a signature, not a private key
-     ;; The ephemeral private key goes out of scope here — gone forever
+     ;; The proof's key is gone for good: destroyed in its vault
+     (when (vault/handle? (:proof token)) (vault/destroy! (:proof token)))
      (assoc token
             :proof {:sealed    true
                     :signature seal-sig})))
@@ -350,14 +364,9 @@
   (let [last-block (peek (:blocks token))
         prev-sig   (:signature last-block)
 
-        ;; Reconstruct ephemeral keypair from proof + last block's next-key
-        last-next-key (get-in last-block [:envelope :message :next-key])
-        eph-pub (key/kid->public-key last-next-key)
-        eph-kp (key/->Ed25519KeyPair :signet/ed25519-keypair :Ed25519
-                                     (:x eph-pub) (:proof token))
-
-        ;; Generate fresh ephemeral keypair for the next block
-        next-eph-kp (make-ephemeral-keypair)
+        ;; The current proof signs; a fresh ephemeral key, born in the vault
+        eph-kp (proof-signer token)
+        next-eph-kp (make-proof! (proof-vault (:proof token)))
 
         ;; Build block content: developer's data + third-party metadata
         block-content {:data         (:data tp-block)
@@ -370,7 +379,7 @@
         new-block (sign/sign-edn eph-kp block-content)]
     (assoc token
            :blocks (conj (:blocks token) new-block)
-           :proof  (:d next-eph-kp))))
+           :proof  next-eph-kp)))
 
 ;; ============================================================
 ;; Public API: verify
@@ -458,14 +467,17 @@
               (let [seal-sig (get-in token [:proof :signature])
                     last-sig (:signature last-block)]
                 (sign/verify last-pub last-sig seal-sig))
-              ;; Open: verify the proof (eph-sk) corresponds to last block's next-key
-              ;; Check by deriving public key from proof and comparing
-              #?(:clj
-                 (let [derived-pub (impl/ed25519-seed->public-key (:proof token))]
-                   (java.util.Arrays/equals
-                    ^bytes (:x last-pub)
-                    ^bytes derived-pub))
-                 :cljs false))))]
+              ;; Open: the proof must be the key named by the last next-key.
+              ;; A handle names it by kid; the sendable form's seed is
+              ;; checked by deriving its public key.
+              (let [p (:proof token)]
+                (if (vault/handle? p)
+                  (= (:kid p) last-next-key)
+                  #?(:clj
+                     (java.util.Arrays/equals
+                      ^bytes (:x last-pub)
+                      ^bytes (impl/ed25519-seed->public-key p))
+                     :cljs false))))))]
 
     (if-let [error (:error block-results)]
       ;; Chain verification failed at some block
@@ -529,3 +541,60 @@
            (and (:valid? result) (not verified?))
            (assoc :error (str "Root " (:root result) " is not the expected root"))))
        result))))
+
+;; ============================================================
+;; Public API: sending, receiving and discarding open tokens
+;; ============================================================
+
+(def ^:private export-acknowledgement {:i-understand :exposes-secret})
+
+(defn export-token
+  "The sendable form of token: an open token's :proof becomes the ephemeral
+   seed itself, read out of the vault. That seed is a bearer credential:
+   whoever holds the exported token can extend the chain. So this requires
+   the acknowledgement {:i-understand :exposes-secret}. Sealed tokens and
+   tokens already in sendable form come back unchanged.
+   Impure: reads the vault.
+   Throws ex-info {:type :signet.vault/export-not-acknowledged} without the
+   acknowledgement, and :signet.vault/destroyed-key if the proof is gone."
+  [token ack]
+  (let [p (:proof token)]
+    (if (and (not (sealed? token)) (vault/handle? p))
+      (assoc token :proof (vault/export-secret p ack))
+      (do (when-not (= export-acknowledgement ack)
+            (throw (ex-info "export-token needs {:i-understand :exposes-secret}"
+                            {:type :signet.vault/export-not-acknowledged})))
+          token))))
+
+(defn import-token!
+  "A received token with its :proof (the ephemeral seed of the sendable
+   form) moved into vault-id (default :default): the result's :proof is a
+   handle. The seed array in token is wiped, as import-signing-key! does.
+   Sealed tokens and tokens whose proof is already a handle come back
+   unchanged.
+   Impure: writes the vault and the seed array.
+   Throws ex-info {:type ::proof-mismatch} when the seed is not the key the
+   last block names (the token is corrupt or forged)."
+  ([token] (import-token! :default token))
+  ([vault-id token]
+   (let [p (:proof token)]
+     (if (or (sealed? token) (not (bytes? p)))
+       token
+       (let [last-next-key (get-in (peek (:blocks token)) [:envelope :message :next-key])
+             h (vault/import-signing-key! vault-id p)]
+         (when-not (= (:kid h) last-next-key)
+           (vault/destroy! h)
+           (throw (ex-info "The token's proof is not the key its last block names"
+                           {:type ::proof-mismatch})))
+         (assoc token :proof h))))))
+
+(defn discard!
+  "Destroy an open token's proof in its vault: nobody can extend this token
+   value any more. Use it for tokens you no longer need, so their proofs do
+   not accumulate. Sealed tokens and sendable forms are unaffected (the
+   caller owns those bytes). Impure: writes the vault. Returns nil."
+  [token]
+  (when (vault/handle? (:proof token))
+    (vault/destroy! (:proof token)))
+  nil)
+

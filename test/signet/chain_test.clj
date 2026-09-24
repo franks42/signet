@@ -1,5 +1,8 @@
 (ns signet.chain-test
-  (:require [clojure.test :refer [deftest is testing use-fixtures]]
+  (:require [cedn.core :as cedn]
+            [clojure.edn :as edn]
+            [clojure.string]
+            [clojure.test :refer [deftest is testing use-fixtures]]
             [signet.chain :as chain]
             [signet.key :as key]
             [signet.vault :as vault]))
@@ -344,3 +347,84 @@
     (is (= :signet.chain/sealed (type-of #(chain/close sealed))))
     (is (= :signet.chain/sealed (type-of #(chain/third-party-request sealed))))
     (is (= :signet.chain/bad-argument (type-of #(chain/extend {:type :nope} {:c 1}))))))
+
+;; === Proofs live in the vault (0.8.0) ===
+
+(def ^:private ack {:i-understand :exposes-secret})
+
+(defn- type-of [f]
+  (try (f) :no-throw (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
+
+(deftest open-proofs-are-vault-handles
+  (let [root  (vault/ensure-default-signing-key!)
+        token (chain/extend root {:facts ["x"]})
+        proof (:proof token)]
+    (is (vault/handle? proof))
+    (is (some? (vault/handle (:kid proof))) "the vault holds the ephemeral key")
+    (is (= (:kid proof) (get-in (peek (:blocks token)) [:envelope :message :next-key]))
+        "the proof is the key the last block names")
+    (let [seed (vault/export-secret proof ack)
+          hex  (apply str (map #(format "%02x" (bit-and % 0xff)) seed))]
+      (is (not (clojure.string/includes? (pr-str token) hex)) "printing shows no seed")
+      (is (not (clojure.string/includes? (cedn/canonical-str token) hex)) "serialising shows no seed"))
+    (is (:valid? (chain/verify token {:root (:kid root)})))))
+
+(deftest sending-and-receiving-a-token
+  (let [_       (vault/ensure-default-signing-key!)
+        token   (chain/extend {:facts ["alice can read"]})
+        wire    (chain/export-token token ack)]
+    (is (= :signet.vault/export-not-acknowledged (type-of #(chain/export-token token {}))))
+    (is (bytes? (:proof wire)) "the sendable form carries the seed")
+    (is (:valid? (chain/verify wire)) "and verifies")
+    (testing "the receiver imports it into their own vault"
+      (vault/register-vault! :bob)
+      (try
+        (let [received (chain/import-token! :bob (edn/read-string {:readers cedn/readers} (cedn/canonical-str wire)))]
+          (is (vault/handle? (:proof received)))
+          (is (= :bob (:vault (:proof received))))
+          (is (:valid? (chain/verify received)))
+          (let [narrowed (chain/extend received {:checks ["read only"]})]
+            (is (:valid? (chain/verify narrowed)))
+            (is (= :bob (:vault (:proof narrowed))) "new proofs stay in the receiver's vault")))
+        (finally (vault/unregister-vault! :bob))))
+    (testing "the sendable form can also be extended directly"
+      (is (:valid? (chain/verify (chain/extend wire {:checks ["c"]})))))))
+
+(deftest import-refuses-a-proof-that-does-not-match
+  (let [_     (vault/ensure-default-signing-key!)
+        wire  (chain/export-token (chain/extend {:f 1}) ack)
+        other (chain/export-token (chain/extend {:f 2}) ack)
+        bad   (assoc wire :proof (:proof other))]
+    (is (= :signet.chain/proof-mismatch (type-of #(chain/import-token! bad))))
+    (is (false? (:valid? (chain/verify bad))) "and verify rejects it too")))
+
+(deftest close-and-discard-destroy-the-proof
+  (let [_     (vault/ensure-default-signing-key!)
+        token (chain/extend {:facts ["x"]})
+        kid   (:kid (:proof token))
+        sealed (chain/close token)]
+    (is (chain/sealed? sealed))
+    (is (nil? (vault/handle kid)) "sealing destroyed the ephemeral key")
+    (is (:valid? (chain/verify sealed))))
+  (let [token (chain/extend {:facts ["y"]})
+        kid   (:kid (:proof token))]
+    (chain/discard! token)
+    (is (nil? (vault/handle kid)))
+    (is (= :signet.vault/destroyed-key (type-of #(chain/extend token {:c 1})))
+        "a discarded token can no longer be extended")))
+
+(deftest one-token-narrowed-two-ways
+  (let [_    (vault/ensure-default-signing-key!)
+        base (chain/extend {:facts ["broad"]})
+        a    (chain/extend base {:checks ["for a"]})
+        b    (chain/extend base {:checks ["for b"]})]
+    (is (:valid? (chain/verify a)))
+    (is (:valid? (chain/verify b)))
+    (is (not= (:kid (:proof a)) (:kid (:proof b))))))
+
+(deftest verify-checks-the-proof-handle-names-the-right-key
+  (let [_     (vault/ensure-default-signing-key!)
+        token (chain/extend {:facts ["x"]})
+        swapped (assoc token :proof (vault/generate-signing-key!))]
+    (is (:valid? (chain/verify token)))
+    (is (false? (:valid? (chain/verify swapped))) "a handle for another key is not the proof")))
