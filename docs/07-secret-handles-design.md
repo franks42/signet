@@ -401,6 +401,46 @@ ML-KEM-768: public key 1,184, ciphertext 1,088. ML-DSA-65: public key
    when it is verified. The exception is long-lived signed objects:
    chains, stored envelopes.
 
+### Distributing large PQ keys (discussed 2026-09-23)
+
+Large keys are fine once per relationship. A directory is an
+optimisation, not a requirement.
+
+1. **Self-certifying kids.** A PQ kid is a hash of the key, so a key sent
+   inside a message verifies itself: the receiver checks
+   `SHA-256(key) = kid`, and a substituted key fails. That gives the same
+   guarantee as today's "the kid is the key", in two steps. Which kids are
+   *trusted* is still the valid/verified question, and later a policy
+   decision point's.
+2. **Exchange once, then send only the kid.** After the first exchange the
+   receiver keeps the full key on the vault's public side (a registry from
+   kid to full key). Later messages carry only the 32-byte kid. This is why
+   0.8.0's vault needs that public registry: lookup can no longer rebuild a
+   key from its kid.
+3. **KEM once, then shared keys.** A KEM box pays about 1.1 KB of
+   ciphertext on every message. Running the key exchange once to establish
+   a shared symmetric key (`shared-key!`, kept in the vault) makes later
+   messages as small as today's. A PQ key exchange plus stored shared keys
+   gives both post-quantum protection and small messages.
+4. **Endorse new PQ keys with the existing identity.** During the
+   transition the Ed25519 identity key signs the new PQ key, which binds
+   it to an identity people already trust, without a directory.
+
+Exceptions to "once per relationship":
+
+- **Chains** create a fresh ephemeral key per block. A PQ ephemeral
+  signing key costs about 5 KB per block (a 1,952-byte key plus a
+  3,309-byte signature). Chains need their own PQ design, for example
+  hybrid blocks, or a scheme that does not create a signing key per block.
+- **First contact:** encrypting to a new recipient needs their PQ public
+  key *before* the first message. It has to arrive first, through an
+  earlier message, a key-exchange round trip, or a directory. That is no
+  different from today, when the sender needs the recipient's kid.
+
+**Directories** help with first contact and avoid re-sending keys. They
+can also become a trust anchor (for example with key transparency), but
+that is a policy question, not a cache.
+
 ### Suites (as in "Algorithm agility")
 
 Each suite still names the whole protocol, because the header layout,
@@ -484,9 +524,11 @@ nacljc (libsodium has none), or through the JDK or Bouncy Castle.
       the algorithm in the kid URN, a post-quantum hybrid (X25519 + ML-KEM)
       would be box v4, and sessions bind the full Noise protocol name into
       the transcript (an AEGIS session would be a signet-specific name).
-12. **Post-quantum** (see "Post-quantum suites"): how does a PQ kid (a hash
-    of the key) resolve to its key: vault, directory, or carried in the
-    message? Sender authentication in box v4: a hybrid signature, or an
+12. **Post-quantum** (see "Post-quantum suites"): PQ kids resolve through
+    the vault's public registry after a key has been carried once in a
+    message (a directory is an optimisation); what format carries the key
+    the first time, and how is an Ed25519 endorsement of a PQ key
+    represented? Sender authentication in box v4: a hybrid signature, or an
     authenticated KEM? Where does ML-DSA come from, given libsodium has
     none: the JDK, Bouncy Castle, or a future libsodium?
 
