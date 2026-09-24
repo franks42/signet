@@ -461,24 +461,53 @@ libsodium 1.0.22 has it today, and the JDK has ML-KEM for a JCA
 provider. Hybrid signatures come after, as they need ML-DSA through
 nacljc (libsodium has none), or through the JDK or Bouncy Castle.
 
+## Future: persistence and password unlocking
+
+Raised 2026-09-23, **not for 0.8.0**; to be discussed. An encrypted vault
+becomes much more useful once it can be saved (a persistent atom, or an
+SSH-key-style file), with only ciphertext ever on disk. Unlocking it with
+a human password is a long-standing weak spot in many designs. Topics:
+
+- **Password to key:** a memory-hard key derivation function, Argon2id
+  (libsodium `crypto_pwhash`; not in the JDK, but in Bouncy Castle). Its
+  parameters are stored with the vault so they can be raised later. With
+  low-entropy passwords, this step is what resists offline guessing of a
+  stolen file.
+- **Key layering:** the password unlocks a random vault master key, and
+  the master key encrypts the secrets. Changing the password rewraps one
+  key, and several unlock methods can wrap the same master key: a
+  password, the OS keychain, a hardware token, a recovery key.
+- **The file format is a suite,** versioned and authenticated, so the key
+  derivation and cipher can change.
+- **Unlock lifetime:** per operation, per session, or until a timeout
+  (like ssh-agent). While unlocked, the master key sits in protected
+  memory (the `:sodium` provider).
+- **Recovery:** a recovery key, or deliberately none.
+- **Alternatives to passwords:** the OS keychain or Secure Enclave, or a
+  hardware token (FIDO2 hmac-secret), which avoid low-entropy passwords.
+
 ## Open questions
 
 1. ~~Handle shape~~ **Settled** (decision 7).
 2. ~~Default vault~~ **Settled** (decision 8).
 3. ~~Sessions timing~~ **Settled**: right after 0.8.0 (decision 9).
-4. `:memory-encrypted`: worth building, given that `:sodium` covers the JVM,
-   bb and nbb and WebCrypto covers the browser? Its remaining use is the
-   JCA backend without libsodium.
-5. Chain tokens: keep `:proof` as exportable bearer material (today's
-   design), or redesign so a token proves possession without carrying the
-   secret, for example through a signature from the holder's handle?
+4. ~~`:memory-encrypted`~~ **Not in 0.8.0** (decision 11). It becomes
+   worth more with persistence and password unlocking: to be discussed
+   (see "Future: persistence and password unlocking").
+5. ~~Chain tokens~~ **Settled**: keep the bearer model for 0.8.0
+   (decision 12).
 6. ~~Export guard~~ **Settled**: an explicit acknowledgement is required
    (decision 10).
-7. secp256k1 (Bouncy Castle) keys live in the `:memory` provider only.
-   Acceptable?
-8. Shared symmetric keys: is the stateless mode enough for 0.8.0, with
-   stateful counters left to sessions? Which AEAD should `seal` use
-   (ChaCha20-Poly1305 with a per-message key, or AEGIS)?
+7. ~~secp256k1~~ **Settled**: `:memory` provider only (decision 13).
+8. ~~Shared symmetric keys~~ **Settled**: stateless only; ChaCha20-Poly1305
+   with key commitment (decision 14).
+8a. **The vault's public registry** (proposed, awaiting agreement): it
+   evolves from today's key store but holds public keys only, never
+   secrets. `lookup` checks the registry first, then falls back to parsing
+   the kid (which works for today's 25519 kids). Keys enter only through an
+   explicit `register!`. A key carried in a message is registered only
+   after its kid is verified (`SHA-256(key) = kid`) and only when the
+   caller asks, so untrusted input cannot grow memory.
 9. **AEGIS-256 as an opt-in suite** (RFC 10032; review 2026-09-23). It has
    a 256-bit key, a 256-bit nonce ("no practical limits" for random
    nonces) and a 256-bit tag, with ~2^128 key commitment unless the
@@ -579,4 +608,18 @@ nacljc (libsodium has none), or through the JDK or Bouncy Castle.
     `(export-secret h {:i-understand :exposes-secret})`. Without it the
     call throws. It is cheap enforcement that stands out in grep and in
     review ("take the gun away").
+11. **`:memory-encrypted` is not in 0.8.0.** It stays a listed provider,
+    to be reconsidered together with persistence and password unlocking.
+12. **Chain tokens keep the bearer model in 0.8.0.** The open token's
+    `:proof` is held locally as a handle and exported explicitly when the
+    token is sent. A possession-proof redesign belongs with the
+    post-quantum chain design.
+13. **secp256k1 keys live in the `:memory` provider only** (Bouncy Castle,
+    JVM only; libsodium has no secp256k1; the keys serve wallet and MPC
+    interop).
+14. **Shared keys (`seal`) are stateless only** in 0.8.0: a fresh random
+    salt per message, with counters left to sessions. The AEAD is
+    ChaCha20-Poly1305 with key commitment, the same construction as box
+    v3's ChaCha variant; AEGIS-256 follows as a suite where providers have
+    it.
 
