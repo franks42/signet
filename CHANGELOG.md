@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.7.0 (unreleased)
+## 0.7.0 (2026-09-23)
 
 The first release on Clojars (`com.github.franks42/signet`). Earlier
 versions were git tags only. There are breaking changes from 0.6.0; see

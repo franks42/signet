@@ -125,7 +125,7 @@ explicitly.
 
 ### cedn 1.5.2
 
-signet signs canonical EDN bytes produced by cedn. Since 0.7.0-SNAPSHOT
+signet signs canonical EDN bytes produced by cedn. Since 0.7.0
 (PR #1) it depends on cedn 1.5.2 (before: 1.2.0). cedn 1.4.0
 changed the canonical bytes for some inputs to fix determinism and
 injectivity bugs. Those inputs are sets or maps containing `#inst` values,
