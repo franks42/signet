@@ -41,6 +41,10 @@
       (-import! [_ alg secret-bytes]
         ;; secret-import! copies into guarded memory and wipes secret-bytes
         (store! alg (na/secret-import! secret-bytes)))
+      (-adopt! [_ kid alg material]
+        ;; derived material under this provider is already a nacljc secret
+        (swap! secrets assoc kid {:alg alg :secret material})
+        nil)
       (-has? [_ kid] (contains? @secrets kid))
       (-kids [_] (set (keys @secrets)))
       (-alg [_ kid] (:alg (get @secrets kid)))

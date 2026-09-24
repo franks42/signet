@@ -55,6 +55,7 @@
    through -export."
   (-generate! [p alg] "Create a new key of alg (:ed25519 or :x25519) inside the provider. Returns its public key record.")
   (-import! [p alg secret-bytes] "Take a copy of secret-bytes as a key of alg. Returns its public key record.")
+  (-adopt! [p kid alg material] "Take ownership of derived material (what the backend produced: bytes, or a nacljc secret) under kid.")
   (-has? [p kid] "Does this provider hold kid?")
   (-kids [p] "The kids this provider holds.")
   (-alg [p kid] "The algorithm of kid (:ed25519 or :x25519).")
@@ -104,6 +105,7 @@
                         (finally (wipe! m))))
            :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
       (-import! [_ alg secret-bytes] (store! alg secret-bytes))
+      (-adopt! [_ kid alg material] (swap! secrets assoc kid {:alg alg :material material}) nil)
       (-has? [_ kid] (contains? @secrets kid))
       (-kids [_] (set (keys @secrets)))
       (-alg [_ kid] (:alg (get @secrets kid)))
@@ -140,7 +142,7 @@
    if id is already registered."
   ([id] (register-vault! id (default-provider)))
   ([id provider]
-   (let [v {:id id :provider provider :public (atom {}) :defaults (atom {})}
+   (let [v {:id id :provider provider :public (atom {}) :defaults (atom {}) :shared (atom {})}
          [old _] (swap-vals! vaults (fn [m] (if (contains? m id) m (assoc m id v))))]
      (when (contains? old id)
        (throw (ex-info (str "Vault " id " is already registered") {:type ::vault-exists :vault id})))
@@ -331,6 +333,25 @@
   (swap! (:defaults (vault (:vault h)))
          (fn [d] (into {} (remove (fn [[_ v]] (= v h)) d))))
   nil)
+
+(defn ^:no-doc adopt-shared!
+  "INTERNAL to signet.shared: store derived symmetric material (bytes or a
+   nacljc secret; the vault takes ownership) under kid in vault-id, with
+   its public metadata. If the vault already holds kid, the new material is
+   released instead (the same relationship derives the same key). Returns
+   the handle. Impure: writes the vault."
+  [vault-id kid material meta]
+  (let [v (vault vault-id)]
+    (if (-has? (:provider v) kid)
+      #?(:clj (impl/destroy-material! material) :cljs nil)
+      (-adopt! (:provider v) kid :shared material))
+    (swap! (:shared v) assoc kid meta)
+    (->handle vault-id kid)))
+
+(defn ^:no-doc shared-meta
+  "INTERNAL to signet.shared: the public metadata of shared key h, or nil."
+  [h]
+  (get @(:shared (vault (:vault h))) (:kid h)))
 
 (defn public-key
   "The public key record of h's key. Impure: reads the vault's public side.
