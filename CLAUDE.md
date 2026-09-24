@@ -139,8 +139,8 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   The store holds only deliberately registered keys.
 - **Ephemeral keys are never kept longer than needed:** never registered,
   never exposed by the public API, and wiped after use. In `signet.session`:
-  `fresh-ephemeral`, `edh` (es/ee/se) vs `dh` (ss), `mix-key` wipes each
-  DH output, `split` wipes the ephemeral private key and the handshake
+  `fresh-ephemeral`, `edh` (es/ee/se) vs `dh` (ss), `mix-key!` wipes each
+  DH output, `split!` wipes the ephemeral private key and the handshake
   ck/k. `test/signet/trust_test.clj` asserts absence and zeroing.
 - **dh vs edh is enforced, not just named.** Ephemerals are their own
   record types (`EphemeralKeyPair`, `EphemeralPublicKey`, private to

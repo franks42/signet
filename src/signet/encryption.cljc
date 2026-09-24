@@ -47,7 +47,7 @@
        [bs]
        (when bs (java.util.Arrays/fill ^bytes bs (byte 0))))
 
-     (defn- message-key
+     (defn- message-key!
        "HKDF key for one message, bound to its direction. Consumes (wipes)
         the DH output."
        [^bytes shared ^bytes nonce ^bytes sender-xpk ^bytes recipient-xpk]
@@ -88,7 +88,7 @@
                        from?                 (assoc :from (key/kid sender-kp))
                        to?                   (assoc :to (key/kid recipient-pub))
                        (contains? opts :aad) (assoc :aad aad))
-              k      (message-key (impl/x25519-dh (x-priv sender-kp) r-xpk) nonce s-xpk r-xpk)
+              k      (message-key! (impl/x25519-dh (x-priv sender-kp) r-xpk) nonce s-xpk r-xpk)
               ct     (try (impl/chacha20-poly1305-encrypt k zero-nonce plaintext
                                                           (cedn/canonical-bytes header))
                           (finally (wipe! k)))]
@@ -127,8 +127,8 @@
        "Plaintext if the box opens for this recipient/sender pair, else nil."
        [boxed recipient sender]
        (let [nonce (:nonce boxed)
-             k     (message-key (impl/x25519-dh (x-priv recipient) (x-pub sender))
-                                nonce (x-pub sender) (x-pub recipient))]
+             k     (message-key! (impl/x25519-dh (x-priv recipient) (x-pub sender))
+                                 nonce (x-pub sender) (x-pub recipient))]
          (try
            (impl/chacha20-poly1305-decrypt k zero-nonce (:ct boxed)
                                            (cedn/canonical-bytes (dissoc boxed :ct)))

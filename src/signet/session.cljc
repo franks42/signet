@@ -130,7 +130,7 @@
        (assoc state :h (sha-256-bytes combined)))))
 
 #?(:clj
-   (defn- mix-key
+   (defn- mix-key!
      "Fold a DH output (or other ikm) into the chaining key and update
       the AEAD key. HKDF-Extract-then-Expand with the chaining key as
       salt: first 32 output bytes become new ck; last 32 become new k.
@@ -187,7 +187,7 @@
          [state' ciphertext]))))
 
 #?(:clj
-   (defn- split
+   (defn- split!
      "Final step of the handshake: derive two independent transport
       cipher-state keys from the chaining key. Initiator's send key is
       t1, recv key is t2; responder's are flipped. After Split the
@@ -275,7 +275,7 @@
 #?(:clj
    (defn- dh
      "Static-static DH — Noise token ss. Returns the 32-byte shared
-      secret, which mix-key consumes and wipes. Never registers keys.
+      secret, which mix-key! consumes and wipes. Never registers keys.
       Throws ::ephemeral-in-dh if either side is ephemeral: that is edh's
       job, and mixing them up must fail loudly, not silently."
      [local-static-kp remote-static-pub]
@@ -288,7 +288,7 @@
    (defn- edh
      "Ephemeral DH — Noise tokens es, ee, se: at least one side is an
       ephemeral key. Never registers keys; the output is consumed and
-      wiped by mix-key, and the local ephemeral private key is wiped at
+      wiped by mix-key!, and the local ephemeral private key is wiped at
       Split. Ephemerals never leave this namespace. Throws
       ::no-ephemeral-in-edh if neither side is ephemeral (that is dh)."
      [local-kp remote-pub]
@@ -416,8 +416,8 @@
            state      (-> state
                           (assoc :local-ephemeral-kp eph-kp)
                           (mix-hash eph-pub-bs)                                       ; "e"
-                          (mix-key (edh eph-kp remote-static-pub))                    ; "es"
-                          (mix-key (dh local-static-kp remote-static-pub)))           ; "ss"
+                          (mix-key! (edh eph-kp remote-static-pub))                    ; "es"
+                          (mix-key! (dh local-static-kp remote-static-pub)))           ; "ss"
            [state ct] (encrypt-and-hash state (or payload (byte-array 0)))
            buf        (byte-array (+ 32 (alength ^bytes ct)))]
        (System/arraycopy eph-pub-bs 0 buf 0 32)
@@ -443,8 +443,8 @@
            state      (-> state
                           (assoc :remote-ephemeral-pub remote-eph)
                           (mix-hash eph-pub-bs)                                  ; "e"
-                          (mix-key (edh local-static-kp remote-eph))             ; "es"
-                          (mix-key (dh local-static-kp remote-static-pub)))      ; "ss"
+                          (mix-key! (edh local-static-kp remote-eph))             ; "es"
+                          (mix-key! (dh local-static-kp remote-static-pub)))      ; "ss"
            [state pt] (decrypt-and-hash state ct)]
        [(assoc state :pos 1) pt])))
 
@@ -475,13 +475,13 @@
            state      (-> state
                           (assoc :local-ephemeral-kp eph-kp)
                           (mix-hash eph-pub-bs)                                  ; "e"
-                          (mix-key (edh eph-kp remote-ephemeral-pub))            ; "ee"
-                          (mix-key (edh eph-kp remote-static-pub)))              ; "se"
+                          (mix-key! (edh eph-kp remote-ephemeral-pub))            ; "ee"
+                          (mix-key! (edh eph-kp remote-static-pub)))              ; "se"
            [state ct] (encrypt-and-hash state (or payload (byte-array 0)))
            buf        (byte-array (+ 32 (alength ^bytes ct)))]
        (System/arraycopy eph-pub-bs 0 buf 0 32)
        (System/arraycopy ct 0 buf 32 (alength ^bytes ct))
-       [(split state) buf])))
+       [(split! state) buf])))
 
 #?(:clj
    (defn- read-message-2-initiator
@@ -502,10 +502,10 @@
            state      (-> state
                           (assoc :remote-ephemeral-pub remote-eph)
                           (mix-hash eph-pub-bs)                                  ; "e"
-                          (mix-key (edh local-ephemeral-kp remote-eph))          ; "ee"
-                          (mix-key (edh local-static-kp remote-eph)))            ; "se"
+                          (mix-key! (edh local-ephemeral-kp remote-eph))          ; "ee"
+                          (mix-key! (edh local-static-kp remote-eph)))            ; "se"
            [state pt] (decrypt-and-hash state ct)]
-       [(split state) pt])))
+       [(split! state) pt])))
 
 #?(:clj
    (defn- write-message-transport
