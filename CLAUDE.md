@@ -118,10 +118,11 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   runs `bb release-check` and both backends' tests, deploys, then runs
   `bb test:clojars X.Y.Z` (signet's tests against the jar from Clojars,
   empty local repo) before the GitHub release.
-- **0.8.0 (in progress, main at 0.8.0-SNAPSHOT):** the vault
+- **0.8.0 (released 2026-09-24):** the vault
   (`signet.vault`, providers `:memory` and `:sodium`), handles in
   sign/box/chain, `signet.shared`. Phases 1–5 done (see CHANGELOG). Sessions
-  move onto handles in the release after. Key records remain the raw layer.
+  move onto handles in the release after. Key records remain the raw layer;
+  they are deprecated in that release (decision 17), not removed.
   **After every release, bump build.clj to the next -SNAPSHOT.**
 - Verified from the installed jar in a scratch consumer (`bb test:jar`,
   signet's tests only, no src): JVM jca 131/652, JVM sodium 131/652 +

@@ -1,6 +1,6 @@
 # Secrets by reference: handles and a vault
 
-Status: **being implemented for 0.8.0** (2026-09-24). Implemented:
+Status: **released in 0.8.0** (2026-09-24). Implemented:
 handles and the vault registry, the two sides, keys born in the vault,
 import/export/destroy, the `:memory` and `:sodium` providers, sign / box /
 chain on handles, and shared keys (`signet.shared`). Sessions on handles
@@ -681,4 +681,8 @@ a human password is a long-standing weak spot in many designs. Topics:
     outputs keep the id unrelated to the encryption and MAC keys. And
     unlike a hash of both kids, only holders can compute it, so it does
     not reveal who talks to whom.
+17. **Key records are deprecated when sessions move onto handles**, in the
+    release after 0.8.0, not removed in 0.8.0 (2026-09-24). In 0.8.0 they
+    stay the raw layer: sessions still use them and SSH import returns
+    them. Handles are the documented, recommended API.
 

@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.8.0 (unreleased)
+## 0.8.0 (2026-09-24)
 
 Secrets by reference: code holds vault handles, never secret bytes
 (`docs/07-secret-handles-design.md`, decisions 7–16).
