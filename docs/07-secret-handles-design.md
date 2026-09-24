@@ -255,8 +255,9 @@ output today. That is fine as a primitive, but it is not a key to use
 directly. `shared-key!` is the safe, vault-resident way to get one.
 
 Open: the AEAD for `seal`. The default is ChaCha20-Poly1305 with a
-per-message HKDF key, as in box v2. AEGIS (see Open questions) could
-replace that construction.
+per-message HKDF key, as in box v2. AEGIS-256 could replace that
+construction, and key commitment belongs here too (Open questions 9–11).
+`seal`'s output names its suite exactly as a box does.
 
 ### Defaults
 
@@ -354,6 +355,49 @@ signet's `:sodium` provider is built on this. The JCA backend gets the
 8. Shared symmetric keys: is the stateless mode enough for 0.8.0, with
    stateful counters left to sessions? Which AEAD should `seal` use
    (ChaCha20-Poly1305 with a per-message key, or AEGIS)?
+9. **AEGIS-256 as an opt-in suite** (RFC 10032; review 2026-09-23). It has
+   a 256-bit key, a 256-bit nonce ("no practical limits" for random
+   nonces) and a 256-bit tag, with ~2^128 key commitment unless the
+   attacker controls the associated data. libsodium has had it since 1.0.19
+   (nacljc's minimum), and libsodium.js since 0.7.13. Bouncy Castle 1.86
+   and the JDK do not have it, so it would be provider-specific. Proposal:
+   box v3 = X25519 + HKDF-SHA-256 (directional) + AEGIS-256 with a random
+   32-byte nonce + key commitment, offered where the provider has it
+   (nacljc on native libsodium). The JCA backend refuses it with
+   `:unsupported-suite`. Caveat: libsodium's software AES forces lookup
+   tables on WebAssembly (`softaes.c`: `#if defined(__wasm__) … #define
+   FAVOR_PERFORMANCE`), so libsodium.js AEGIS is not constant-time in the
+   browser today [source]. Likely to be fixed upstream. Once it is
+   constant-time on every provider signet supports, v3 can become the
+   default, with v2 still accepted.
+10. **Key commitment on the ChaCha20-Poly1305 path** (box v2 and `seal`).
+    Poly1305 is not key-committing: one ciphertext can be valid under two
+    keys. That matters most for `unbox` with several candidate keys (no
+    `:to` slot). Proposal: a short commitment in the header, e.g.
+    `:commit = HMAC-SHA-256(k_msg, "signet/commit")` (truncated), checked
+    in constant time before decrypting. It works on every backend,
+    independently of AEGIS. It changes the header, so it is a new suite
+    (v3 for ChaCha, or folded into the AEGIS suite).
+11. **Algorithm agility: suites, not knobs.** Lessons from JOSE/JWT (`alg`
+    chosen by the message: `alg: none`, key confusion) versus PASETO, age,
+    WireGuard and TLS 1.3 (few fixed suites, versioned):
+    - One identifier names the whole combination of algorithms. Box's `:v`
+      *is* the suite id; there is no separate `:alg` knob per primitive.
+    - The suite id is in the authenticated header (the AEAD's associated
+      data), so it cannot be changed in transit.
+    - **The receiver decides** what it accepts: `unbox` takes an allowlist
+      of suites (default: the current, non-deprecated ones). Unknown or
+      disabled gives `{:valid? false :error :unsupported-suite}`. The
+      message names its suite but never decides whether it is acceptable.
+    - Defaults are visible: results report `:suite`, a function lists the
+      provider's supported suites, and a default changes only in a release
+      whose CHANGELOG says so. Old suites stay readable while accepted,
+      then are deprecated, then refused, each step documented.
+    - Known-answer vectors per suite, run on every provider that claims it.
+    - The same pattern covers what comes next: signatures already carry
+      the algorithm in the kid URN, a post-quantum hybrid (X25519 + ML-KEM)
+      would be box v4, and sessions bind the full Noise protocol name into
+      the transcript (an AEGIS session would be a signet-specific name).
 
 ## Decisions so far (2026-09-23)
 
