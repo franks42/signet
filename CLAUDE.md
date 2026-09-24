@@ -101,6 +101,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `docs/04-jca-seed-to-public-key-trick.md` — SecureRandom trick for deriving public keys without reflection
 - `docs/05-noise-kk-session-design.md` — Noise_KK session design
 - `docs/06-box-v2-design.md` — box v2, design only: optional kid/nonce slots, directional HKDF-bound keys, per-message salt; closes finding 7 and the 96-bit nonce limit
+- `docs/07-secret-handles-design.md` — DRAFT: secrets by reference (handles + vault + providers: memory, sodium secure memory, WebCrypto, agent); code never sees secret bytes; also records the 2026-09-23 naming/twin-rule decisions for 0.7.0
 
 ## Current state (2026-09-23)
 
