@@ -18,15 +18,15 @@
      (def resp-state (signet.session/responder bob-kp alice-pub))
 
      ;; Two-message handshake.
-     (let [[init-state msg1] (write-message init-state app-payload-1)
-           [resp-state recv1] (read-message resp-state msg1)
-           [resp-state msg2] (write-message resp-state app-payload-2)
-           [init-state recv2] (read-message init-state msg2)]
+     (let [[init-state msg1] (write-message! init-state app-payload-1)
+           [resp-state recv1] (read-message! resp-state msg1)
+           [resp-state msg2] (write-message! resp-state app-payload-2)
+           [init-state recv2] (read-message! init-state msg2)]
        (assert (established? init-state))
        (assert (established? resp-state))
        ;; Same API for transport messages: write/read just AEAD now.
-       (let [[init-state ct] (write-message init-state ...)
-             [resp-state pt] (read-message resp-state ct)]
+       (let [[init-state ct] (write-message! init-state ...)
+             [resp-state pt] (read-message! resp-state ct)]
          ...))
 
    Wire format:
@@ -78,9 +78,22 @@
      (when bs (java.util.Arrays/fill ^bytes bs (byte 0)))))
 
 #?(:clj
+   (defn- open-aead
+     "AEAD-decrypt a session message. Every failure (forged, tampered,
+      replayed out of order, wrong key) becomes one backend-independent
+      error, {:type ::authentication-failed}, instead of whatever the JCA
+      or libsodium backend throws."
+     [k nonce ciphertext aad]
+     (try
+       (impl/chacha20-poly1305-decrypt k nonce ciphertext aad)
+       (catch Exception e
+         (throw (ex-info "Noise session: message authentication failed"
+                         {:type ::authentication-failed} e))))))
+
+#?(:clj
    (defn- fresh-marker
      "A one-shot marker for a session state value. Every state
-      write-message / read-message returns gets a fresh one."
+      write-message! / read-message! returns gets a fresh one."
      []
      ;; A Clojure atom, not AtomicBoolean: bb does not expose the latter,
      ;; and compare-and-set! is an atomic CAS on both platforms.
@@ -105,7 +118,7 @@
          (throw (ex-info "Not a signet session state (missing single-use marker)"
                          {:type ::not-a-session-state})))
        (when @m
-         (throw (ex-info "Stale session state: it was already used. Use the state returned by the previous write-message/read-message"
+         (throw (ex-info "Stale session state: it was already used. Use the state returned by the previous write-message!/read-message!"
                          {:type ::stale-session-state})))
        (let [[next-state out] (op)]
          (when-not (compare-and-set! m false true)
@@ -180,7 +193,7 @@
       compute the same h regardless of who decrypted."
      [{:keys [k n h] :as state} ^bytes ciphertext]
      (if k
-       (let [pt     (impl/chacha20-poly1305-decrypt k (aead-nonce n) ciphertext h)
+       (let [pt     (open-aead k (aead-nonce n) ciphertext h)
              state' (-> state (assoc :n (inc n)) (mix-hash ciphertext))]
          [state' pt])
        (let [state' (mix-hash state ciphertext)]
@@ -331,6 +344,9 @@
       symmetric state, run pre-message MixHashes, mix in the prologue
       (defaults to empty bytes)."
      [role local-static-kp remote-static-pub prologue]
+     (when-not (:d local-static-kp)
+       (throw (ex-info "Noise session: the local static key needs its private part"
+                       {:type ::no-private-key :key-type (:type local-static-kp)})))
      (let [my-static-pub-bytes (->x25519-public-bytes local-static-kp)
            peer-static-pub-bytes (->x25519-public-bytes remote-static-pub)
            [init-pub resp-pub] (case role
@@ -367,8 +383,13 @@
                            supply the same prologue or the handshake
                            fails. Defaults to empty bytes.
 
-      The returned state is opaque; threadable through write-message
-      and read-message until established? returns true."
+      The returned state is opaque; threadable through write-message!
+      and read-message! until established? returns true.
+
+      Pure: no randomness yet (ephemerals are drawn by write-message!),
+      and never touches the key store.
+      Throws ex-info {:type ::no-private-key} when local-static-kp has no
+      private part."
      ([local-static-kp remote-static-pub]
       (initiator local-static-kp remote-static-pub nil))
      ([local-static-kp remote-static-pub {:keys [prologue]}]
@@ -377,8 +398,8 @@
 #?(:clj
    (defn responder
      "Return a fresh Noise_KK responder handshake state. See
-      `initiator` for argument shape; the only difference is which
-      role this side plays."
+      `initiator` for argument shape, purity and errors; the only
+      difference is which role this side plays."
      ([local-static-kp remote-static-pub]
       (responder local-static-kp remote-static-pub nil))
      ([local-static-kp remote-static-pub {:keys [prologue]}]
@@ -388,7 +409,7 @@
    (defn established?
      "True iff the handshake has completed and transport messages may
       flow. Both sides reach this state after exchanging messages 1
-      and 2 of the KK pattern."
+      and 2 of the KK pattern. Pure."
      [state]
      (= :transport (:phase state))))
 
@@ -434,7 +455,7 @@
      [{:keys [local-static-kp remote-static-pub] :as state} ^bytes msg]
      (when (< (alength msg) (+ 32 16))
        (throw (ex-info "Noise KK message 1 too short"
-                       {:reason :reason/handshake-message-too-short
+                       {:type   ::handshake-message-too-short
                         :length (alength msg)
                         :min    48})))
      (let [eph-pub-bs (java.util.Arrays/copyOfRange msg 0 32)
@@ -493,7 +514,7 @@
      [{:keys [local-static-kp local-ephemeral-kp] :as state} ^bytes msg]
      (when (< (alength msg) (+ 32 16))
        (throw (ex-info "Noise KK message 2 too short"
-                       {:reason :reason/handshake-message-too-short
+                       {:type   ::handshake-message-too-short
                         :length (alength msg)
                         :min    48})))
      (let [eph-pub-bs (java.util.Arrays/copyOfRange msg 0 32)
@@ -521,7 +542,7 @@
      "Inverse of write-message-transport. Throws on AEAD auth failure."
      [{:keys [recv] :as state} ^bytes ciphertext]
      (let [{:keys [k n]} recv
-           pt (impl/chacha20-poly1305-decrypt k (aead-nonce n) ciphertext nil)]
+           pt (open-aead k (aead-nonce n) ciphertext nil)]
        [(assoc-in state [:recv :n] (inc n)) pt])))
 
 #?(:clj
@@ -531,7 +552,7 @@
       after Split, transport messages are pure AEAD ciphertext.
 
       `state` — handshake or transport state (from initiator/responder
-                or a prior write-message/read-message).
+                or a prior write-message!/read-message!).
       `plaintext` — application payload bytes. Empty (or nil) is fine.
 
       Returns [next-state ciphertext-bytes]. Throws if the state is not
@@ -548,13 +569,13 @@
        (write-message-2-responder state plaintext)
 
        :else
-       (throw (ex-info "Noise session: write-message in wrong phase"
-                       {:reason :reason/wrong-message-phase
+       (throw (ex-info "Noise session: write-message! in wrong phase"
+                       {:type   ::wrong-message-phase
                         :phase  phase :role role :pos pos})))))
 
 #?(:clj
    (defn- read-message*
-     "Process one inbound Noise message. Inverse of write-message.
+     "Process one inbound Noise message. Inverse of write-message!.
       Throws on AEAD authentication failure (tampered ciphertext,
       wrong peer, wrong shared key) or wrong message phase."
      [{:keys [phase role pos] :as state} ciphertext]
@@ -569,19 +590,23 @@
        (read-message-2-initiator state ciphertext)
 
        :else
-       (throw (ex-info "Noise session: read-message in wrong phase"
-                       {:reason :reason/wrong-message-phase
+       (throw (ex-info "Noise session: read-message! in wrong phase"
+                       {:type   ::wrong-message-phase
                         :phase  phase :role role :pos pos})))))
 
 #?(:clj
-   (defn write-message
+   (defn write-message!
      "Produce one outbound Noise message: returns [next-state ciphertext].
 
-      Impure — consumes `state`: each state value is single-use. Always
-      continue with the returned next-state. Writing again from a state
-      already used throws ::stale-session-state instead of reusing its
-      nonce (see consume!). Throws if the state is not currently
-      expecting an outbound message.
+      Impure: consumes `state` (each state value is single-use; always
+      continue with the returned next-state), and draws a fresh ephemeral
+      key for handshake messages.
+
+      Throws ex-info {:type ::stale-session-state} when `state` was already
+      used (instead of reusing its nonce; see consume!),
+      {:type ::wrong-message-phase} when the state is not expecting an
+      outbound message, and {:type ::not-a-session-state} for anything
+      that is not a session state.
 
       `plaintext` — application payload bytes. Empty (or nil) is fine.
       During the handshake the message carries the local ephemeral public
@@ -591,13 +616,18 @@
      (consume! state #(write-message* state plaintext))))
 
 #?(:clj
-   (defn read-message
+   (defn read-message!
      "Process one inbound Noise message: returns [next-state plaintext].
 
-      Impure — a successful read consumes `state` (single-use, like
-      write-message): reading again from it throws ::stale-session-state,
-      which also refuses a replayed ciphertext. A failed read (tampered or
-      forged message, wrong peer, wrong phase) throws and leaves `state`
-      usable for the genuine message."
+      Impure: a successful read consumes `state` (single-use, like
+      write-message!). A failed read throws and leaves `state` usable for
+      the genuine message.
+
+      Throws ex-info {:type ::authentication-failed} for a forged,
+      tampered or misdirected message (the same on every backend),
+      {:type ::stale-session-state} when `state` was already used (which
+      also refuses a replayed ciphertext),
+      {:type ::handshake-message-too-short}, {:type ::wrong-message-phase},
+      and {:type ::not-a-session-state}."
      [state ciphertext]
      (consume! state #(read-message* state ciphertext))))

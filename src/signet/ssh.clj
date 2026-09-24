@@ -4,7 +4,8 @@
    Converts between SSH wire format and signet key records:
    - SSH public key (id_ed25519.pub) → Ed25519PublicKey
    - SSH private key (id_ed25519) → Ed25519KeyPair (seed + derived pub)
-   - SSH keypair files → registered in signet key store
+   - SSH keypair files → Ed25519KeyPair (load-keypair; load-keypair! also
+     registers it in the key store)
 
    No external dependencies — just byte manipulation and base64."
   (:require [signet.key :as key]
@@ -12,23 +13,52 @@
 
 ;; ---------------------------------------------------------------------------
 ;; SSH format parsing helpers
+;;
+;; Strict: anything but an unencrypted Ed25519 key is refused with
+;; ex-info {:type ::bad-ssh-key :reason …}, never parsed into a wrong key.
+;; Error data names the reason, never key bytes.
 ;; ---------------------------------------------------------------------------
 
+(defn- bad-key! [reason msg]
+  (throw (ex-info (str "Not a usable SSH Ed25519 key: " msg)
+                  {:type ::bad-ssh-key :reason reason})))
+
 (defn- read-uint32
-  "Read a big-endian uint32 from a byte vector at offset."
+  "Big-endian uint32 from byte vector bs at offset (bounds-checked)."
   [bs offset]
+  (when (> (+ offset 4) (count bs)) (bad-key! :truncated "truncated"))
   (bit-or (bit-shift-left (bit-and (nth bs offset) 0xff) 24)
           (bit-shift-left (bit-and (nth bs (+ offset 1)) 0xff) 16)
           (bit-shift-left (bit-and (nth bs (+ offset 2)) 0xff) 8)
           (bit-and (nth bs (+ offset 3)) 0xff)))
 
 (defn- read-ssh-string
-  "Read a length-prefixed string/bytes from a byte vector at offset.
-   Returns {:value byte-vector :next next-offset}."
+  "A length-prefixed string/bytes from byte vector bs at offset
+   (bounds-checked). Returns {:value byte-vector :next next-offset}."
   [bs offset]
-  (let [len (read-uint32 bs offset)]
-    {:value (subvec bs (+ offset 4) (+ offset 4 len))
-     :next  (+ offset 4 len)}))
+  (let [len (read-uint32 bs offset)
+        end (+ offset 4 len)]
+    (when (> end (count bs)) (bad-key! :truncated "truncated"))
+    {:value (subvec bs (+ offset 4) end)
+     :next  end}))
+
+(defn- bytes->str [v] (String. (byte-array v) "UTF-8"))
+
+(defn- base64-decode [^String s]
+  (try (vec (.decode (java.util.Base64/getDecoder) s))
+       (catch IllegalArgumentException _ (bad-key! :bad-base64 "not base64"))))
+
+(defn- ed25519-public-blob
+  "The 32-byte public key inside an SSH public-key blob
+   (string \"ssh-ed25519\" + string pk)."
+  [blob]
+  (let [t  (read-ssh-string blob 0)
+        pk (read-ssh-string blob (:next t))]
+    (when-not (= "ssh-ed25519" (bytes->str (:value t)))
+      (bad-key! :not-ed25519 (str "key type " (pr-str (bytes->str (:value t))))))
+    (when-not (= 32 (count (:value pk)))
+      (bad-key! :bad-length "the public key is not 32 bytes"))
+    (:value pk)))
 
 ;; ---------------------------------------------------------------------------
 ;; Public key import
@@ -40,14 +70,17 @@
    Accepts the file content (single line):
      ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA... comment
 
-   SSH format: [4 len][11 'ssh-ed25519'][4 len][32 raw-pk]
-   Returns Ed25519PublicKey record with raw 32-byte :x field."
+   SSH format: string \"ssh-ed25519\" + string raw-pk (32 bytes).
+   Pure: parses the content; never touches the key store.
+   Throws ex-info {:type ::bad-ssh-key :reason …} for anything else (another
+   key type, truncated or malformed input)."
   [ssh-pub-line]
-  (let [b64       (second (str/split (str/trim ssh-pub-line) #" "))
-        decoded   (vec (.decode (java.util.Base64/getDecoder) b64))
-        ;; Skip: 4 (len) + 11 ("ssh-ed25519") + 4 (len) = 19 bytes
-        raw-pk    (byte-array (drop 19 decoded))]
-    (key/->Ed25519PublicKey :signet/ed25519-public-key :Ed25519 raw-pk)))
+  (let [[kind b64] (str/split (str/trim (str ssh-pub-line)) #"\s+")]
+    (when-not (= "ssh-ed25519" kind)
+      (bad-key! :not-ed25519 (str "key type " (pr-str kind))))
+    (when-not b64 (bad-key! :truncated "no key data"))
+    (key/->Ed25519PublicKey :signet/ed25519-public-key :Ed25519
+                            (byte-array (ed25519-public-blob (base64-decode b64))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Private key import
@@ -56,69 +89,85 @@
 (defn read-private-key
   "Read an OpenSSH Ed25519 private key file and return a signet Ed25519KeyPair.
 
-   Parses the OpenSSH private key format (unencrypted only):
+   Parses the OpenSSH private key format, unencrypted only:
      -----BEGIN OPENSSH PRIVATE KEY-----
      base64...
      -----END OPENSSH PRIVATE KEY-----
 
-   Extracts the 32-byte Ed25519 seed and derives the public key.
-   Returns Ed25519KeyPair record with :x (pub) and :d (seed)."
+   Checks, in order: the openssh-key-v1 magic; cipher and KDF \"none\"
+   (passphrase-protected keys are refused, not parsed as ciphertext); one
+   key; key type ssh-ed25519; the two check-ints agree (OpenSSH's
+   integrity check); the public key in the public blob, in the private
+   section and in the copy after the seed all agree.
+
+   Pure: parses the content; never touches the key store.
+   Throws ex-info {:type ::bad-ssh-key :reason …} when any check fails."
   [pem-content]
-  (let [lines   (str/split-lines pem-content)
-        b64     (apply str (remove #(str/starts-with? % "-----") lines))
-        decoded (vec (.decode (java.util.Base64/getDecoder) b64))
-        ;; Verify magic: "openssh-key-v1\0"
-        _       (assert (= "openssh-key-v1"
-                           (String. (byte-array (take 14 decoded))))
-                        "Not an OpenSSH private key")
-        ;; Skip: magic(15) + ciphername + kdfname + kdfoptions + num-keys(4) + pubkey-blob
-        pos   (atom 15)
-        skip! (fn [] (let [r (read-ssh-string decoded @pos)]
-                       (reset! pos (:next r)) r))]
-    (skip!)                             ;; ciphername
-    (skip!)                             ;; kdfname
-    (skip!)                             ;; kdfoptions
-    (swap! pos + 4)                     ;; num-keys
-    (skip!)                             ;; public key blob
-    (let [priv-blob (vec (:value (skip!))) ;; private key blob
-          ;; Inside: checkint(4) + checkint(4) + keytype-string + pubkey + privkey(64) + comment
-          ppos (atom 8)]                ;; skip 2x checkint
-      (let [r (read-ssh-string priv-blob @ppos)] (reset! ppos (:next r))) ;; keytype
-      (let [r   (read-ssh-string priv-blob @ppos) ;; embedded pubkey(32)
-            pub (byte-array (:value r))
-            _   (reset! ppos (:next r))]
-        (swap! ppos + 4)                ;; skip privkey length prefix
-        ;; Next 32 bytes = Ed25519 seed (followed by 32 bytes pubkey copy)
-        (let [seed (byte-array (subvec priv-blob @ppos (+ @ppos 32)))]
-          (key/->Ed25519KeyPair :signet/ed25519-keypair :Ed25519 pub seed))))))
+  (let [lines   (str/split-lines (str pem-content))
+        b64     (apply str (map str/trim (remove #(str/starts-with? % "-----") lines)))
+        decoded (base64-decode b64)
+        magic   "openssh-key-v1"]
+    (when-not (and (> (count decoded) 15)
+                   (= magic (bytes->str (subvec decoded 0 14)))
+                   (zero? (nth decoded 14)))
+      (bad-key! :not-openssh "not an OpenSSH private key"))
+    (let [cipher  (read-ssh-string decoded 15)
+          kdf     (read-ssh-string decoded (:next cipher))
+          kdfopts (read-ssh-string decoded (:next kdf))
+          nkeys   (read-uint32 decoded (:next kdfopts))
+          pubblob (read-ssh-string decoded (+ 4 (:next kdfopts)))
+          priv    (read-ssh-string decoded (:next pubblob))]
+      (when-not (and (= "none" (bytes->str (:value cipher)))
+                     (= "none" (bytes->str (:value kdf))))
+        (bad-key! :encrypted "passphrase-protected keys are not supported; decrypt it first (ssh-keygen -p)"))
+      (when-not (= 1 nkeys) (bad-key! :key-count (str nkeys " keys in one file")))
+      (let [pub      (ed25519-public-blob (:value pubblob))
+            blob     (:value priv)
+            check1   (read-uint32 blob 0)
+            check2   (read-uint32 blob 4)
+            ktype    (read-ssh-string blob 8)
+            pub2     (read-ssh-string blob (:next ktype))
+            secret   (read-ssh-string blob (:next pub2))
+            sk       (:value secret)]
+        (when-not (= check1 check2) (bad-key! :check-int-mismatch "the check-ints differ (corrupt or wrongly decrypted)"))
+        (when-not (= "ssh-ed25519" (bytes->str (:value ktype)))
+          (bad-key! :not-ed25519 "the private key is not ssh-ed25519"))
+        (when-not (= 64 (count sk)) (bad-key! :bad-length "the private key is not 64 bytes"))
+        (when-not (= pub (:value pub2) (subvec sk 32 64))
+          (bad-key! :public-key-mismatch "the public key copies disagree"))
+        (key/->Ed25519KeyPair :signet/ed25519-keypair :Ed25519
+                              (byte-array pub) (byte-array (subvec sk 0 32)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Convenience: load keypair from file paths
 ;; ---------------------------------------------------------------------------
 
 (defn load-keypair
-  "Load an Ed25519 keypair from SSH key files.
+  "Load an Ed25519 keypair from SSH key files. Never touches the key store;
+   load-keypair! also registers the result.
 
    Arguments:
      private-key-path — path to id_ed25519 (default: ~/.ssh/id_ed25519)
      public-key-path  — path to id_ed25519.pub (optional, derived from private key seed)
 
    The public key is derived from the private key seed, so the .pub file
-   is not strictly required. When provided, it's used for verification.
+   is not strictly required. When provided, both files must exist.
 
-   Returns an Ed25519KeyPair record registered in the signet key store,
-   or nil if the private key file doesn't exist."
+   Impure: reads the files (and the user.home property for the default
+   path). Returns an Ed25519KeyPair record, or nil if a file doesn't exist."
   ([] (load-keypair (str (System/getProperty "user.home") "/.ssh/id_ed25519")))
   ([private-key-path]
    (let [priv-file (java.io.File. private-key-path)]
      (when (.exists priv-file)
-       (let [kp (read-private-key (slurp priv-file))]
-         (key/register! kp)
-         kp))))
+       (read-private-key (slurp priv-file)))))
   ([private-key-path public-key-path]
    (let [priv-file (java.io.File. private-key-path)
          pub-file  (java.io.File. public-key-path)]
      (when (and (.exists priv-file) (.exists pub-file))
-       (let [kp (read-private-key (slurp priv-file))]
-         (key/register! kp)
-         kp)))))
+       (read-private-key (slurp priv-file))))))
+
+(defn load-keypair!
+  "load-keypair, then register! the keypair when one was found; returns it
+   (or nil). Same arities. Impure: reads the files and writes the key store."
+  [& paths]
+  (some-> (apply load-keypair paths) key/register!))

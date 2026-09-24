@@ -47,33 +47,25 @@
 
   test:jar
   {:doc  "Install signet's jar locally, then run signet's own tests against the jar from a scratch consumer (tests only, no src): JVM jca, JVM sodium + parity, bb sodium"
-   :requires ([babashka.fs :as fs])
-   :task (let [_       (shell "clojure" "-P")
-               _       (shell "clojure" "-T:build" "install")
-               version (second (re-find (re-pattern "\\(def version \"([^\"]+)\"\\)") (slurp "build.clj")))
-               tests   (str (fs/absolutize "test"))
-               dir     (str (fs/create-temp-dir {:prefix "signet-consumer-"}))
-               coord   (str "com.github.franks42/signet {:mvn/version \"" version "\"}")
-               nacljc  "com.github.franks42/nacljc {:mvn/version \"0.1.0\"}"]
-           (spit (str dir "/deps.edn")
-                 (str "{:paths [\"" tests "\"] :deps {" coord "}"
-                      " :aliases {:sodium {:extra-deps {" nacljc "}"
-                      " :jvm-opts [\"--enable-native-access=ALL-UNNAMED\" \"-Dsignet.backend=sodium\"]}}}"))
-           (try
-             (let [from-jar? (fn [out] (re-find (re-pattern "signet-from jar:file:") out))
-                   where "(println :signet-from (str (clojure.java.io/resource \"signet/key.cljc\")))"
-                   jvm-src (:out (shell {:dir dir :out :string} "clojure" "-M" "-e" where))]
-               (when-not (from-jar? jvm-src)
-                 (println "ERROR: signet did not load from the jar:" jvm-src) (System/exit 1))
-               (println "signet loads from the installed jar" version)
-               (shell {:dir dir} "clojure" "-M" "-m" "signet.suite" "jca")
-               (shell {:dir dir} "clojure" "-M:sodium" "-m" "signet.suite" "sodium")
-               (shell {:dir dir} "clojure" "-M:sodium" "-m" "signet.backend-parity" "sodium")
-               (shell {:dir dir :extra-env {"SIGNET_BACKEND" "sodium"}}
-                      "bb" "-e" (str "(babashka.deps/add-deps '{:deps {" coord " " nacljc "}})"
-                                     "(babashka.classpath/add-classpath \"" tests "\")"
-                                     "(require 'signet.suite) (signet.suite/-main \"sodium\")")))
-             (finally (fs/delete-tree dir))))}
+   :task (do (shell "clojure" "-P")
+             (shell "clojure" "-T:build" "install")
+             (shell "bb" "-cp" "test" "-m" "signet.consumer-check" "local"))}
+
+  test:clojars
+  {:doc  "Run signet's own tests against a release fetched from Clojars (empty local repo): JVM jca, JVM sodium + parity, bb sodium. Arg: version"
+   :task (apply shell "bb" "-cp" "test" "-m" "signet.consumer-check" "clojars" *command-line-args*)}
+
+  release-check
+  {:doc  "Refuse to release unless build.clj's version is a plain X.Y.Z and CHANGELOG.md has a section for it"
+   :task (let [ver  (second (re-find (re-pattern "\\(def version \"([^\"]+)\"\\)") (slurp "build.clj")))
+               fail (fn [& msg] (apply println "ERROR:" msg) (System/exit 1))]
+           (cond
+             (nil? ver) (fail "cannot parse the version from build.clj")
+             (not (re-matches (re-pattern "\\d+\\.\\d+\\.\\d+") ver))
+             (fail "version" (pr-str ver) "is not a stable X.Y.Z")
+             (not (clojure.string/includes? (slurp "CHANGELOG.md") (str "## " ver)))
+             (fail "CHANGELOG.md has no \"##" ver "\" section")
+             :else (println "release-check: version" ver "is releasable")))}
 
   lint
   {:doc  "clj-kondo on every Clojure file (config: :clj branch only, see .clj-kondo/config.edn)"

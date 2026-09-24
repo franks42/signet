@@ -9,7 +9,7 @@
 
 (deftest extend-create-test
   (testing "create chain with default signing keypair"
-    (let [root-kp (key/signing-keypair)
+    (let [root-kp (key/ensure-default-signing-keypair!)
           token (chain/extend {:facts ["alice can read"]})]
       (is (chain/chain? token))
       (is (chain/open? token))
@@ -24,23 +24,27 @@
       (is (chain/chain? token))
       (is (= (key/kid root-kp) (:root token)))))
 
-  (testing "create chain fails without default key"
+  (testing "create chain fails without default key, with a typed error"
     (key/clear-key-store!)
-    (is (thrown? clojure.lang.ExceptionInfo
-                 (chain/extend {:facts ["no key"]})))))
+    (is (= :signet.chain/no-default-signing-keypair
+           (try (chain/extend {:facts ["no key"]}) :no-throw
+                (catch clojure.lang.ExceptionInfo e (:type (ex-data e))))))
+    (key/signing-keypair)
+    (is (thrown? clojure.lang.ExceptionInfo (chain/extend {:facts ["still none"]}))
+        "creating a keypair (pure) does not make it the default")))
 
 ;; === Chain extension tests ===
 
 (deftest extend-chain-test
   (testing "extend adds a block"
-    (let [_ (key/signing-keypair) ; becomes the default root key extend uses
+    (let [_ (key/ensure-default-signing-keypair!) ; the default root key extend uses
           token (chain/extend {:facts ["alice can read/write"]})
           token2 (chain/extend token {:checks ["only read"]})]
       (is (= 2 (count (:blocks token2))))
       (is (chain/open? token2))))
 
   (testing "multiple extensions"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           token (-> (chain/extend {:facts ["broad access"]})
                     (chain/extend {:checks ["narrow 1"]})
                     (chain/extend {:checks ["narrow 2"]})
@@ -49,7 +53,7 @@
       (is (chain/open? token))))
 
   (testing "cannot extend a sealed chain"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           sealed (-> (chain/extend {:facts ["test"]})
                      (chain/close))]
       (is (thrown? clojure.lang.ExceptionInfo
@@ -59,7 +63,7 @@
 
 (deftest close-test
   (testing "close seals the chain"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           sealed (-> (chain/extend {:facts ["test"]})
                      (chain/close))]
       (is (chain/sealed? sealed))
@@ -68,14 +72,14 @@
       (is (true? (get-in sealed [:proof :sealed])))))
 
   (testing "close with content adds block then seals"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           sealed (-> (chain/extend {:facts ["broad"]})
                      (chain/close {:checks ["final restriction"]}))]
       (is (chain/sealed? sealed))
       (is (= 2 (count (:blocks sealed))))))
 
   (testing "cannot seal an already sealed chain"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           sealed (-> (chain/extend {:facts ["test"]})
                      (chain/close))]
       (is (thrown? clojure.lang.ExceptionInfo
@@ -85,7 +89,7 @@
 
 (deftest verify-sealed-test
   (testing "verify a simple sealed chain"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           sealed (-> (chain/extend {:facts ["alice can read"]})
                      (chain/close))
           result (chain/verify sealed)]
@@ -95,7 +99,7 @@
       (is (= 1 (count (:blocks result))))))
 
   (testing "verify a multi-block sealed chain"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           sealed (-> (chain/extend {:facts ["alice can read/write"]})
                      (chain/extend {:checks ["only read"]})
                      (chain/extend {:checks ["only /data/reports/*"]})
@@ -112,7 +116,7 @@
 
 (deftest verify-open-test
   (testing "verify an open chain"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           token (-> (chain/extend {:facts ["test"]})
                     (chain/extend {:checks ["check 1"]}))
           result (chain/verify token)]
@@ -121,7 +125,7 @@
 
 (deftest verify-tamper-test
   (testing "tampered block content fails"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           sealed (-> (chain/extend {:facts ["alice can read"]})
                      (chain/close))
           ;; Tamper with block 0's message
@@ -130,7 +134,7 @@
       (is (not (:valid? (chain/verify tampered))))))
 
   (testing "removed block fails"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           sealed (-> (chain/extend {:facts ["block 0"]})
                      (chain/extend {:checks ["block 1"]})
                      (chain/close))
@@ -140,7 +144,7 @@
       (is (not (:valid? (chain/verify tampered))))))
 
   (testing "reordered blocks fail"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           sealed (-> (chain/extend {:facts ["block 0"]})
                      (chain/extend {:checks ["block 1"]})
                      (chain/extend {:checks ["block 2"]})
@@ -153,7 +157,7 @@
       (is (not (:valid? (chain/verify tampered))))))
 
   (testing "wrong root key fails"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           sealed (-> (chain/extend {:facts ["test"]})
                      (chain/close))
           ;; Change the root to a different key
@@ -165,13 +169,13 @@
 
 (deftest predicate-test
   (testing "chain?"
-    (let [_root (key/signing-keypair)]
+    (let [_root (key/ensure-default-signing-keypair!)]
       (is (chain/chain? (chain/extend {:x 1})))
       (is (not (chain/chain? {})))
       (is (not (chain/chain? nil)))))
 
   (testing "open? and sealed?"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           open (chain/extend {:x 1})
           sealed (chain/close open)]
       (is (chain/open? open))
@@ -223,7 +227,7 @@
 
 (deftest third-party-request-test
   (testing "third-party-request returns prev-sig binding"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           token (chain/extend {:facts ["block 0"]})
           request (chain/third-party-request token)]
       (is (= :signet/third-party-request (:type request)))
@@ -231,14 +235,14 @@
       (is (bytes? (:prev-sig request)))))
 
   (testing "third-party-request fails on sealed chain"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           sealed (-> (chain/extend {:facts ["test"]}) (chain/close))]
       (is (thrown? clojure.lang.ExceptionInfo
                    (chain/third-party-request sealed))))))
 
 (deftest create-third-party-block-test
   (testing "create-third-party-block produces signed block"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           token (chain/extend {:facts ["block 0"]})
           request (chain/third-party-request token)
           idp-kp (key/signing-keypair)
@@ -253,7 +257,7 @@
 
 (deftest extend-third-party-test
   (testing "extend-third-party appends block to chain"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           token (chain/extend {:facts ["authority block"]})
           idp-kp (key/signing-keypair)
           request (chain/third-party-request token)
@@ -264,7 +268,7 @@
       (is (chain/open? token2))))
 
   (testing "can extend further after third-party block"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           token (chain/extend {:facts ["authority"]})
           idp-kp (key/signing-keypair)
           request (chain/third-party-request token)
@@ -275,7 +279,7 @@
       (is (= 3 (count (:blocks token3))))))
 
   (testing "extend-third-party fails on sealed chain"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           sealed (-> (chain/extend {:facts ["test"]}) (chain/close))
           idp-kp (key/signing-keypair)
           ;; Can't even get a request from sealed, but try extend directly
@@ -288,7 +292,7 @@
 
 (deftest verify-third-party-test
   (testing "chain with third-party block verifies"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           token (chain/extend {:facts ["authority"]})
           idp-kp (key/signing-keypair)
           request (chain/third-party-request token)
@@ -301,7 +305,7 @@
       (is (= 2 (count (:blocks result))))))
 
   (testing "tampered third-party content fails verification"
-    (let [_root (key/signing-keypair)
+    (let [_root (key/ensure-default-signing-keypair!)
           token (chain/extend {:facts ["authority"]})
           idp-kp (key/signing-keypair)
           request (chain/third-party-request token)
@@ -315,7 +319,7 @@
       (is (not (:valid? (chain/verify tampered))))))
 
   (testing "third-party block with wrong prev-sig binding fails"
-    (let [root-kp (key/signing-keypair)
+    (let [root-kp (key/ensure-default-signing-keypair!)
           token-a (chain/extend {:facts ["chain A"]})
           token-b (chain/extend root-kp {:facts ["chain B"]})
           idp-kp (key/signing-keypair)
@@ -329,3 +333,13 @@
           sealed (chain/close token-b2)]
       ;; External sig should fail because it was bound to chain A's prev-sig
       (is (not (:valid? (chain/verify sealed)))))))
+
+(deftest chain-errors-are-typed
+  (let [_      (key/ensure-default-signing-keypair!)
+        sealed (chain/close (chain/extend {:facts ["x"]}))
+        type-of (fn [f] (try (f) :no-throw
+                             (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))]
+    (is (= :signet.chain/sealed (type-of #(chain/extend sealed {:more 1}))))
+    (is (= :signet.chain/sealed (type-of #(chain/close sealed))))
+    (is (= :signet.chain/sealed (type-of #(chain/third-party-request sealed))))
+    (is (= :signet.chain/bad-argument (type-of #(chain/extend {:type :nope} {:c 1}))))))

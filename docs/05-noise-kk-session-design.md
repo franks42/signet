@@ -171,7 +171,7 @@ without thread-safety overhead.
 (responder local-static-kp remote-static-pub & {:keys [prologue]})
 ;; → handshake-state, role :responder, message-pos 0
 
-(write-message state plaintext-bytes)
+(write-message! state plaintext-bytes)
 ;; → [next-state ciphertext-bytes]
 ;; During handshake, ciphertext carries: ephemeral-pub bytes,
 ;; encrypted application payload (AEAD-tagged with the running
@@ -179,9 +179,9 @@ without thread-safety overhead.
 ;; ciphertext is just ChaCha20-Poly1305(send-key, nonce, plaintext, h)
 ;; with nonce baked into state.
 
-(read-message state ciphertext-bytes)
+(read-message! state ciphertext-bytes)
 ;; → [next-state plaintext-bytes]
-;; Inverse of write-message. Throws on AEAD authentication failure
+;; Inverse of write-message!. Throws on AEAD authentication failure
 ;; (which catches both tampered ciphertext and a wrong-peer DH).
 
 (established? state)
@@ -189,10 +189,10 @@ without thread-safety overhead.
 ```
 
 The handshake follows the KK pattern's two-message exchange. The
-initiator calls `write-message` to produce message 1; the responder
-`read-message`s it, then `write-message`s message 2; the initiator
-`read-message`s the reply. After that exchange, both sides'
-`established?` is true, and `write-message` / `read-message` switch
+initiator calls `write-message!` to produce message 1; the responder
+`read-message!`s it, then `write-message!`s message 2; the initiator
+`read-message!`s the reply. After that exchange, both sides'
+`established?` is true, and `write-message!` / `read-message!` switch
 silently into transport mode. Application code does not change
 between handshake and transport — the same two functions handle
 both phases. This mirrors the Noise spec's `WriteMessage` and
@@ -380,7 +380,7 @@ The session layer raises (via `ex-info`) on:
   the attacker *which* part of their forgery failed. The error
   category is `:reason/aead-auth-failed`.
 
-- **Wrong message phase.** Calling `write-message` on a handshake
+- **Wrong message phase.** Calling `write-message!` on a handshake
   state that expects to read next, or vice versa, raises
   `:reason/wrong-message-phase`. This catches simple programming
   errors (e.g., the responder forgetting to read message 1 before

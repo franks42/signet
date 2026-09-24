@@ -3,6 +3,12 @@
    plus secp256k1 ECDSA (signing — for interop with Bitcoin/Ethereum/Cosmos
    wallet keys and MPC threshold-signature ceremony output).
 
+   Naming (the convention in CLAUDE.md): a name ending in ! writes state
+   that outlives the call (here: the key store or the defaults). Every other
+   function is pure, or reads only (randomness for generation), and never
+   touches the store. Where registering is a convenience, there are twins:
+   (signing-keypair) returns a keypair; (signing-keypair!) also registers it.
+
    Keypair construction (multimethods, extensible):
      (signing-keypair)             — generate new Ed25519 keypair (default curve)
      (signing-keypair :secp256k1)  — generate new secp256k1 keypair
@@ -19,6 +25,14 @@
      (signing-private-key k)    — extract private key (curve preserved)
      (encryption-public-key k)  — X25519 public key, also cross-converts from Ed25519
      (encryption-private-key k) — X25519 private key, also cross-converts from Ed25519
+
+   Registering twins (write the key store, return the key):
+     (signing-keypair! …), (encryption-keypair! …)
+
+   Store and defaults:
+     (register! k) (unregister! kid) (lookup kid) (registered-keys)
+     (clear-key-store!) (set-default-signing-keypair! kp)
+     (default-signing-keypair) (ensure-default-signing-keypair!)
 
    Convenience:
      (public-key k)     — same-curve public key extraction
@@ -73,56 +87,41 @@
 (derive :signet/secp256k1-private-key :signet/signing-private-key)
 
 ;; ============================================================
-;; Key Store — auto-discovery of keys by kid
-;; ============================================================
-
-;; ============================================================
-;; Default keys — first-one-wins unless explicitly overridden
+;; Default keys — set explicitly, never as a side effect of registering
 ;; ============================================================
 
 (def ^:private default-signing-keypair* (atom nil))
 (def ^:private default-encryption-keypair* (atom nil))
 
 (defn set-default-signing-keypair!
-  "Explicitly set the default signing keypair. Overrides any auto-set default."
+  "Set the default signing keypair (used by signet.sign/sign-edn! and
+   signet.chain/extend without a key). Impure: writes the default."
   [kp]
   (reset! default-signing-keypair* kp))
 
 (defn set-default-encryption-keypair!
-  "Explicitly set the default encryption keypair. Overrides any auto-set default."
+  "Set the default encryption keypair. Impure: writes the default."
   [kp]
   (reset! default-encryption-keypair* kp))
 
 (defn default-signing-keypair
-  "Return the default signing keypair, or nil if none set."
+  "Return the default signing keypair, or nil if none is set. Impure: reads
+   the default."
   []
   @default-signing-keypair*)
 
 (defn default-encryption-keypair
-  "Return the default encryption keypair, or nil if none set."
+  "Return the default encryption keypair, or nil if none is set. Impure:
+   reads the default."
   []
   @default-encryption-keypair*)
 
 (defn clear-defaults!
-  "Clear both default keypairs."
+  "Clear both default keypairs. Impure: writes the defaults."
   []
   (reset! default-signing-keypair* nil)
   (reset! default-encryption-keypair* nil)
   nil)
-
-(defn- auto-set-default!
-  "Set as default if it's a keypair and no default exists yet (first-one-wins).
-   Both Ed25519 and secp256k1 keypairs become signing-keypair candidates."
-  [k]
-  (case (:type k)
-    :signet/ed25519-keypair
-    (compare-and-set! default-signing-keypair* nil k)
-    :signet/secp256k1-keypair
-    (compare-and-set! default-signing-keypair* nil k)
-    :signet/x25519-keypair
-    (compare-and-set! default-encryption-keypair* nil k)
-    nil)
-  k)
 
 ;; -- URN helpers
 
@@ -139,8 +138,8 @@
 ;; ============================================================
 
 (def default-key-store
-  "Global key store: atom of {kid-string → key-record}.
-   Keys are auto-registered when created or reconstructed.
+  "Global key store: atom of {kid-string → key-record}. Keys get here only
+   through register! (or a registering twin such as signing-keypair!).
    'Most info wins': keypair > private-key > public-key."
   (atom {}))
 
@@ -163,7 +162,12 @@
 
 (defn register!
   "Register a key in the store. Idempotent — a keypair will not be
-   overwritten by a public key for the same kid. Returns the key.
+   overwritten by a public key for the same kid. Returns the key. Does not
+   change the defaults (see set-default-signing-keypair!).
+
+   Impure: writes the key store.
+   Throws ex-info {:type ::ephemeral-key} for an ephemeral key, which must
+   never be kept.
 
    For private-only keys, derives the public key bytes for kid
    computation when the platform supports it. secp256k1 private-only
@@ -195,7 +199,6 @@
                           (if (> new-rank old-rank)
                             (assoc m kid-str k)
                             m)))))))
-   (auto-set-default! k)
    k))
 
 (defn- parse-kid
@@ -218,6 +221,8 @@
   "Look up a key by kid URN string. Returns the best registered key record,
    else the public key the self-describing URN names, else nil.
 
+   Impure: reads the key store. Never throws: a malformed kid gives nil.
+
    Never registers anything: the store holds only keys the caller put
    there deliberately. Parsing a kid from an untrusted envelope must not
    grow the verifier's memory. A parsed key is not a trusted key; see
@@ -228,12 +233,13 @@
        (parse-kid kid-str))))
 
 (defn registered-keys
-  "Return all registered keys as a seq."
+  "Return all registered keys as a seq. Impure: reads the key store."
   ([] (registered-keys default-key-store))
   ([store] (vals @store)))
 
 (defn clear-key-store!
-  "Remove all keys from the store and clear default keypairs."
+  "Remove all keys from the store and clear default keypairs. Impure:
+   writes the key store and the defaults."
   ([] (clear-key-store! default-key-store))
   ([store]
    (reset! store {})
@@ -241,7 +247,8 @@
    nil))
 
 (defn unregister!
-  "Remove a key by kid string. Returns the removed key or nil."
+  "Remove a key by kid string. Returns the removed key or nil. Impure:
+   writes the key store."
   ([kid-str] (unregister! default-key-store kid-str))
   ([store kid-str]
    (let [k (get @store kid-str)]
@@ -283,13 +290,15 @@
         (cond
           (keyword? a) [:generate a]
           (map? a)     [:map (:type a)]
-          :else        (throw (ex-info "Unsupported argument type" {:arg a}))))
+          :else        (throw (ex-info "Unsupported argument type"
+                                       {:type ::bad-argument :arg-type (str (type a))}))))
     2 [:from-bytes]
     3 (let [[a _ _] args]
         (if (keyword? a)
           [:from-bytes a]
-          (throw (ex-info "3-arg form requires a curve keyword first" {:args args}))))
-    (throw (ex-info "Too many arguments" {:count (count args)}))))
+          (throw (ex-info "3-arg form requires a curve keyword first"
+                          {:type ::bad-argument :arg-types (mapv (comp str type) args)}))))
+    (throw (ex-info "Too many arguments" {:type ::bad-argument :count (count args)}))))
 
 ;; ============================================================
 ;; signing-keypair — always returns Ed25519KeyPair
@@ -299,8 +308,12 @@
 
 (defn signing-keypair
   "Create a signing keypair. Defaults to Ed25519; pass :secp256k1 (or
-   :Ed25519 explicit) as the leading argument to switch curves.
-   Auto-registers the result in the key store.
+   :Ed25519 explicit) as the leading argument to switch curves. Never
+   touches the key store; signing-keypair! also registers the result.
+
+   Impure when generating: draws from the CSPRNG. Constructing from bytes
+   or a map is pure.
+   Throws ex-info {:type ::bad-argument} for arguments it cannot dispatch on.
 
    Arities:
      ()                  — generate a new Ed25519 keypair
@@ -308,10 +321,30 @@
      (x d)               — Ed25519 from raw pub (32) + seed (32)
      (:secp256k1 x d)    — secp256k1 from compressed pub (33) + scalar (32)
      (m)                 — from a map, dispatched on (:type m)"
-  ([] (register! (-signing-keypair)))
-  ([m-or-crv] (register! (-signing-keypair m-or-crv)))
-  ([x d] (register! (-signing-keypair x d)))
-  ([crv x d] (register! (-signing-keypair crv x d))))
+  ([] (-signing-keypair))
+  ([m-or-crv] (-signing-keypair m-or-crv))
+  ([x d] (-signing-keypair x d))
+  ([crv x d] (-signing-keypair crv x d)))
+
+(defn signing-keypair!
+  "signing-keypair, then register! the result; returns the keypair. Same
+   arities. Impure: writes the key store (and draws from the CSPRNG when
+   generating)."
+  [& args]
+  (register! (apply signing-keypair args)))
+
+(defn ensure-default-signing-keypair!
+  "The default signing keypair, creating one first if none is set: a new
+   Ed25519 keypair is registered and made the default. Safe under
+   concurrency: exactly one caller's keypair becomes the default, and every
+   caller gets that one. Impure: may draw from the CSPRNG and write the key
+   store and the default."
+  []
+  (or (default-signing-keypair)
+      (let [kp (signing-keypair)]
+        (if (compare-and-set! default-signing-keypair* nil kp)
+          (register! kp)
+          (default-signing-keypair)))))
 
 ;; -- Ed25519 (default curve)
 
@@ -383,16 +416,26 @@
 
 (defn encryption-keypair
   "Create an X25519 encryption keypair. Always returns an X25519KeyPair.
-   Also accepts Ed25519 keys for cross-curve conversion.
-   Auto-registers the result in the key store.
+   Also accepts Ed25519 keys for cross-curve conversion. Never touches the
+   key store; encryption-keypair! also registers the result.
+
+   Impure when generating: draws from the CSPRNG. Constructing from bytes,
+   a map or an Ed25519 key is pure.
 
    Arities:
      ()      — generate a new random keypair
      (x d)   — from raw public key (32 bytes) and private key (32 bytes)
      (m)     — from a map, dispatched on (:type m)"
-  ([] (register! (-encryption-keypair)))
-  ([m] (register! (-encryption-keypair m)))
-  ([x d] (register! (-encryption-keypair x d))))
+  ([] (-encryption-keypair))
+  ([m] (-encryption-keypair m))
+  ([x d] (-encryption-keypair x d)))
+
+(defn encryption-keypair!
+  "encryption-keypair, then register! the result; returns the keypair. Same
+   arities. Impure: writes the key store (and draws from the CSPRNG when
+   generating)."
+  [& args]
+  (register! (apply encryption-keypair args)))
 
 (defmethod -encryption-keypair [:generate] [& _]
   #?(:clj  (let [[pub-bytes priv-bytes] (impl/generate-x25519-keypair)]
@@ -433,9 +476,9 @@
 (defmulti -signing-public-key :type)
 
 (defn signing-public-key
-  "Extract or reconstruct an Ed25519 public key. Always returns Ed25519PublicKey.
-   Auto-registers the result."
-  [k] (register! (-signing-public-key k)))
+  "The public key of a signing key (Ed25519 or secp256k1; the curve is
+   preserved). Pure: never touches the key store."
+  [k] (-signing-public-key k))
 
 (defmethod -signing-public-key :signet/ed25519-keypair [kp]
   (->Ed25519PublicKey :signet/ed25519-public-key :Ed25519 (:x kp)))
@@ -463,9 +506,9 @@
 (defmulti -signing-private-key :type)
 
 (defn signing-private-key
-  "Extract an Ed25519 private key. Always returns Ed25519PrivateKey.
-   Auto-registers the result."
-  [k] (register! (-signing-private-key k)))
+  "The private key of a signing keypair (the curve is preserved). Pure:
+   never touches the key store."
+  [k] (-signing-private-key k))
 
 (defmethod -signing-private-key :signet/ed25519-keypair [kp]
   (->Ed25519PrivateKey :signet/ed25519-private-key :Ed25519 (:d kp)))
@@ -484,10 +527,10 @@
 (defmulti -encryption-public-key :type)
 
 (defn encryption-public-key
-  "Extract or convert to an X25519 public key. Always returns X25519PublicKey.
-   Also accepts Ed25519 keys for cross-curve conversion.
-   Auto-registers the result."
-  [k] (register! (-encryption-public-key k)))
+  "The X25519 public key for any key: X25519 as-is, Ed25519 via the
+   birational map. Always returns X25519PublicKey. Pure: never touches the
+   key store."
+  [k] (if (encryption-public-key? k) k (-encryption-public-key k)))
 
 (defmethod -encryption-public-key :signet/x25519-keypair [kp]
   (->X25519PublicKey :signet/x25519-public-key :X25519 (:x kp)))
@@ -524,10 +567,10 @@
 (defmulti -encryption-private-key :type)
 
 (defn encryption-private-key
-  "Extract or convert to an X25519 private key. Always returns X25519PrivateKey.
-   Also accepts Ed25519 keys for cross-curve conversion.
-   Auto-registers the result."
-  [k] (register! (-encryption-private-key k)))
+  "The X25519 private key for any key holding a private part: X25519 as-is,
+   Ed25519 via SHA-512 + clamping. Always returns X25519PrivateKey. Pure:
+   never touches the key store."
+  [k] (if (encryption-private-key? k) k (-encryption-private-key k)))
 
 (defmethod -encryption-private-key :signet/x25519-keypair [kp]
   (->X25519PrivateKey :signet/x25519-private-key :X25519 (:d kp)))
@@ -551,8 +594,8 @@
 ;; ============================================================
 
 (defn public-key
-  "Same-curve public key extraction. Delegates to signing-public-key
-   or encryption-public-key based on the key's curve."
+  "Same-curve public key of any key (keypair, private-only or public).
+   Delegates to signing-public-key or encryption-public-key by curve. Pure."
   [k]
   (case (:crv k)
     :Ed25519   (signing-public-key k)
@@ -560,8 +603,8 @@
     :X25519    (encryption-public-key k)))
 
 (defn private-key
-  "Same-curve private key extraction. Delegates to signing-private-key
-   or encryption-private-key based on the key's curve."
+  "Same-curve private key of a keypair. Delegates to signing-private-key
+   or encryption-private-key by curve. Pure."
   [k]
   (case (:crv k)
     :Ed25519   (signing-private-key k)
@@ -572,36 +615,13 @@
 ;; kid — key identifier
 ;; ============================================================
 
-(defn as-public-key
-  "The public key record for any key (keypair, private-only or public).
-   Pure: unlike public-key / signing-public-key, it never registers
-   anything in the key store."
-  [k]
-  (case (:crv k)
-    (:Ed25519 :secp256k1) (if (signing-public-key? k) k (-signing-public-key k))
-    :X25519               (if (encryption-public-key? k) k (-encryption-public-key k))))
-
-(defn as-encryption-public-key
-  "The X25519 public key record for any key: X25519 as-is, Ed25519 via the
-   birational map. Pure: never registers anything (unlike
-   encryption-public-key)."
-  [k]
-  (if (encryption-public-key? k) k (-encryption-public-key k)))
-
-(defn as-encryption-private-key
-  "The X25519 private key record for any key holding a private part: X25519
-   as-is, Ed25519 via SHA-512 + clamping. Pure: never registers anything
-   (unlike encryption-private-key)."
-  [k]
-  (if (encryption-private-key? k) k (-encryption-private-key k)))
-
 (defn kid
   "Return the key identifier as a URN: urn:signet:pk:<algorithm>:<base64url-public-key>.
    Self-describing — the receiver can parse the URN to extract the algorithm
    and the public key bytes directly. Pure: computing a kid never registers
    the key (so kids of ephemeral keys leave no trace in the store)."
   [k]
-  (let [pub (as-public-key k)]
+  (let [pub (public-key k)]
     (str "urn:signet:pk:" (urn-algorithm (:crv pub)) ":" (enc/bytes->base64url (:x pub)))))
 
 (defn kid->public-key
@@ -638,8 +658,7 @@
      (hex->kid hex)       — assumes Ed25519
      (hex->kid hex :X25519) — explicit curve
 
-   Returns a kid URN string (and auto-registers the public key in the
-   signet key store as a side effect of parsing)."
+   Returns a kid URN string. Pure: never touches the key store."
   ([hex] (hex->kid hex :Ed25519))
   ([hex crv]
    (let [pub-bytes (enc/hex->bytes hex)
@@ -650,7 +669,6 @@
                                                    :X25519 pub-bytes)
                      :secp256k1 (->Secp256k1PublicKey :signet/secp256k1-public-key
                                                       :secp256k1 pub-bytes))]
-     (register! pub)
      (kid pub))))
 
 ;; ============================================================
@@ -672,7 +690,7 @@
   "Compute a shared secret via X25519 Diffie-Hellman key agreement.
    Accepts any combination of Ed25519 and X25519 keys — Ed25519 keys are
    automatically cross-converted to X25519.
-   Auto-registers both parties' keys in the key store.
+   Pure: never touches the key store.
 
    Returns an X25519SharedKey record with :k (32-byte shared secret),
    :kid-a (our key id), and :kid-b (their key id).
@@ -680,8 +698,6 @@
    The shared secret is symmetric:
      (raw-shared-secret alice-kp bob-pub) has the same :k as (raw-shared-secret bob-kp alice-pub)"
   [our-key their-key]
-  (register! our-key)
-  (register! their-key)
   (-raw-shared-secret our-key their-key))
 
 ;; X25519 × X25519
@@ -724,3 +740,45 @@
                   (throw (ex-info "Second argument must contain a public key" {:type (:type their)})))]
     (do-raw-shared-secret (:d our-x) (:x their-x)
                           (kid our) (kid their))))
+
+;; ============================================================
+;; Printing — secret material never appears in printed output
+;; ============================================================
+;;
+;; A stop-gap until secrets live behind handles in a vault
+;; (docs/07-secret-handles-design.md). pr, prn, pr-str, the REPL, tap>
+;; consumers and printed ex-data all go through print-method. Keys print as
+;;   #signet/key {:type … :crv … :kid "urn:signet:pk:…" :d "<redacted>"}
+;; Serialising a key record as data (cedn, or walking it as a map) still
+;; exposes :d; that is what the vault design removes.
+
+#?(:clj
+   (do
+     (defn- printable
+       "A map describing key k for printing: its type, curve and kid, with
+        every secret field replaced by \"<redacted>\"."
+       [k]
+       (let [kid-str (when (contains? k :crv)
+                       (try (kid k) (catch Exception _ nil)))]
+         (cond-> {:type (:type k)}
+           (:crv k)          (assoc :crv (:crv k))
+           kid-str           (assoc :kid kid-str)
+           (contains? k :d)  (assoc :d "<redacted>")
+           (contains? k :k)  (assoc :k "<redacted>")
+           (:kid-a k)        (assoc :kid-a (:kid-a k))
+           (:kid-b k)        (assoc :kid-b (:kid-b k)))))
+
+     (defn- print-key [k ^java.io.Writer w]
+       (.write w "#signet/key ")
+       (print-method (printable k) w))
+
+     (defmethod print-method Ed25519KeyPair [k w] (print-key k w))
+     (defmethod print-method Ed25519PublicKey [k w] (print-key k w))
+     (defmethod print-method Ed25519PrivateKey [k w] (print-key k w))
+     (defmethod print-method X25519KeyPair [k w] (print-key k w))
+     (defmethod print-method X25519PublicKey [k w] (print-key k w))
+     (defmethod print-method X25519PrivateKey [k w] (print-key k w))
+     (defmethod print-method X25519SharedKey [k w] (print-key k w))
+     (defmethod print-method Secp256k1KeyPair [k w] (print-key k w))
+     (defmethod print-method Secp256k1PublicKey [k w] (print-key k w))
+     (defmethod print-method Secp256k1PrivateKey [k w] (print-key k w))))

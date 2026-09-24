@@ -65,20 +65,36 @@
       (is (some? (:digest result)))
       (is (some? (:message-digest result))))))
 
-(deftest sign-edn-default-keypair-test
-  (testing "sign-edn with no keypair uses default"
-    (let [kp (key/signing-keypair)
-          envelope (sign/sign-edn {:msg "hello"})
-          result (sign/verify-edn envelope)]
-      (is (:valid? result))
-      (is (= (key/kid kp) (:signer result)))))
+(deftest sign-edn!-default-keypair-test
+  (testing "sign-edn! uses the default keypair"
+    (let [kp (key/signing-keypair)]
+      (key/set-default-signing-keypair! kp)
+      (let [result (sign/verify-edn (sign/sign-edn! {:msg "hello"}))]
+        (is (:valid? result))
+        (is (= (key/kid kp) (:signer result))))))
 
-  (testing "sign-edn auto-generates keypair if no default"
+  (testing "sign-edn! creates, registers and sets a default if there is none"
     (key/clear-key-store!)
-    (let [envelope (sign/sign-edn {:msg "hello"})
-          result (sign/verify-edn envelope)]
-      (is (:valid? result))
-      (is (some? (key/default-signing-keypair))))))
+    (let [envelope (sign/sign-edn! {:msg "hello"})
+          kp       (key/default-signing-keypair)]
+      (is (:valid? (sign/verify-edn envelope)))
+      (is (some? kp))
+      (is (= (key/kid kp) (get-in envelope [:envelope :signer])))
+      (is (= kp (key/lookup (key/kid kp))) "registered")
+      (is (= (key/kid kp) (get-in (sign/sign-edn! {:msg "again"}) [:envelope :signer]))
+          "later calls reuse the same identity")))
+
+  (testing "sign-edn! passes opts through"
+    (is (some? (get-in (sign/sign-edn! {:m 1} {:ttl 60}) [:envelope :expires])))))
+
+(deftest sign-edn-takes-an-explicit-key-and-writes-nothing
+  (key/clear-key-store!)
+  (let [kp (key/signing-keypair)]
+    (is (:valid? (sign/verify-edn (sign/sign-edn kp {:msg "x"}))))
+    (is (empty? (key/registered-keys)))
+    (is (nil? (key/default-signing-keypair)))
+    (is (thrown? Throwable (#'sign/sign-edn {:msg "no key"}))
+        "no key-less arity: that convenience is sign-edn!")))
 
 (deftest sign-edn-ttl-test
   (testing "sign with TTL sets expiration"

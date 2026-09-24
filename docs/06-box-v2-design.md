@@ -214,8 +214,9 @@ identity by definition, so it can be valid but never "verified as" anyone.
 - Spec conformance: a test rebuilds `k` from the formula above using raw
   primitives and decrypts `box`'s output. Run under both backends, it is
   also a parity check.
-- Ed25519 → X25519 conversion uses the pure `key/as-encryption-public-key`
-  and `key/as-encryption-private-key`: box and unbox register nothing.
+- Ed25519 → X25519 conversion uses the pure `key/encryption-public-key`
+  and `key/encryption-private-key` (the `as-*` variants until 0.7.0 made
+  all conversions pure): box and unbox register nothing.
 - The DH output and message key are wiped after use.
 
 ## Decisions (2026-09-23)

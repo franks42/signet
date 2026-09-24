@@ -1,8 +1,10 @@
 # Secrets by reference: handles and a vault
 
 Status: **draft for discussion** (2026-09-23). Nothing here is
-implemented. "Decisions so far" at the end lists what is already settled.
-The rest is proposed and marked as open.
+implemented. It is **planned for the release after 0.7.0**. 0.7.0 ships
+the naming and purity changes and redacted printing as a stop-gap.
+"Decisions so far" at the end lists what is already settled. The rest is
+proposed and marked as open.
 
 ## The principle
 
@@ -156,7 +158,7 @@ operating system protects.
 - `export-secret` returns secret bytes. It is the only way they leave, it
   is grep-able, and its docstring warns.
 - `destroy!` handle.
-- Public-key conversions (`as-public-key`, `as-encryption-public-key`,
+- Public-key conversions (`public-key`, `encryption-public-key`,
   `kid`, `lookup`) stay pure and take handles or public keys.
 - Keypair records with raw `:d` stop being public API. They remain an
   internal representation inside the `:memory` provider.
@@ -258,8 +260,8 @@ signet's `:sodium` provider is built on this. The JCA backend gets the
 
 ## Migration and release plan
 
-1. **signet 0.7.0** (unreleased, breaking changes allowed): handles plus the
-   `:memory` provider behind the provider protocol. Also:
+1. **signet 0.8.0** (0.7.0 shipped the naming changes without vaults):
+   handles plus the `:memory` provider behind the provider protocol. Also:
    - keys born in the vault, explicit import and export;
    - sign, box and chain on handles;
    - redacted printing as a safety net;

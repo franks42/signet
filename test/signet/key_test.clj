@@ -411,44 +411,58 @@
 
 ;; === Key store tests ===
 
-(deftest key-store-auto-register-test
-  (testing "signing-keypair auto-registers"
-    (let [kp (key/signing-keypair)
-          found (key/lookup (key/kid kp))]
-      (is (some? found))
-      (is (key/signing-keypair? found))))
+;; === Pure functions never touch the store; the ! twins register ===
 
-  (testing "encryption-keypair auto-registers"
-    (let [kp (key/encryption-keypair)
-          found (key/lookup (key/kid kp))]
-      (is (some? found))
-      (is (key/encryption-keypair? found))))
+(defn- store+defaults []
+  [(set (map key/kid (key/registered-keys)))
+   (key/default-signing-keypair)
+   (key/default-encryption-keypair)])
 
-  (testing "signing-keypair from map auto-registers"
-    (let [kp (key/signing-keypair)
-          _ (key/clear-key-store!)
-          kp2 (key/signing-keypair {:type :signet/ed25519-keypair
-                                    :crv :Ed25519
-                                    :x (:x kp) :d (:d kp)})]
-      (is (some? (key/lookup (key/kid kp2))))))
+(deftest pure-functions-leave-store-and-defaults-alone
+  (let [ed  (key/signing-keypair)
+        x   (key/encryption-keypair)
+        before (store+defaults)]
+    (doseq [[label f] {"signing-keypair"            #(key/signing-keypair)
+                       "signing-keypair from bytes" #(key/signing-keypair (:x ed) (:d ed))
+                       "signing-keypair from map"   #(key/signing-keypair (into {} ed))
+                       "encryption-keypair"         #(key/encryption-keypair)
+                       "encryption-keypair from ed" #(key/encryption-keypair ed)
+                       "signing-public-key"         #(key/signing-public-key ed)
+                       "signing-private-key"        #(key/signing-private-key ed)
+                       "encryption-public-key"      #(key/encryption-public-key ed)
+                       "encryption-private-key"     #(key/encryption-private-key ed)
+                       "public-key"                 #(key/public-key x)
+                       "private-key"                #(key/private-key x)
+                       "kid"                        #(key/kid ed)
+                       "hex->kid"                   #(key/hex->kid (key/kid->hex ed))
+                       "raw-shared-secret"          #(key/raw-shared-secret ed x)
+                       "lookup"                     #(key/lookup (key/kid ed))}]
+      (f)
+      (is (= before (store+defaults)) (str label " changed the store or a default")))))
 
-  (testing "public-key extraction auto-registers"
-    (let [kp (key/signing-keypair)
-          _ (key/clear-key-store!)
-          pub (key/signing-public-key kp)]
-      (is (some? (key/lookup (key/kid pub))))))
-
-  (testing "raw-shared-secret auto-registers both parties"
-    (let [alice (key/signing-keypair)
-          bob (key/signing-keypair)
-          _ (key/clear-key-store!)
-          _ (key/raw-shared-secret alice bob)]
-      (is (some? (key/lookup (key/kid alice))))
-      (is (some? (key/lookup (key/kid bob)))))))
+(deftest registering-twins
+  (testing "signing-keypair! registers and returns the keypair"
+    (let [kp (key/signing-keypair!)]
+      (is (key/signing-keypair? kp))
+      (is (= kp (key/lookup (key/kid kp))))))
+  (testing "same arities as the pure one"
+    (let [kp  (key/signing-keypair)
+          kp2 (key/signing-keypair! (:x kp) (:d kp))]
+      (is (= (key/kid kp) (key/kid kp2)))
+      (is (key/signing-keypair? (key/lookup (key/kid kp))))))
+  (testing "encryption-keypair! registers and returns the keypair"
+    (let [kp (key/encryption-keypair!)]
+      (is (key/encryption-keypair? (key/lookup (key/kid kp))))))
+  (testing "registering never sets a default"
+    (key/signing-keypair!)
+    (key/encryption-keypair!)
+    (key/register! (key/signing-keypair))
+    (is (nil? (key/default-signing-keypair)))
+    (is (nil? (key/default-encryption-keypair)))))
 
 (deftest key-store-most-info-wins-test
   (testing "keypair is not overwritten by public key"
-    (let [kp (key/signing-keypair)
+    (let [kp (key/signing-keypair!)
           kid-str (key/kid kp)
           _ (key/register! (key/signing-public-key kp))
           found (key/lookup kid-str)]
@@ -460,7 +474,6 @@
     (let [kp (key/signing-keypair)
           pub (key/signing-public-key kp)
           kid-str (key/kid kp)]
-      (key/clear-key-store!)
       (key/register! pub)
       (is (key/signing-public-key? (key/lookup kid-str)))
       (key/register! kp)
@@ -472,7 +485,6 @@
           pub (key/signing-public-key kp)
           priv (key/signing-private-key kp)
           kid-str (key/kid kp)]
-      (key/clear-key-store!)
       (key/register! pub)
       (is (key/signing-public-key? (key/lookup kid-str)))
       (key/register! priv)
@@ -482,14 +494,13 @@
 
 (deftest key-store-operations-test
   (testing "registered-keys returns all keys"
-    (let [_ (key/signing-keypair)       ; generating registers the key
-          _ (key/encryption-keypair)]
-      (is (= 2 (count (key/registered-keys))))))
+    (key/signing-keypair!)
+    (key/encryption-keypair!)
+    (is (= 2 (count (key/registered-keys)))))
 
   (testing "unregister! removes a key from store"
-    (let [kp (key/signing-keypair)
+    (let [kp (key/signing-keypair!)
           kid-str (key/kid kp)]
-      (is (some? (key/lookup kid-str)))
       (is (key/signing-keypair? (key/lookup kid-str)))
       (key/unregister! kid-str)
       ;; URN is self-describing so lookup still works (re-parses to public key)
@@ -497,8 +508,8 @@
       (is (key/signing-public-key? (key/lookup kid-str)))))
 
   (testing "clear-key-store! empties the store"
-    (key/signing-keypair)
-    (key/encryption-keypair)
+    (key/signing-keypair!)
+    (key/encryption-keypair!)
     (is (pos? (count (key/registered-keys))))
     (key/clear-key-store!)
     (is (zero? (count (key/registered-keys)))))
@@ -510,75 +521,99 @@
       (key/register! kp)
       (is (= 1 (count (key/registered-keys)))))))
 
-;; === Default key tests ===
+;; === Default keys: set explicitly, never by registering ===
 
 (deftest default-signing-keypair-test
-  (testing "no default initially"
+  (testing "no default initially, and creating keys does not set one"
+    (is (nil? (key/default-signing-keypair)))
+    (key/signing-keypair)
+    (key/signing-keypair!)
     (is (nil? (key/default-signing-keypair))))
 
-  (testing "first signing keypair becomes default"
+  (testing "set-default-signing-keypair! sets it"
     (let [kp (key/signing-keypair)]
-      (is (some? (key/default-signing-keypair)))
-      (is (java.util.Arrays/equals ^bytes (:x kp)
-                                   ^bytes (:x (key/default-signing-keypair))))))
-
-  (testing "second keypair does not override (first-one-wins)"
-    (let [first-kp (key/default-signing-keypair)
-          _kp2 (key/signing-keypair)]
-      (is (java.util.Arrays/equals ^bytes (:x first-kp)
-                                   ^bytes (:x (key/default-signing-keypair))))))
-
-  (testing "explicit set overrides"
-    (let [kp3 (key/signing-keypair)]
-      (key/set-default-signing-keypair! kp3)
-      (is (java.util.Arrays/equals ^bytes (:x kp3)
-                                   ^bytes (:x (key/default-signing-keypair))))))
+      (key/set-default-signing-keypair! kp)
+      (is (= kp (key/default-signing-keypair)))))
 
   (testing "clear-defaults! resets"
     (key/clear-defaults!)
     (is (nil? (key/default-signing-keypair))))
 
   (testing "clear-key-store! also clears defaults"
-    (key/signing-keypair)
-    (is (some? (key/default-signing-keypair)))
+    (key/set-default-signing-keypair! (key/signing-keypair))
     (key/clear-key-store!)
     (is (nil? (key/default-signing-keypair)))))
 
-(deftest default-encryption-keypair-test
-  (testing "first encryption keypair becomes default"
-    (let [kp (key/encryption-keypair)]
-      (is (some? (key/default-encryption-keypair)))
-      (is (java.util.Arrays/equals ^bytes (:x kp)
-                                   ^bytes (:x (key/default-encryption-keypair))))))
-
-  (testing "second does not override"
-    (let [first-kp (key/default-encryption-keypair)
-          _kp2 (key/encryption-keypair)]
-      (is (java.util.Arrays/equals ^bytes (:x first-kp)
-                                   ^bytes (:x (key/default-encryption-keypair))))))
-
-  (testing "explicit set overrides"
-    (let [kp3 (key/encryption-keypair)]
-      (key/set-default-encryption-keypair! kp3)
-      (is (java.util.Arrays/equals ^bytes (:x kp3)
-                                   ^bytes (:x (key/default-encryption-keypair)))))))
-
-(deftest default-keys-independent-test
-  (testing "signing and encryption defaults are independent"
-    (let [_ (key/signing-keypair)       ; first keypair of each kind becomes the default
-          _ (key/encryption-keypair)]
-      (is (key/signing-keypair? (key/default-signing-keypair)))
-      (is (key/encryption-keypair? (key/default-encryption-keypair)))
-      (is (not= (:type (key/default-signing-keypair))
-                (:type (key/default-encryption-keypair))))))
-
-  (testing "ed25519->x25519 conversion sets encryption default"
+(deftest ensure-default-signing-keypair!-test
+  (testing "creates, registers and sets one when there is none"
+    (let [kp (key/ensure-default-signing-keypair!)]
+      (is (key/signing-keypair? kp))
+      (is (= kp (key/default-signing-keypair)))
+      (is (= kp (key/lookup (key/kid kp))))))
+  (testing "returns the existing default afterwards"
+    (let [kp (key/default-signing-keypair)]
+      (is (= kp (key/ensure-default-signing-keypair!)))
+      (is (= 1 (count (key/registered-keys))))))
+  (testing "an explicitly set default is kept"
     (key/clear-key-store!)
-    (let [ed-kp (key/signing-keypair)
-          x-kp (key/encryption-keypair ed-kp)]
-      (is (some? (key/default-encryption-keypair)))
-      (is (java.util.Arrays/equals ^bytes (:x x-kp)
-                                   ^bytes (:x (key/default-encryption-keypair)))))))
+    (let [mine (key/signing-keypair)]
+      (key/set-default-signing-keypair! mine)
+      (is (= mine (key/ensure-default-signing-keypair!)))))
+  (testing "under concurrency exactly one keypair becomes the default"
+    (key/clear-key-store!)
+    (let [results (doall (pmap (fn [_] (key/ensure-default-signing-keypair!)) (range 32)))]
+      (is (= 1 (count (set (map key/kid results)))) "every caller got the same keypair")
+      (is (= 1 (count (key/registered-keys))) "losers of the race registered nothing"))))
+
+(deftest default-encryption-keypair-test
+  (testing "set explicitly, never by creating or registering"
+    (key/encryption-keypair!)
+    (is (nil? (key/default-encryption-keypair)))
+    (let [kp (key/encryption-keypair)]
+      (key/set-default-encryption-keypair! kp)
+      (is (= kp (key/default-encryption-keypair))))))
+
+;; === Secrets never appear in printed output or error data ===
+
+(defn- secret-strings
+  "The ways a secret byte array could show up in text: hex, and the
+   comma-separated signed and unsigned decimal forms."
+  [^bytes bs]
+  [(apply str (map #(format "%02x" (bit-and % 0xff)) bs))
+   (clojure.string/join "," (map int bs))
+   (clojure.string/join "," (map #(bit-and % 0xff) bs))])
+
+(deftest printing-redacts-secrets
+  (let [ed (key/signing-keypair)
+        x  (key/encryption-keypair)
+        sk (key/raw-shared-secret ed x)]
+    (doseq [[label k secret] [["Ed25519 keypair" ed (:d ed)]
+                              ["Ed25519 private key" (key/signing-private-key ed) (:d ed)]
+                              ["X25519 keypair" x (:d x)]
+                              ["X25519 private key" (key/private-key x) (:d x)]
+                              ["shared secret" sk (:k sk)]]
+            [how out] [["pr-str" (pr-str k)]
+                       ["nested in a map" (pr-str {:k [k]})]
+                       ["in ex-data" (pr-str (ex-info "boom" {:key k}))]
+                       ["str" (str k)]]]
+      (is (not-any? #(clojure.string/includes? out %) (secret-strings secret))
+          (str label " leaked its secret via " how))
+      (when (not= how "str")
+        (is (clojure.string/includes? out "<redacted>") (str label " via " how))))
+    (is (clojure.string/includes? (pr-str (key/public-key ed)) (key/kid ed))
+        "public keys print their kid")))
+
+(deftest argument-errors-carry-no-key-bytes
+  ;; Checked structurally: a byte array prints opaquely on the JVM, so a
+  ;; text search would miss a seed sitting in the ex-data.
+  (let [kp   (key/signing-keypair)
+        seed (:d kp)]
+    (doseq [[label f] {"one bytes argument"  #(key/signing-keypair seed)
+                       "3 args, no curve"    #(key/signing-keypair seed (:x kp) seed)}]
+      (let [e (try (f) nil (catch clojure.lang.ExceptionInfo e e))]
+        (is (= :signet.key/bad-argument (:type (ex-data e))) label)
+        (is (not-any? bytes? (tree-seq coll? seq (ex-data e)))
+            (str label ": no byte array (possibly a seed) in the error data"))))))
 
 ;; ============================================================
 ;; kid <-> hex conversions

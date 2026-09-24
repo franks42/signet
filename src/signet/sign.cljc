@@ -9,8 +9,9 @@
                                            (secp256k1 verify auto-detects DER vs raw)
 
    High-level (EDN envelopes):
-     (sign-edn payload)                  → signed envelope (uses default keypair)
      (sign-edn keypair payload)          → signed envelope
+     (sign-edn! payload)                 → the same, with the default keypair
+                                           (created and registered if none)
      (sign-edn keypair payload opts)     → with :ttl (seconds)
      (verify-edn envelope)              → {:valid? bool :message ... :signer ...}
 
@@ -46,11 +47,15 @@
 (defn sign
   "Sign message bytes with a signing keypair. Returns a 64-byte signature
    (raw 64 for Ed25519; raw r||s for secp256k1 ECDSA).
-   Dispatches on (:crv k); accepts any key that contains a private key."
+   Dispatches on (:crv k); accepts any key that contains a private key.
+   Pure for Ed25519 (deterministic).
+
+   Throws ex-info {:type ::no-private-key} when k has no private part, or
+   {:type ::unsupported-curve} for a curve that cannot sign."
   [k message-bytes]
   (let [d (:d k)]
     (when-not d
-      (throw (ex-info "Key has no private bytes (:d)" {:type (:type k)})))
+      (throw (ex-info "Key has no private bytes (:d)" {:type ::no-private-key :key-type (:type k)})))
     (case (:crv k)
       :Ed25519
       #?(:clj  (impl/ed25519-sign d message-bytes)
@@ -60,15 +65,19 @@
       #?(:clj  ((secp256k1-fn 'signet.impl.jvm-secp256k1/secp256k1-sign) d message-bytes)
          :cljs (throw (js/Error. "secp256k1 not yet implemented for ClojureScript")))
 
-      (throw (ex-info "Unsupported signing curve" {:crv (:crv k) :type (:type k)})))))
+      (throw (ex-info "Unsupported signing curve"
+                      {:type ::unsupported-curve :crv (:crv k) :key-type (:type k)})))))
 
 (defn verify
   "Verify a signature against message bytes. Returns true if valid.
    Dispatches on (:crv k); accepts any key that contains a public key.
    For secp256k1, the signature may be raw 64-byte r||s OR DER —
-   auto-detected on input."
+   auto-detected on input. Pure.
+
+   Throws ex-info {:type ::unsupported-curve} for a curve that cannot
+   verify."
   [k message-bytes signature-bytes]
-  (let [pub (key/as-public-key k) ; pure: verifying never registers keys
+  (let [pub (key/public-key k)
         x (:x pub)]
     (case (:crv pub)
       :Ed25519
@@ -80,17 +89,24 @@
                 x message-bytes signature-bytes)
          :cljs (throw (js/Error. "secp256k1 not yet implemented for ClojureScript")))
 
-      (throw (ex-info "Unsupported signing curve" {:crv (:crv pub) :type (:type pub)})))))
+      (throw (ex-info "Unsupported signing curve"
+                      {:type ::unsupported-curve :crv (:crv pub) :key-type (:type pub)})))))
 
 ;; ============================================================
 ;; High-level: EDN signed envelopes
 ;; ============================================================
 
 (defn sign-edn
-  "Sign an EDN payload, producing a self-describing signed envelope.
+  "Sign an EDN payload with keypair, producing a self-describing signed
+   envelope. The key is always explicit; sign-edn! is the convenience that
+   uses (or creates) the default identity.
+
+   Impure: reads the clock and draws a random request id (a UUIDv7).
+   Never touches the key store.
+   Throws ex-info {:type ::no-private-key} when keypair has no private
+   part; cedn's error when payload is not canonical EDN (CEDN-P).
 
    Arities:
-     (sign-edn payload)                — uses default signing keypair
      (sign-edn keypair payload)        — explicit keypair
      (sign-edn keypair payload opts)   — with options:
        :ttl  seconds until expiration (optional)
@@ -102,10 +118,6 @@
      :signature  64-byte Ed25519 signature
 
    The signature covers the canonical EDN serialization (cedn) of :envelope."
-  ([payload]
-   (sign-edn (or (key/default-signing-keypair)
-                 (key/signing-keypair))
-             payload))
   ([keypair payload]
    (sign-edn keypair payload nil))
   ([keypair payload opts]
@@ -121,6 +133,19 @@
      {:type      :signet/signed
       :envelope  envelope
       :signature sig})))
+
+(defn sign-edn!
+  "sign-edn with the default signing keypair, creating, registering and
+   setting one first if there is none (key/ensure-default-signing-keypair!).
+   The convenience for scripts and REPLs; production code should choose its
+   identity deliberately and call sign-edn.
+
+   Impure: reads the clock, draws a request id, and may create a keypair
+   and write the key store and the default.
+   Throws as sign-edn does."
+  ([payload] (sign-edn! payload nil))
+  ([payload opts]
+   (sign-edn (key/ensure-default-signing-keypair!) payload opts)))
 
 (defn signed?
   "Returns true if x is a signed envelope (reusable key)."
@@ -146,10 +171,12 @@
      authorization     whether that signer may do this — not signet's job
                        (a policy decision point, e.g. stroopwafel's).
 
+   Impure: reads the key store (to resolve the signer's kid), and the clock
+   unless opts has :now.
+
    opts (optional):
      :signer  expected signer: a kid URN string, or a set of acceptable kids
-     :now     epoch-ms to judge expiry against. Without it this function is
-              impure: it reads the system clock.
+     :now     epoch-ms to judge expiry against (otherwise the system clock)
 
    Result keys: :valid? :signature-valid? :verified? (with :signer)
    :message :signer :request-id :timestamp :age-ms :expires :expired?

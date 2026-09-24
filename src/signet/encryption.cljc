@@ -39,8 +39,8 @@
      (def ^:private ^"[B" info-prefix (.getBytes "signet/box/v2" "UTF-8"))
      (def ^:private header-slots #{:type :v :from :to :aad :nonce})
 
-     (defn- x-pub [k] (:x (key/as-encryption-public-key k)))
-     (defn- x-priv [k] (:d (key/as-encryption-private-key k)))
+     (defn- x-pub [k] (:x (key/encryption-public-key k)))
+     (defn- x-priv [k] (:d (key/encryption-private-key k)))
 
      (defn- wipe!
        "Zero a secret byte array whose purpose has ended. Impure."
@@ -74,7 +74,9 @@
      :aad    caller context, any CEDN-P EDN value: carried in the header,
              authenticated, NOT secret (it travels in the clear)
 
-   Impure: draws a random nonce."
+   Impure: draws a random nonce. Never touches the key store.
+   Throws ex-info {:type ::no-private-key} when sender-kp has no private
+   part; cedn's error when :aad is not canonical EDN (CEDN-P)."
   ([sender-kp recipient-pub plaintext]
    (box sender-kp recipient-pub plaintext nil))
   ([sender-kp recipient-pub plaintext {:keys [aad] from? :from? to? :to? :or {from? true to? true} :as opts}]
@@ -147,7 +149,10 @@
             :valid? also requires it.
      :aad   expected caller context: must equal the box's :aad slot
 
-   Result: {:valid? :verified? (with :from) :plaintext :from :to :aad :error}"
+   Result: {:valid? :verified? (with :from) :plaintext :from :to :aad :error}
+
+   Never throws: malformed input gives {:valid? false :error <reason>}.
+   Impure: reads the key store to resolve kid slots; never writes it."
   ([recipient-kp-or-kps boxed]
    (unbox recipient-kp-or-kps boxed nil))
   ([recipient-kp-or-kps boxed {expected-from :from :as opts}]

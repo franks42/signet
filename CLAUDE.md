@@ -33,14 +33,17 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `kid` — URN-based key identifier
 - `kid->public-key` — parse URN back to public key record
 - `raw-shared-secret` — X25519 DH key agreement (accepts Ed25519 keys, auto-converts)
-- Auto-registering key store with `lookup`, `register!`, `unregister!`
-- Default signing/encryption keypairs (first-one-wins)
+- Key store with `lookup`, `register!`, `unregister!`; pure constructors and
+  `!` twins (`signing-keypair!`, `encryption-keypair!`) that also register
+- Default signing/encryption keypairs, set explicitly
+  (`set-default-*!`, `ensure-default-signing-keypair!`)
 - Predicates: `signing-keypair?`, `signing-public-key?`, etc.
 
 ### signet.sign — Request signing
 - Low-level: `sign` / `verify` (bytes in, bytes out)
 - High-level: `sign-edn` / `verify-edn` (EDN envelopes with cedn + UUIDv7)
-- Zero-config: `(sign-edn payload)` uses default keypair, auto-generates if needed
+- Zero-config: `(sign-edn! payload)` uses the default keypair, creating and
+  registering one if needed; `sign-edn` always takes an explicit key
 - TTL/expiration support
 - Digests: `message-digest` (same across signers), `digest` (unique per envelope)
 
@@ -56,7 +59,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 
 ### signet.session — Noise_KK forward-secret sessions ✅ (0.6.0)
 - `Noise_KK_25519_ChaChaPoly_SHA256` — KK handshake pattern, X25519 DH, ChaCha20-Poly1305 AEAD, SHA-256 hashing
-- API: `initiator`, `responder`, `write-message`, `read-message`, `established?`
+- API: `initiator`, `responder`, `write-message!`, `read-message!`, `established?`
 - Pure-functional state machine; no atoms or global state
 - Two-message handshake (KK exploits pre-shared static keys); after Split, transport messages are pure AEAD with monotonic nonces per direction
 - Forward secrecy via ephemeral-ephemeral DH (`ee` token); mutual authentication via static-static DH (`ss` token) and the cross-DH tokens (`es`, `se`)
@@ -105,13 +108,21 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 
 ## Current state (2026-09-23)
 
-- `main` includes PR #1 (merged): the libsodium backend, trust and
-  key-store fixes, dh/edh enforcement, single-use sessions and box v2.
-  Build version 0.7.0-SNAPSHOT, installed locally with
-  `clojure -T:build install`. Not on Clojars.
-- Verified from the installed jar in a scratch consumer (signet's tests
-  only, no src): JVM jca 122/572, JVM sodium 122/572 + parity 54/54,
-  bb sodium 112/548.
+- `main` is 0.7.0 ready for release, the first Clojars release. It adds
+  PR #1 (libsodium backend, trust and key-store fixes, dh/edh enforcement,
+  single-use sessions, box v2) and the naming/purity batch: pure key
+  functions with `!` twins, `register!` sets no defaults, `sign-edn!`,
+  `write-message!`/`read-message!`, typed errors (`:type`) everywhere,
+  redacted printing, strict SSH import. See CHANGELOG.md.
+- **Release:** a `vX.Y.Z` tag runs `.github/workflows/release.yml`. It
+  runs `bb release-check` and both backends' tests, deploys, then runs
+  `bb test:clojars X.Y.Z` (signet's tests against the jar from Clojars,
+  empty local repo) before the GitHub release.
+- **Next (0.8.0):** secrets behind handles in a vault
+  (`docs/07-secret-handles-design.md`).
+- Verified from the installed jar in a scratch consumer (`bb test:jar`,
+  signet's tests only, no src): JVM jca 131/652, JVM sodium 131/652 +
+  parity 54/54, bb sodium 121/628.
 - CI (`.github/workflows/ci.yml`, green): `jca` on Ubuntu JDK 21 + 25
   (`bb test:no-sodium`); `sodium-macos` (Homebrew libsodium; test:jvm-sodium,
   test:bb-sodium, test:jar); `sodium-linux` (libsodium 1.0.22 built from a
@@ -136,8 +147,18 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   a PDP "everywhere those questions are asked", so keep those seams clean.
 - `verify-edn` / `chain/verify` never throw on malformed input. Pass `:now`
   for determinism; without it they read the clock (impure, documented).
-- `key/lookup`, `key/kid`, `key/as-public-key` are pure and never register.
-  The store holds only deliberately registered keys.
+- **Only `!` functions write the key store or the defaults** (0.7.0). All
+  constructors and conversions are pure; the `!` twins (`signing-keypair!`,
+  `encryption-keypair!`, `ssh/load-keypair!`) register and return the key.
+  `register!` never sets a default; `set-default-signing-keypair!` and
+  `ensure-default-signing-keypair!` (CAS, exactly one default under races)
+  do. `sign-edn` needs an explicit key; `sign-edn!` uses/creates the
+  default. Tested: `pure-functions-leave-store-and-defaults-alone` (a table
+  over every pure fn), `registering-twins`; each guard injection-checked.
+- Key records print redacted (`#signet/key {… :d "<redacted>"}`), and error
+  data never carries key bytes (checked structurally: no byte array in
+  ex-data). Serialising a key record as data still exposes `:d` — the
+  vault (0.8.0) fixes that.
 - **Ephemeral keys are never kept longer than needed:** never registered,
   never exposed by the public API, and wiped after use. In `signet.session`:
   `fresh-ephemeral`, `edh` (es/ee/se) vs `dh` (ss), `mix-key!` wipes each
@@ -150,9 +171,6 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   ephemeral. Both use `ex-info`, not assert. Swapping either kind of call
   site fails 10 of the 12 session tests (checked). `key/register!` throws
   `::ephemeral-key` for ephemeral types instead of ignoring them.
-- Still registering as a side effect: `key/raw-shared-secret` registers
-  both parties, and the keypair and extraction constructors register their
-  results. They are user-facing identity operations; revisit.
 - **Session states are single-use** (finding 5, closed): each state carries
   a one-shot marker (an atom, since bb has no AtomicBoolean), and
   `consume!` in `signet.session` checks it, runs the op, then
@@ -175,13 +193,15 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 ## Testing, lint, format
 
 ```bash
-bb test:jvm          # full suite, JCA backend (clojure -M:test): 102 tests / 436 assertions
+bb test:jvm          # full suite, JCA backend (clojure -M:test): 131 tests / 650 assertions
 bb test:jvm-sodium   # full suite, libsodium backend + JCA-vs-libsodium parity (54 checks)
-bb test:bb-sodium    # full suite on babashka, libsodium backend: 93 / 415 (all but secp256k1)
+bb test:bb-sodium    # full suite on babashka, libsodium backend: 121 / 626 (all but secp256k1)
 bb smoke             # bb smoke suite (JCA): 9 tests
 bb test:no-sodium    # lint + fmt + JCA suite + bb smoke (no native libsodium needed)
 bb test:all          # test:no-sodium + test:jvm-sodium + test:bb-sodium
 bb test:jar          # install signet's jar, run its tests from a scratch consumer: jca, sodium + parity, bb
+bb test:clojars V    # the same against release V from Clojars (empty local repo)
+bb release-check     # X.Y.Z only, CHANGELOG section required
 bb lint / bb fmt     # clj-kondo / cljfmt on every Clojure file
 ```
 

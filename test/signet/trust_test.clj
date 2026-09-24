@@ -61,15 +61,15 @@
   [a b]
   (let [i0 (session/initiator a (key/public-key b))
         r0 (session/responder b (key/public-key a))
-        [i1 m1] (session/write-message i0 (.getBytes "hi" "UTF-8"))
-        [r1 _]  (session/read-message r0 m1)
-        [r2 m2] (session/write-message r1 (.getBytes "yo" "UTF-8"))
-        [i2 _]  (session/read-message i1 m2)]
+        [i1 m1] (session/write-message! i0 (.getBytes "hi" "UTF-8"))
+        [r1 _]  (session/read-message! r0 m1)
+        [r2 m2] (session/write-message! r1 (.getBytes "yo" "UTF-8"))
+        [i2 _]  (session/read-message! i1 m2)]
     {:i1 i1 :r1 r1 :i2 i2 :r2 r2}))
 
 (deftest session-ephemerals-never-registered
-  (let [a      (key/encryption-keypair)
-        b      (key/encryption-keypair)
+  (let [a      (key/encryption-keypair!)
+        b      (key/encryption-keypair!)
         before (store-kids)
         {:keys [i2 r2]} (handshake a b)]
     (is (session/established? i2))
@@ -215,32 +215,32 @@
 
 (deftest second-write-from-same-state-is-refused
   (let [[alice _bob] (transport-pair)
-        [alice' _c1] (session/write-message alice (.getBytes "first" "UTF-8"))]
-    (is (stale? #(session/write-message alice (.getBytes "second" "UTF-8")))
+        [alice' _c1] (session/write-message! alice (.getBytes "first" "UTF-8"))]
+    (is (stale? #(session/write-message! alice (.getBytes "second" "UTF-8")))
         "writing again from the consumed state would reuse its nonce")
-    (is (vector? (session/write-message alice' (.getBytes "second" "UTF-8")))
+    (is (vector? (session/write-message! alice' (.getBytes "second" "UTF-8")))
         "the returned state is the one to use")))
 
 (deftest second-write-from-handshake-state-is-refused
   (let [a  (key/encryption-keypair)
         b  (key/encryption-keypair)
         i0 (session/initiator a (key/public-key b))]
-    (session/write-message i0 (.getBytes "m1" "UTF-8"))
-    (is (stale? #(session/write-message i0 (.getBytes "m1'" "UTF-8"))))))
+    (session/write-message! i0 (.getBytes "m1" "UTF-8"))
+    (is (stale? #(session/write-message! i0 (.getBytes "m1'" "UTF-8"))))))
 
 (deftest replay-into-stale-receiver-state-is-refused
   (let [[alice bob] (transport-pair)
-        [_ ct] (session/write-message alice (.getBytes "pay 10" "UTF-8"))]
-    (session/read-message bob ct)
-    (is (stale? #(session/read-message bob ct))
+        [_ ct] (session/write-message! alice (.getBytes "pay 10" "UTF-8"))]
+    (session/read-message! bob ct)
+    (is (stale? #(session/read-message! bob ct))
         "the same ciphertext cannot be accepted twice from a stale state")))
 
 (deftest failed-read-does-not-consume-the-state
   (let [[alice bob] (transport-pair)
-        [_ ct] (session/write-message alice (.getBytes "genuine" "UTF-8"))
+        [_ ct] (session/write-message! alice (.getBytes "genuine" "UTF-8"))
         forged (let [c (aclone ^bytes ct)] (aset-byte c 0 (unchecked-byte (bit-xor (aget c 0) 1))) c)]
-    (is (thrown? Exception (session/read-message bob forged)) "forgery rejected")
-    (let [[_ pt] (session/read-message bob ct)]
+    (is (thrown? Exception (session/read-message! bob forged)) "forgery rejected")
+    (let [[_ pt] (session/read-message! bob ct)]
       (is (= "genuine" (String. ^bytes pt "UTF-8"))
           "the genuine message still decrypts: a failed read left the state usable"))))
 
@@ -248,7 +248,7 @@
   (let [[alice _] (transport-pair)
         results (->> (range 16)
                      (mapv (fn [i] (future
-                                     (try (second (session/write-message alice (.getBytes (str i) "UTF-8")))
+                                     (try (second (session/write-message! alice (.getBytes (str i) "UTF-8")))
                                           (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))))
                      (mapv deref))
         cts (filter bytes? results)]

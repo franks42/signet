@@ -186,9 +186,9 @@
         (is (false? (:valid? r)) label)))))
 
 (deftest box-and-unbox-register-nothing
-  (let [alice  (key/signing-keypair)
-        bob    (key/signing-keypair)
-        carol  (key/encryption-keypair)
+  (let [alice  (key/signing-keypair!)
+        bob    (key/signing-keypair!)
+        carol  (key/encryption-keypair!)
         before (set (map key/kid (key/registered-keys)))]
     (enc/unbox bob (enc/box alice (key/public-key bob) (utf8 "x")))
     (enc/unbox bob (enc/box carol (key/public-key bob) (utf8 "y")) {:from (key/kid carol)})

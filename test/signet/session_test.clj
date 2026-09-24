@@ -17,15 +17,22 @@
 (defn- bytes= [a b]
   (java.util.Arrays/equals ^bytes a ^bytes b))
 
+(defn- error-type
+  "The ex-data :type f throws, :no-throw, or [:not-ex-info class]. Session
+   errors are typed and the same on every backend."
+  [f]
+  (try (f) :no-throw
+       (catch Throwable e (or (:type (ex-data e)) [:not-ex-info (str (class e))]))))
+
 (defn- run-handshake
   "Drive the two-message KK handshake to completion. Returns the
    handshake-final states for each side plus the application payloads
    each side received from its peer."
   [alice-init bob-resp init-payload resp-payload]
-  (let [[alice-1 msg1]    (session/write-message alice-init init-payload)
-        [bob-1   pt-init] (session/read-message  bob-resp msg1)
-        [bob-2   msg2]    (session/write-message bob-1 resp-payload)
-        [alice-2 pt-resp] (session/read-message  alice-1 msg2)]
+  (let [[alice-1 msg1]    (session/write-message! alice-init init-payload)
+        [bob-1   pt-init] (session/read-message!  bob-resp msg1)
+        [bob-2   msg2]    (session/write-message! bob-1 resp-payload)
+        [alice-2 pt-resp] (session/read-message!  alice-1 msg2)]
     {:alice    alice-2
      :bob      bob-2
      :init-pt  pt-init
@@ -90,8 +97,8 @@
       (testing "mismatched prologue causes message-1 read to fail"
         (let [ai (session/initiator alice (key/signing-public-key bob) {:prologue good})
               br (session/responder bob   (key/signing-public-key alice) {:prologue bad})
-              [_ai m1] (session/write-message ai (byte-array 0))]
-          (is (thrown? Exception (session/read-message br m1))))))))
+              [_ai m1] (session/write-message! ai (byte-array 0))]
+          (is (thrown? Exception (session/read-message! br m1))))))))
 
 ;; ---- Transport ----
 
@@ -105,10 +112,10 @@
                                              (byte-array 0) (byte-array 0))
           msg-a    (.getBytes "alice → bob 1" "UTF-8")
           msg-b    (.getBytes "bob → alice 1" "UTF-8")
-          [alice ct1] (session/write-message alice msg-a)
-          [bob   pt1] (session/read-message  bob ct1)
-          [_bob   ct2] (session/write-message bob msg-b)
-          [_alice pt2] (session/read-message  alice ct2)]
+          [alice ct1] (session/write-message! alice msg-a)
+          [bob   pt1] (session/read-message!  bob ct1)
+          [_bob   ct2] (session/write-message! bob msg-b)
+          [_alice pt2] (session/read-message!  alice ct2)]
       (is (bytes= msg-a pt1))
       (is (bytes= msg-b pt2)))))
 
@@ -125,8 +132,8 @@
              i     0]
         (when (< i 64)
           (let [pt (.getBytes (str "msg-" i) "UTF-8")
-                [alice' ct]  (session/write-message alice pt)
-                [bob'   got] (session/read-message  bob ct)]
+                [alice' ct]  (session/write-message! alice pt)
+                [bob'   got] (session/read-message!  bob ct)]
             (is (bytes= pt got))
             (recur alice' bob' (inc i))))))))
 
@@ -138,11 +145,12 @@
           bob   (key/signing-keypair)
           ai    (session/initiator alice (key/signing-public-key bob))
           br    (session/responder bob   (key/signing-public-key alice))
-          [_ai m1] (session/write-message ai (.getBytes "hi" "UTF-8"))
+          [_ai m1] (session/write-message! ai (.getBytes "hi" "UTF-8"))
           tampered (let [bs (aclone ^bytes m1)]
                      (aset-byte bs 40 (unchecked-byte (bit-xor (aget bs 40) 0xff)))
                      bs)]
-      (is (thrown? Exception (session/read-message br tampered))))))
+      (is (= :signet.session/authentication-failed
+             (error-type #(session/read-message! br tampered)))))))
 
 (deftest tampered-transport-fails
   (testing "flipping a byte of a transport ciphertext causes recv to throw"
@@ -152,11 +160,12 @@
           br    (session/responder bob   (key/signing-public-key alice))
           {:keys [alice bob]} (run-handshake ai br
                                              (byte-array 0) (byte-array 0))
-          [_alice ct] (session/write-message alice (.getBytes "secret" "UTF-8"))
+          [_alice ct] (session/write-message! alice (.getBytes "secret" "UTF-8"))
           tampered    (let [bs (aclone ^bytes ct)]
                         (aset-byte bs 0 (unchecked-byte (bit-xor (aget bs 0) 0xff)))
                         bs)]
-      (is (thrown? Exception (session/read-message bob tampered))))))
+      (is (= :signet.session/authentication-failed
+             (error-type #(session/read-message! bob tampered)))))))
 
 (deftest wrong-remote-static-fails
   (testing "responder using the wrong claimed initiator-static rejects msg1"
@@ -168,28 +177,34 @@
           ;; produce different outputs, so the AEAD on msg 1's payload
           ;; fails to decrypt.
           br-wrong (session/responder bob (key/signing-public-key eve))
-          [_ai m1] (session/write-message ai (.getBytes "hi" "UTF-8"))]
-      (is (thrown? Exception (session/read-message br-wrong m1))))))
+          [_ai m1] (session/write-message! ai (.getBytes "hi" "UTF-8"))]
+      (is (= :signet.session/authentication-failed
+             (error-type #(session/read-message! br-wrong m1)))))))
 
 (deftest wrong-message-phase-fails
-  (testing "calling write-message on a state that should read raises"
+  (testing "calling write-message! on a state that should read raises"
     (let [alice (key/signing-keypair)
           bob   (key/signing-keypair)
           br    (session/responder bob (key/signing-public-key alice))]
-      ;; Responder must read msg1 first; calling write-message at pos 0
+      ;; Responder must read msg1 first; calling write-message! at pos 0
       ;; (responder's responsibility is to wait) raises.
-      (is (thrown-with-msg? Exception
-                            #"wrong phase"
-                            (session/write-message br (byte-array 0)))))))
+      (is (= :signet.session/wrong-message-phase
+             (error-type #(session/write-message! br (byte-array 0))))))))
 
 (deftest truncated-handshake-message-fails
   (testing "a too-short msg1 raises with a clear reason"
     (let [alice (key/signing-keypair)
           bob   (key/signing-keypair)
           br    (session/responder bob (key/signing-public-key alice))]
-      (is (thrown-with-msg? Exception
-                            #"too short"
-                            (session/read-message br (byte-array 10)))))))
+      (is (= :signet.session/handshake-message-too-short
+             (error-type #(session/read-message! br (byte-array 10))))))))
+
+(deftest local-static-key-needs-its-private-part
+  (let [alice (key/signing-keypair) bob (key/signing-keypair)]
+    (doseq [[label f] {"initiator" #(session/initiator (key/public-key alice) (key/public-key bob))
+                       "responder" #(session/responder (key/public-key bob) (key/public-key alice))}]
+      (is (= :signet.session/no-private-key (error-type f))
+          (str label ": refused up front, not deep in the handshake")))))
 
 ;; ---- Forward secrecy property ----
 

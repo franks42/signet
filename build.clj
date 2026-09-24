@@ -6,7 +6,8 @@
      clojure -T:build install  ; Install to local Maven repo (~/.m2/repository)
      clojure -T:build deploy   ; Build JAR and deploy to Clojars (requires creds)
      clojure -T:build clean    ; Clean build artifacts"
-  (:require [clojure.tools.build.api :as b]))
+  (:require [clojure.tools.build.api :as b]
+            [deps-deploy.deps-deploy :as dd]))
 
 (def lib 'com.github.franks42/signet)
 (def version "0.7.0-SNAPSHOT")
@@ -68,3 +69,9 @@
   (println)
   (println "To use in deps.edn:")
   (println (format "  %s {:mvn/version \"%s\"}" lib version)))
+
+(defn deploy [_]
+  (jar nil)
+  (dd/deploy {:installer :remote
+              :artifact  (b/resolve-path jar-file)
+              :pom-file  (b/pom-path {:lib lib :class-dir class-dir})}))

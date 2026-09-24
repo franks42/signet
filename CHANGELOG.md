@@ -1,0 +1,86 @@
+# Changelog
+
+## 0.7.0 (unreleased)
+
+The first release on Clojars (`com.github.franks42/signet`). Earlier
+versions were git tags only. There are breaking changes from 0.6.0; see
+"Changed" below and the README's "Compatibility".
+
+### Added
+
+- **libsodium backend** (`signet.impl.sodium`, through
+  [nacljc](https://github.com/franks42/nacljc) 0.1.0), selected with
+  `-Dsignet.backend=sodium` or `SIGNET_BACKEND=sodium`. It is
+  byte-identical to the JCA backend (a parity check runs in CI), and the
+  full suite also passes on babashka.
+- **box v2** (`signet.encryption`): self-describing EDN boxes with
+  directional keys (a box cannot be reflected), a per-message HKDF salt
+  (safe random nonces at any volume), optional kid slots and an
+  authenticated `:aad` slot. `unbox` never throws on malformed input.
+  Design: `docs/06-box-v2-design.md`.
+- **Registering twins:** `key/signing-keypair!`, `key/encryption-keypair!`,
+  `ssh/load-keypair!`. Also `key/ensure-default-signing-keypair!` and
+  `sign/sign-edn!`.
+- **Redacted printing:** key records print their kid and
+  `:d "<redacted>"`, never secret bytes.
+- **CI** on JDK 21 and 25 (JCA), plus the libsodium backend on macOS and
+  Linux, all through bb tasks.
+
+### Changed (breaking)
+
+- **Pure by default.** Constructors and conversions (`signing-keypair`,
+  `encryption-keypair`, `signing-public-key`, `signing-private-key`,
+  `encryption-public-key`, `encryption-private-key`, `public-key`,
+  `private-key`, `hex->kid`, `raw-shared-secret`, `ssh/load-keypair`) no
+  longer register keys. Only functions ending in `!` write the key store or
+  the defaults.
+- **Registering never sets a default.** The first-one-wins rule is gone.
+  Defaults are set with `set-default-signing-keypair!` or
+  `ensure-default-signing-keypair!`.
+- `sign/sign-edn` always takes a key. The key-less arity is now
+  `sign/sign-edn!`.
+- `session/write-message` and `session/read-message` are now
+  `write-message!` and `read-message!`, since they consume their state.
+- **Session states are single-use.** Reusing one throws
+  `::stale-session-state`, so a nonce is never reused and a replayed
+  message is refused.
+- **Trust vocabulary.** `verify-edn` and `chain/verify` never throw, count
+  expiry against `:valid?`, and take `:signer` or `:root` for
+  `:verified?`, and `:now` for deterministic expiry. The raw signature
+  check is now `:signature-valid?`.
+- `key/lookup` and `key/kid` no longer register anything.
+- `dh` is for static keys and `edh` for ephemeral ones; mixing them up
+  throws.
+- Removed `key/as-public-key`, `as-encryption-public-key` and
+  `as-encryption-private-key` (added in 0.7.0 snapshots; use the now-pure
+  `public-key`, `encryption-public-key`, `encryption-private-key`).
+- Dependencies: cedn 1.5.2 (canonical bytes changed for some inputs; see
+  the README), uuidv7 0.7.1 (secure randomness on ClojureScript).
+
+### Fixed
+
+- **SSH import is strict.**
+  - `read-public-key` and `read-private-key` refuse anything but an
+    unencrypted Ed25519 key, with `::bad-ssh-key` and a `:reason`.
+  - Before, an `ssh-rsa` line or a passphrase-protected key was parsed
+    into a wrong key without error.
+  - The OpenSSH check-ints and the public-key copies are now verified.
+  - `assert`, which can be compiled out, is replaced by ex-info.
+- **Typed errors.**
+  - Every error is ex-info with a namespaced `:type`: for example
+    `::no-private-key`, `::sealed`, `::no-default-signing-keypair`,
+    `::authentication-failed`, `::wrong-message-phase`.
+  - A session's decryption failure is the same `::authentication-failed`
+    on every backend.
+  - A local static key without its private part is refused when the
+    session is created.
+- **Error data carries no key bytes.** Before, a seed passed by mistake
+  could end up in ex-data.
+- Ephemeral keys are never registered, and are wiped after use, along
+  with every DH output.
+
+### Naming convention
+
+`!` means the call writes state that outlives it. Impure reads are
+documented, not banged, and `!` never means "may throw". Docstrings state
+`Impure: …`, `Throws …` and `Never throws …`. See CLAUDE.md.

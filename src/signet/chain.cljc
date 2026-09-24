@@ -183,21 +183,32 @@
    Content is opaque EDN — signet.chain doesn't interpret it.
    Stroopwafel or other consumers give it meaning (facts, checks, rules).
 
-   Returns an open token: {:type :signet/chain :blocks [...] :proof <eph-sk>}"
+   Impure: draws a fresh ephemeral key and a request id, and reads the
+   clock; (extend content) also reads the default signing keypair. Never
+   touches the key store.
+   Throws ex-info {:type ::no-default-signing-keypair} for (extend content)
+   when no default is set, {:type ::sealed} for a sealed token, and
+   {:type ::bad-argument} when the first argument is neither a token nor a
+   signing keypair.
+
+   Returns an open token: {:type :signet/chain :blocks [...] :proof <eph-sk>}.
+   The :proof is the ephemeral private key: an open token is a bearer
+   credential, so treat it like one."
   ([content]
    ;; No token, no explicit key → use default signing keypair as root
    (let [root-kp (key/default-signing-keypair)]
      (when-not root-kp
        (throw (ex-info
-               "No default signing keypair. Create or import one first."
-               {:hint "Call (key/signing-keypair) or import from SSH"})))
+               "No default signing keypair. Choose one first."
+               {:type ::no-default-signing-keypair
+                :hint "Call (key/set-default-signing-keypair! kp), or (key/ensure-default-signing-keypair!) to create one"})))
      (create-chain root-kp content)))
   ([token-or-key content]
    (cond
      ;; It's a token → extend the chain
      (= :signet/chain (:type token-or-key))
      (do (when (sealed? token-or-key)
-           (throw (ex-info "Cannot extend a sealed chain" {})))
+           (throw (ex-info "Cannot extend a sealed chain" {:type ::sealed})))
          (extend-chain token-or-key content))
 
      ;; It's a keypair → create a new chain with this root key
@@ -206,7 +217,7 @@
 
      :else
      (throw (ex-info "First argument must be a token or signing keypair"
-                     {:type (:type token-or-key)})))))
+                     {:type ::bad-argument :arg-type (:type token-or-key)})))))
 
 ;; ============================================================
 ;; Public API: close (seal)
@@ -224,10 +235,14 @@
    The proof field changes from a private key to a signature.
    After sealing, no one can extend the chain — the key is gone.
 
+   Pure for (close token) (Ed25519 signing is deterministic); (close token
+   content) is impure like extend.
+   Throws ex-info {:type ::sealed} when the token is already sealed.
+
    Returns a sealed token: {:type :signet/chain :blocks [...] :proof {:sealed ...}}"
   ([token]
    (when (sealed? token)
-     (throw (ex-info "Chain is already sealed" {})))
+     (throw (ex-info "Chain is already sealed" {:type ::sealed})))
    (let [;; Get the last block's signature — this is what we seal
          last-block (peek (:blocks token))
          last-sig   (:signature last-block)
@@ -270,14 +285,14 @@
    their signed content to this chain — preventing replay of their
    block into a different chain.
 
-   Throws if the token is sealed.
+   Pure. Throws ex-info {:type ::sealed} when the token is sealed.
 
    Returns:
      {:type     :signet/third-party-request
       :prev-sig <bytes — signature of the last block>}"
   [token]
   (when (sealed? token)
-    (throw (ex-info "Cannot create third-party request from a sealed chain" {})))
+    (throw (ex-info "Cannot create third-party request from a sealed chain" {:type ::sealed})))
   {:type     :signet/third-party-request
    :prev-sig (:signature (peek (:blocks token)))})
 
@@ -292,6 +307,8 @@
      - `request`  : from `third-party-request` — contains :prev-sig
      - `content`  : opaque EDN (the third party's assertions)
      - `tp-key`   : the third party's signing keypair
+
+   Pure for Ed25519 (deterministic signing).
 
    Returns:
      {:type          :signet/third-party-block
@@ -318,7 +335,8 @@
    key chain like any other block, but also carries the external
    signature and key for independent verification.
 
-   Throws if the token is sealed.
+   Impure: draws a fresh ephemeral key and a request id, and reads the
+   clock. Throws ex-info {:type ::sealed} when the token is sealed.
 
    Arguments:
      - `token`    : open chain
@@ -327,7 +345,7 @@
    Returns: updated token with the third-party block appended."
   [token tp-block]
   (when (sealed? token)
-    (throw (ex-info "Cannot extend a sealed chain" {})))
+    (throw (ex-info "Cannot extend a sealed chain" {:type ::sealed})))
   (let [last-block (peek (:blocks token))
         prev-sig   (:signature last-block)
 
@@ -477,7 +495,11 @@
    Terms (as in sign/verify-edn): :valid? means self-consistent — anyone
    can mint a valid chain rooted in their own key. Pass the expected root
    to also get :verified?. Whether the chain's facts authorize anything is
-   policy, not signet's job. Never throws: a malformed token is invalid.
+   policy, not signet's job.
+
+   Never throws: a malformed token gives {:valid? false :error …}.
+   Impure: reads the key store (to resolve kids), and the clock unless opts
+   has :now.
 
    opts (optional):
      :root  expected root authority: a kid URN, or a set of acceptable kids.

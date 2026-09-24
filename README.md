@@ -48,9 +48,27 @@ expiry deterministically; without it they read the clock.
 
 ## Keys: what is stored, what is not
 
-- The key store holds only keys you create or register deliberately.
-  `key/lookup` and `key/kid` are pure: resolving a kid from an envelope
-  never adds it to the store, so untrusted input cannot grow memory.
+- **Only functions whose names end in `!` write the key store or the
+  defaults.** Creating and converting keys is pure: `signing-keypair`,
+  `encryption-keypair`, `public-key`, `encryption-public-key`, `hex->kid`,
+  `raw-shared-secret`, `ssh/load-keypair` and the rest never register
+  anything. Where registering is a convenience there is a `!` twin that
+  also registers and returns the key: `signing-keypair!`,
+  `encryption-keypair!`, `ssh/load-keypair!`. Otherwise call
+  `key/register!` yourself.
+- **Registering never picks your default identity.** Set it explicitly
+  with `key/set-default-signing-keypair!`, or let
+  `key/ensure-default-signing-keypair!` create one. `sign/sign-edn` always
+  takes an explicit key. `sign/sign-edn!` is the convenience that uses the
+  default, creating it if needed.
+- `key/lookup` and `key/kid` are pure too: resolving a kid from an
+  envelope never adds it to the store, so untrusted input cannot grow
+  memory.
+- **Printing never shows a secret.** Key records print as
+  `#signet/key {:type … :kid … :d "<redacted>"}` everywhere: the REPL, logs,
+  `tap>`, ex-data. Serialising a key record as data (cedn, or walking it as
+  a map) still exposes `:d`. The next release keeps secrets behind handles
+  in a vault instead (`docs/07-secret-handles-design.md`).
 - **Ephemeral keys are never exposed, never stored, and wiped after use.**
   Session and chain code creates them internally. Noise session
   ephemerals, and every DH output, are zeroed as soon as they have been
@@ -58,7 +76,7 @@ expiry deterministically; without it they read the clock.
   ephemeral key lives in the token's `:proof` until the chain is sealed.
 - **Nonces are never the caller's job.** `box` draws its nonce internally,
   and a session counts its own nonces. Session states are single-use:
-  `write-message` / `read-message` consume the state they are given and
+  `write-message!` / `read-message!` consume the state they are given and
   return the one to use next. Using a consumed state again throws
   `::stale-session-state`, so a nonce can never be reused and a replayed
   message cannot be accepted twice from a stale state. A failed read
@@ -85,7 +103,20 @@ SIGNET_BACKEND=sodium bb …  # on babashka, with com.github.franks42/nacljc 0.1
 
 ## Compatibility
 
-**Trust fixes (0.7.0-SNAPSHOT, PR #1):** an expired envelope is no
+**Upgrading from 0.6.0:** see [CHANGELOG.md](CHANGELOG.md). In short:
+
+- Creating and converting keys no longer registers them. Use the `!`
+  twins (`signing-keypair!`, `encryption-keypair!`, `ssh/load-keypair!`)
+  or `register!` where you relied on it.
+- Registering no longer sets the default. Call
+  `set-default-signing-keypair!` or `ensure-default-signing-keypair!`.
+- `(sign-edn payload)` is now `(sign-edn! payload)`.
+- `session/write-message` and `session/read-message` are now
+  `write-message!` and `read-message!`.
+- Errors are ex-info with a namespaced `:type`. Session errors are the
+  same on every backend.
+
+**Trust fixes (0.7.0, PR #1):** an expired envelope is no
 longer `:valid?`. The raw signature check is now `:signature-valid?`, and
 `:error` says why an envelope is invalid. `key/lookup` no longer registers
 the keys it parses from kids, and `key/kid` no longer registers anything.

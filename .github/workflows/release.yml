@@ -1,0 +1,97 @@
+name: release
+
+# On a vX.Y.Z tag: check, test (JCA and libsodium backends), deploy to
+# Clojars, then run signet's own tests against the jar fetched back from
+# Clojars (empty local repository): JVM jca, JVM sodium + parity, bb sodium.
+# Only then create the GitHub release, with the CHANGELOG section as notes.
+#
+# Required secrets: CLOJARS_USERNAME, CLOJARS_PASSWORD.
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - uses: DeLaGuardo/setup-clojure@13.6.0
+        with:
+          bb: 'latest'
+          cli: 'latest'
+          clj-kondo: 'latest'
+          cljfmt: 'latest'
+
+      - name: Install libsodium (Homebrew)
+        run: brew install libsodium
+
+      - name: Version from the tag
+        id: ver
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Refuse a non-stable version or a missing CHANGELOG entry
+        run: bb release-check
+
+      - name: build.clj version must match the tag
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          BUILD_VER=$(grep -oE '\(def version "[^"]+"' build.clj | grep -oE '"[^"]+"$' | tr -d '"')
+          if [ "$BUILD_VER" != "$VERSION" ]; then
+            echo "::error::Tag is v${VERSION} but build.clj says ${BUILD_VER}"
+            exit 1
+          fi
+
+      - name: Prefetch deps
+        run: clojure -P
+
+      - name: Lint, fmt, JCA suite, bb smoke
+        run: bb test:no-sodium
+
+      - name: libsodium backend on the JVM (with parity) and on bb
+        run: bb test:jvm-sodium && bb test:bb-sodium
+
+      - name: Publish to Clojars
+        env:
+          CLOJARS_USERNAME: ${{ secrets.CLOJARS_USERNAME }}
+          CLOJARS_PASSWORD: ${{ secrets.CLOJARS_PASSWORD }}
+        run: clojure -T:build deploy
+
+      - name: Wait for Clojars
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sfL "https://repo.clojars.org/com/github/franks42/signet/$VERSION/signet-$VERSION.jar" -o /dev/null; then
+              echo "Clojars serves signet $VERSION"; exit 0
+            fi
+            echo "Waiting for Clojars... ($i/30)"; sleep 10
+          done
+          echo "::error::Clojars did not serve the jar within 5 minutes"; exit 1
+
+      - name: signet's tests against the jar from Clojars
+        run: bb test:clojars "${{ steps.ver.outputs.version }}"
+
+      - name: GitHub release with the CHANGELOG section as notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          awk -v v="## $VERSION" '$0 ~ "^"v {on=1; next} on && /^## / {exit} on' CHANGELOG.md > notes.md
+          gh release create "$TAG" --title "$TAG" --notes-file notes.md
