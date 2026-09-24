@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.9.0 (unreleased)
+
 ## 0.8.0 (2026-09-24)
 
 Secrets by reference: code holds vault handles, never secret bytes
