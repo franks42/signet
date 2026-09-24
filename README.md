@@ -46,6 +46,59 @@ expiry deterministically; without it they read the clock.
   authenticated. Omitted kids are still bound.
 - `unbox` never throws on malformed input.
 
+## The vault: secrets by reference (0.8.0)
+
+Application code holds **handles**, never secret bytes
+(`docs/07-secret-handles-design.md`). A handle is a value:
+`#signet.vault.KeyHandle{:type :signet/key-handle :kid "urn:signet:pk:…" :vault :default}`.
+It names a key and the vault holding it, and it is safe to print, log,
+serialise and send, because it contains nothing secret. It is a reference,
+not a credential: the vault decides what it can do.
+
+```clojure
+(require '[signet.vault :as vault] '[signet.sign :as sign]
+         '[signet.encryption :as enc] '[signet.shared :as shared])
+
+(def me  (vault/generate-signing-key!))          ; born in the vault; the seed never leaves
+(sign/sign-edn me {:op :read})                    ; signs inside the vault
+(enc/box me bob-public-key (.getBytes "hi"))      ; key agreement inside the vault
+(enc/unbox :default boxed)                        ; any key this vault holds; :to picks it
+(def ab (shared/shared-key! me bob-public-key))   ; shared key, kept in the vault
+(shared/seal ab plaintext)  (shared/open ab sealed)  (shared/mac ab msg)
+```
+
+- **Two sides, one kid:** `(vault/lookup kid)` answers from the public side
+  (everyone's public keys), `(vault/handle kid)` only for keys the secret
+  side holds. `vault/register-public-key!` adds a peer's key.
+- **Keys are born in the vault** (`generate-signing-key!`,
+  `generate-encryption-key!`). Secret bytes enter only through
+  `import-signing-key!` / `import-encryption-key!`, which wipe the caller's
+  array, and leave only through `(export-secret h {:i-understand :exposes-secret})`.
+  `destroy!` wipes a key; its public key stays known.
+- **Vaults route operations:** a handle's `:vault` names the vault
+  (`register-vault!`); an unknown id throws `::unknown-vault`, never a
+  fallback.
+- **Providers:** on the libsodium backend the default provider is
+  `:sodium`: keys live in libsodium's guarded memory (nacljc secrets: guard
+  pages, locked against swap, no-access outside a call), and derived
+  secrets (DH outputs, message keys, shared keys) stay there too. On the
+  JCA backend it is `:memory`: secrets on the heap, inside the vault only,
+  each lent copy wiped after use.
+- **The default identity is the vault's:** `vault/ensure-default-signing-key!`,
+  `set-default-signing-key!`. `sign/sign-edn!` and key-less `chain/extend`
+  use it.
+- **Chains:** an open token's `:proof` is a handle; `chain/export-token`
+  (with the acknowledgement) gives the sendable form, `chain/import-token!`
+  takes a received one into your vault, `close` and `chain/discard!`
+  destroy the proof.
+- **Shared keys** (`signet.shared`): both parties derive the same key and
+  kid with no exchange. `seal` is directional and key-committing; a MAC is
+  not a signature, and a static-static shared key has no forward secrecy.
+
+Key records (`signet.key`, carrying `:d`) still work everywhere and remain
+the raw layer. Sessions use them until they move onto vault handles, in the
+release after 0.8.0.
+
 ## Keys: what is stored, what is not
 
 - **Only functions whose names end in `!` write the key store or the
@@ -56,24 +109,22 @@ expiry deterministically; without it they read the clock.
   also registers and returns the key: `signing-keypair!`,
   `encryption-keypair!`, `ssh/load-keypair!`. Otherwise call
   `key/register!` yourself.
-- **Registering never picks your default identity.** Set it explicitly
-  with `key/set-default-signing-keypair!`, or let
-  `key/ensure-default-signing-keypair!` create one. `sign/sign-edn` always
-  takes an explicit key. `sign/sign-edn!` is the convenience that uses the
-  default, creating it if needed.
+- **Registering never picks your default identity.** The default identity
+  is the vault's (`vault/ensure-default-signing-key!`, see above).
+  `sign/sign-edn` always takes an explicit key or handle.
 - `key/lookup` and `key/kid` are pure too: resolving a kid from an
   envelope never adds it to the store, so untrusted input cannot grow
   memory.
 - **Printing never shows a secret.** Key records print as
   `#signet/key {:type … :kid … :d "<redacted>"}` everywhere: the REPL, logs,
   `tap>`, ex-data. Serialising a key record as data (cedn, or walking it as
-  a map) still exposes `:d`. The next release keeps secrets behind handles
-  in a vault instead (`docs/07-secret-handles-design.md`).
+  a map) still exposes `:d`: use vault handles, which contain no secret.
 - **Ephemeral keys are never exposed, never stored, and wiped after use.**
   Session and chain code creates them internally. Noise session
   ephemerals, and every DH output, are zeroed as soon as they have been
   used. Without that there is no forward secrecy. An open chain's
-  ephemeral key lives in the token's `:proof` until the chain is sealed.
+  ephemeral key lives in the vault, behind the token's `:proof` handle,
+  until the chain is sealed.
 - **Nonces are never the caller's job.** `box` draws its nonce internally,
   and a session counts its own nonces. Session states are single-use:
   `write-message!` / `read-message!` consume the state they are given and

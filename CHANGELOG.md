@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.8.0 (unreleased)
+
+Secrets by reference: code holds vault handles, never secret bytes
+(`docs/07-secret-handles-design.md`, decisions 7–16).
+
+### Added
+
+- **`signet.vault`:**
+  - `KeyHandle` records naming a key and its vault; a vault registry with
+    `:default`.
+  - Two sides indexed by one kid: `lookup` and `register-public-key!`,
+    `handle` and `handles`.
+  - Keys born in the vault: `generate-signing-key!`,
+    `generate-encryption-key!`.
+  - `import-signing-key!` and `import-encryption-key!` (they wipe the
+    caller's array); `export-secret` (requires
+    `{:i-understand :exposes-secret}`); `destroy!`.
+  - `sign`, `public-key`, `algorithm`.
+  - The default identity: `default-signing-key`,
+    `set-default-signing-key!`, `ensure-default-signing-key!` (race-safe).
+- **Providers:** `:memory` (heap, inside the vault, lent copies wiped) and
+  `:sodium` (`signet.vault.sodium`, on nacljc 0.2.0 secrets in libsodium
+  guarded memory; derived secrets stay there). `default-provider` picks
+  `:sodium` on the libsodium backend.
+- **Handles everywhere:** `sign/sign` and `sign-edn` take handles. `box`
+  takes a handle sender; `unbox` takes a handle, a set of handles, or a
+  vault id. `chain/extend` takes a handle root.
+- **Chains:** an open token's `:proof` is a vault handle;
+  `chain/export-token` (sendable form, needs the acknowledgement),
+  `chain/import-token!` (refuses a mismatched proof), `chain/discard!`;
+  `close` destroys the proof.
+- **`signet.shared`:**
+  - `shared-key!`: both parties derive the same key and kid with no
+    exchange.
+  - `seal` and `open`: directional, key-committing, with a per-message salt.
+  - `mac` and `verify-mac?`: directional.
+
+### Changed (breaking)
+
+- The default identity is the vault's. Removed:
+  `key/set-default-signing-keypair!`, `key/set-default-encryption-keypair!`,
+  `key/default-signing-keypair`, `key/default-encryption-keypair`,
+  `key/clear-defaults!`, `key/ensure-default-signing-keypair!`.
+  `sign/sign-edn!` and key-less `chain/extend` use
+  `vault/ensure-default-signing-key!` / `vault/default-signing-key`.
+- An open chain token's `:proof` is a handle, not the seed. Use
+  `export-token` to send one.
+- nacljc 0.2.0.
+
+### Tooling
+
+- `bb check-not-released`, run by `test:jar`, refuses to install a version
+  already on Clojars. It prevents a local build shadowing a published jar
+  in ~/.m2.
+
 ## 0.7.1 (2026-09-23)
 
 Dependency update only; no API or behaviour change.

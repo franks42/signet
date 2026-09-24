@@ -118,8 +118,11 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   runs `bb release-check` and both backends' tests, deploys, then runs
   `bb test:clojars X.Y.Z` (signet's tests against the jar from Clojars,
   empty local repo) before the GitHub release.
-- **Next (0.8.0):** secrets behind handles in a vault
-  (`docs/07-secret-handles-design.md`).
+- **0.8.0 (in progress, main at 0.8.0-SNAPSHOT):** the vault
+  (`signet.vault`, providers `:memory` and `:sodium`), handles in
+  sign/box/chain, `signet.shared`. Phases 1–5 done (see CHANGELOG). Sessions
+  move onto handles in the release after. Key records remain the raw layer.
+  **After every release, bump build.clj to the next -SNAPSHOT.**
 - Verified from the installed jar in a scratch consumer (`bb test:jar`,
   signet's tests only, no src): JVM jca 131/652, JVM sodium 131/652 +
   parity 54/54, bb sodium 121/628.

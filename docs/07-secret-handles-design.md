@@ -1,10 +1,11 @@
 # Secrets by reference: handles and a vault
 
-Status: **draft for discussion** (2026-09-23). Nothing here is
-implemented. It is **planned for the release after 0.7.0**. 0.7.0 ships
-the naming and purity changes and redacted printing as a stop-gap.
-"Decisions so far" at the end lists what is already settled. The rest is
-proposed and marked as open.
+Status: **being implemented for 0.8.0** (2026-09-24). Implemented:
+handles and the vault registry, the two sides, keys born in the vault,
+import/export/destroy, the `:memory` and `:sodium` providers, sign / box /
+chain on handles, and shared keys (`signet.shared`). Sessions on handles
+follow in the release after 0.8.0 (decision 9). "Decisions so far" at the
+end lists what is settled; the open questions remain open.
 
 ## The principle
 
