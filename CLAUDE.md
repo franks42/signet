@@ -105,6 +105,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `docs/05-noise-kk-session-design.md` — Noise_KK session design
 - `docs/06-box-v2-design.md` — box v2, design only: optional kid/nonce slots, directional HKDF-bound keys, per-message salt; closes finding 7 and the 96-bit nonce limit
 - `docs/07-secret-handles-design.md` — DRAFT: secrets by reference (handles + vault + providers: memory, sodium secure memory, WebCrypto, agent); code never sees secret bytes; also records the 2026-09-23 naming/twin-rule decisions for 0.7.0
+- `docs/08-sessions-on-handles-plan.md` — 0.9.0 implementation plan: session secrets as vault session entries, `close!` by session, `with-conclave`; phase 0 (Noise known-answer vectors) done
 
 ## Current state (2026-09-23)
 
@@ -202,9 +203,9 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 ## Testing, lint, format
 
 ```bash
-bb test:jvm          # full suite, JCA backend (clojure -M:test): 131 tests / 650 assertions
+bb test:jvm          # full suite, JCA backend (clojure -M:test): 164 tests / 819 assertions
 bb test:jvm-sodium   # full suite, libsodium backend + JCA-vs-libsodium parity (54 checks)
-bb test:bb-sodium    # full suite on babashka, libsodium backend: 121 / 626 (all but secp256k1)
+bb test:bb-sodium    # full suite on babashka, libsodium backend: 154 / 802 (all but secp256k1)
 bb smoke             # bb smoke suite (JCA): 9 tests
 bb test:no-sodium    # lint + fmt + JCA suite + bb smoke (no native libsodium needed)
 bb test:all          # test:no-sodium + test:jvm-sodium + test:bb-sodium

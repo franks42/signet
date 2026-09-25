@@ -341,8 +341,8 @@
 #?(:clj
    (defn- start-handshake
      "Common scaffolding for both initiator and responder: build the
-      symmetric state, run pre-message MixHashes, mix in the prologue
-      (defaults to empty bytes)."
+      symmetric state, mix in the prologue (defaults to empty bytes), then
+      run the pre-message MixHashes."
      [role local-static-kp remote-static-pub prologue]
      (when-not (:d local-static-kp)
        (throw (ex-info "Noise session: the local static key needs its private part"
@@ -361,8 +361,10 @@
                   :remote-static-pub remote-static-pub
                   :local-ephemeral-kp nil
                   :remote-ephemeral-pub nil)
-           (pre-message init-pub resp-pub)
-           (mix-hash (or prologue (byte-array 0)))))))
+           ;; Noise spec §5.3 Initialize: MixHash(prologue) first, then
+           ;; the pre-message public keys.
+           (mix-hash (or prologue (byte-array 0)))
+           (pre-message init-pub resp-pub)))))
 
 ;; ============================================================
 ;; Public API

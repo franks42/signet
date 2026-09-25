@@ -64,17 +64,27 @@ The gaps:
 
 ## Phase 0: known-answer vectors on today's code (safety net)
 
+**Done (2026-09-25).** `test/signet/noise_vectors_test.clj` checks every
+message against the cacophony and snow `Noise_KK_25519_ChaChaPoly_SHA256`
+vectors. It found a bug: signet mixed the prologue into the transcript
+hash after the static keys instead of before (Noise §5.3), so its
+handshake messages matched no other implementation. Fixed; this breaks
+handshakes with 0.8.0 peers (CHANGELOG 0.9.0). With the order swapped
+back, 5 of the 26 assertions fail.
+
 Before anything moves, pin the wire format.
 
-1. Add a private hook that injects fixed ephemerals, for example
-   `^:private ^:dynamic *ephemeral-source*`, used only by tests.
+1. Inject fixed ephemerals in the test with `with-redefs` on the private
+   `fresh-ephemeral`, so production code gets no injection hook. Phase 3
+   keeps a single ephemeral-creating function as that seam.
 2. Add a known-answer test for `Noise_KK_25519_ChaChaPoly_SHA256`. Use the
    cacophony/snow vectors if they cover KK with this suite (to confirm);
    otherwise record vectors from today's code and cross-check them once
    against an independent implementation. Each vector checks every
    handshake and transport message.
-3. Run it on `:jca` and `:sodium`. That adds a session case to
-   `backend_parity.clj`, which has none today.
+3. Run it on `:jca` and `:sodium` (JVM and bb). Both backends meeting
+   the same published vectors covers session parity, so
+   `backend_parity.clj` needs no session case.
 
 This is a separate commit. Everything after it has to keep these vectors
 green.

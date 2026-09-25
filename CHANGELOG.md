@@ -2,6 +2,21 @@
 
 ## 0.9.0 (unreleased)
 
+### Fixed
+
+- **`signet.session` is now wire-compatible with Noise.** The handshake
+  mixed the prologue into the transcript hash after the static public
+  keys; the Noise spec (§5.3) mixes it first. Handshake messages
+  therefore matched no other `Noise_KK_25519_ChaChaPoly_SHA256`
+  implementation. **Breaking:** a 0.9.0 peer cannot complete a handshake
+  with a 0.8.0 or earlier peer (the first message fails authentication).
+  Transport messages were not affected.
+
+### Added
+
+- Known-answer tests against the published Noise_KK vectors of cacophony
+  and snow (`test/signet/noise_vectors_test.clj`), on every backend.
+
 ## 0.8.0 (2026-09-24)
 
 Secrets by reference: code holds vault handles, never secret bytes

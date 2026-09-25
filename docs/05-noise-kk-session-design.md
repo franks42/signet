@@ -254,13 +254,19 @@ ck = h
 k  = :empty
 n  = 0
 
-;; Pre-message handshake (both sides do this in the same order):
+;; Prologue first (Noise spec §5.3 Initialize; default empty bytes):
+MixHash(prologue)
+
+;; Then the pre-message public keys (both sides in the same order):
 MixHash(initiator-static-public)
 MixHash(responder-static-public)
-
-;; Optional prologue (default empty bytes):
-MixHash(prologue)
 ```
+
+signet before 0.9.0 mixed the prologue in *after* the static keys. That
+produced a different transcript hash, so its handshake messages matched no
+other Noise implementation (transport messages were unaffected: they do
+not use h). `test/signet/noise_vectors_test.clj` now checks every message
+against the cacophony and snow vectors.
 
 Note that pre-message processing **does not run any DHs** — it
 only mixes the static public keys into the transcript hash. The
