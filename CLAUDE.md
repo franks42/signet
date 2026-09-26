@@ -122,11 +122,11 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   sign/box/chain, `signet.shared`. Phases 1–5 done (see CHANGELOG). Sessions
   move onto handles in the release after. Key records remain the raw layer;
   they are deprecated in that release (decision 17), not removed.
-- **Next: 0.9.0 (main is 0.9.0-SNAPSHOT):** implemented and merged
+- **0.9.0 (released 2026-09-25):** implemented and merged
   (docs/08-sessions-on-handles-plan.md, phases 0–6): Noise vectors and the
   prologue-order fix (breaking for 0.8.0 peers), sessions on vault handles,
   `close!`, `with-conclave`, key records deprecated, `ssh/import-keypair!`.
-  Uses nacljc 0.3.0 (released 2026-09-25). Not released yet. Open design
+  Uses nacljc 0.3.0 (released 2026-09-25). Open design
   topics (AEGIS suites, box key commitment, post-quantum, persistence and
   password unlocking, names for keys) are in docs/07; password unlocking
   (Argon2id, password-derived keys as vault handles) has notes in docs/08.
