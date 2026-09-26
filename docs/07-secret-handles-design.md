@@ -4,8 +4,9 @@ Status: **released in 0.8.0** (2026-09-24). Implemented:
 handles and the vault registry, the two sides, keys born in the vault,
 import/export/destroy, the `:memory` and `:sodium` providers, sign / box /
 chain on handles, and shared keys (`signet.shared`). Sessions on handles
-follow in the release after 0.8.0 (decision 9). "Decisions so far" at the
-end lists what is settled; the open questions remain open.
+followed in 0.9.0 (decision 9, docs/08). "Decisions so far" at the end
+lists what is settled; the open questions remain open. "Future: enclave
+tiers" (2026-09-25) describes how hardware and remote providers fit in.
 
 ## The principle
 
@@ -133,6 +134,8 @@ Providers, in the order they would come:
 | `:sodium` | libsodium secure memory: `sodium_malloc` (guard pages, `mlock`), `sodium_mprotect_noaccess` between uses, `sodium_free` zeroes it | Level 3. **Never on the JVM heap.** Needs nacljc 0.2.0. |
 | `:webcrypto` | browser, non-extractable `CryptoKey` | For signet's ClojureScript side. |
 | `:agent`, `:keychain`, `:hsm` | out of process | Level 4. Later. |
+| `:pkcs11` | any PKCS#11 token (SoftHSM for tests; YubiHSM, CloudHSM, smartcards) | Level 4. One provider for every existing HSM; see "Future: enclave tiers". |
+| `:tpm`, `:piv`, `:secure-enclave`, `:fido2` | hardware on this machine | Level 4. Slow and narrow: unlock and endorse only (see "Future: enclave tiers"). |
 
 ### Protection levels
 
@@ -526,6 +529,95 @@ a human password is a long-standing weak spot in many designs. Topics:
 - **Alternatives to passwords:** the OS keychain or Secure Enclave, or a
   hardware token (FIDO2 hmac-secret), which avoid low-entropy passwords.
 
+## Future: enclave tiers (hardware unlocks, software works)
+
+Discussed 2026-09-25, after 0.9.0. Not planned for a release yet.
+
+**The observation.** Hardware enclaves are slow and narrow.
+- A TPM or a PIV smartcard or YubiKey takes tens to hundreds of
+  milliseconds per signature, is rate-limited, and sits on a slow bus.
+- They mostly offer P-256, P-384 and RSA; the Secure Enclave offers only
+  P-256. Ed25519 and X25519 are rare (recent YubiKey PIV firmware).
+- They have a handful of key slots.
+
+Network HSMs (AWS CloudHSM, KMS) are faster but still costly per call, so
+they push bulk work back to the application: KMS `GenerateDataKey` hands
+out the plaintext data key, and all message and stream encryption happens
+in ordinary heap memory. The root key is protected; the working keys are
+not.
+
+signet's handle model is PKCS#11's in spirit:
+
+| PKCS#11 | signet |
+|---|---|
+| object handle | `KeyHandle` |
+| slot / token | vault id → provider |
+| `C_Sign`, `C_DeriveKey` (derived keys stay in the token) | `vault/sign`, `shared-key!`, `hkdf-pair!` |
+| `CKA_SENSITIVE`, `CKA_EXTRACTABLE=false` | session entries refuse export; `export-secret` needs the acknowledgement |
+| session objects | session entries |
+| `C_Login` | unlock (planned) |
+
+The difference is that signet offers fixed suites instead of a menu of
+mechanisms (see "Suites"). It can afford to keep *every* operation behind
+handles because its fast enclave is in-process: libsodium guarded memory
+makes each operation cheap. That boundary is weaker than hardware. Guard
+pages, `mlock` and no-access-outside-calls stop accidental reads,
+over-reads, swap and core dumps, but not an attacker who runs code inside
+the process.
+
+**The design: three tiers.**
+
+| Tier | Holds | Operations |
+|---|---|---|
+| Hardware root (TPM, PIV card, Secure Enclave, FIDO2 key, HSM) | the root identity, unlock factors | rare: unlock, endorse |
+| Local guarded enclave (`:sodium`) | vault master key, working keys, session keys | everything hot |
+| Heap | public keys, handles, ciphertexts | no secrets |
+
+- **Unlock.** At startup a single hardware operation unwraps the vault
+  master key straight into the local enclave: a P-256 ECDH with a TPM,
+  the Secure Enclave or a PIV card, FIDO2 `hmac-secret`, YubiKey
+  challenge-response, or a keychain release. Then no hardware calls until
+  the next unlock. Each factor wraps its own copy of the master key (the
+  layering in "persistence and password unlocking"; password input
+  options are in docs/08). Hardware algorithms such as P-256 appear only
+  in the wrapping suite, never in the working API.
+- **Moving keys down a tier never touches the heap.** A working key
+  unwrapped by a stronger enclave lands directly in the local one as a new
+  handle (decision 8: moving a secret to another enclave yields a new
+  handle). This is KMS's envelope pattern without KMS's plaintext data key
+  in application memory.
+- **Endorsement, for identities bound to hardware.** A non-exportable
+  identity is a slow P-256 key, so it should not sign every request. It
+  signs, once, an endorsement of a fast Ed25519 working key in the local
+  enclave, with an expiry (the pattern of SSH certificates and WebAuthn
+  attestation). signet already has the mechanism: a **capability chain**
+  whose root is the hardware key and whose next block delegates to the
+  working key. Verifiers check back to the hardware root with
+  `chain/verify {:root hardware-kid}` (verified = the expected root).
+- **The hot path** (sessions, box, shared keys, signing) runs in the local
+  enclave with Ed25519 and X25519.
+
+**What the provider protocol needs for this.**
+- **Capabilities.** Each provider declares its algorithms, operations and
+  rough cost (a PIV card: P-256 sign and ECDH, around 10 per second). The
+  vault routes by capability and never sends hot operations to a slow
+  tier by accident; an unsupported operation fails loudly
+  (`::unsupported-operation`), with no silent fallback.
+- **Operations as protocol methods,** not only `-with-material`. An
+  out-of-process or hardware enclave never lends its material, so sign,
+  ECDH/DH, unwrap-into-another-enclave, HKDF and AEAD must be methods the
+  provider implements (docs/08 phase 2 already anticipates this).
+- **Non-25519 kids,** such as `urn:signet:pk:p256:…`, for hardware roots
+  and wrapping keys.
+
+**Candidate providers,** in a plausible order:
+1. `:agent`: a separate process over a Unix socket, like ssh-agent (the
+   password never enters the application).
+2. `:pkcs11`: binds any PKCS#11 module over FFI, which makes every
+   existing HSM and smartcard a signet enclave. Test against SoftHSM.
+3. `:secure-enclave` / `:tpm` / `:fido2`: unlock factors and endorsement
+   roots.
+
 ## Open questions
 
 1. ~~Handle shape~~ **Settled** (decision 7).
@@ -592,6 +684,11 @@ a human password is a long-standing weak spot in many designs. Topics:
     represented? Sender authentication in box v4: a hybrid signature, or an
     authenticated KEM? Where does ML-DSA come from, given libsodium has
     none: the JDK, Bouncy Castle, or a future libsodium?
+13. **Enclave tiers** (see "Future: enclave tiers"): how does a provider
+    declare its capabilities and cost, and how does the vault route by
+    them? What is the endorsement block format, so that a hardware-rooted
+    identity verifies with plain `chain/verify`? Which provider comes
+    first: `:agent` or `:pkcs11`?
 
 ## Decisions so far (2026-09-23)
 
