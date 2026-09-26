@@ -91,6 +91,10 @@ green.
 
 ## Phase 1: nacljc 0.3.0 (prerequisite for `:sodium`)
 
+**Implemented in `../nacljc` (2026-09-25), not released.** Both changes are
+tested on bb, the JVM and nbb, with each guard shown to fail when removed.
+Release when signet's phases 2–3 have used the API.
+
 Noise's MixKey is `HKDF(salt = ck, ikm = dh)`, and Split is
 `HKDF(salt = ck, ikm = "")`. In both, the **salt is the secret**. nacljc's
 `hkdf-sha-256` accepts a secret only as `ikm` (`check-optional-bytes` on
@@ -102,11 +106,11 @@ Changes:
 1. `hkdf-sha-256`: accept a secret salt. The output is a secret if `ikm`
    or `salt` is one. Split's empty `ikm` with a secret `ck` must give a
    secret.
-2. `secret-split`: split a secret into secrets of the given lengths, for
-   example `(secret-split s [32 32])` gives `[s1 s2]`. It works entirely in
-   guarded memory and destroys `s`. Noise always needs two 32-byte outputs
-   from one 64-byte HKDF, and T(2) depends on T(1), so two separate calls
-   can't produce them.
+2. `secret-split`: new secrets holding consecutive parts of a secret, for
+   example `(secret-split s [32 32])` gives `[s1 s2]`. It copies inside
+   guarded memory and leaves `s` unchanged (the caller destroys it). Noise
+   always needs two 32-byte outputs from one 64-byte HKDF, and T(2)
+   depends on T(1), so two separate calls can't produce them.
 3. Tests, release to Clojars, then bump nacljc in signet's `deps.edn`
    `:sodium` alias and in `bb.edn`'s `test:bb-sodium` and `test:jar`
    (their versions must match).
