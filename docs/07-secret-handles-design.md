@@ -83,6 +83,93 @@ against a memory-reading attacker at the moment a key is in use.
 This section belongs in the README once the model ships, so users do not
 over-read the guarantee.
 
+### Remaining attack surface (reviewed 2026-09-25)
+
+What is left after handles, guarded memory (`:sodium`), the stack wipe
+(nacljc 0.3.1) and the planned startup-hygiene helper (core dumps off; see
+"Prior art", follow-up 2). The measures so far address accidental exposure
+and passive reading of memory, not an attacker who can make the process
+do things. Roughly in order of how much they matter:
+
+1. **Code running inside the process: the biggest gap.** Sources: a
+   malicious or compromised dependency, an exposed nREPL, `read-string` or
+   `eval` on untrusted input, a deserialization bug, a Java agent. Such
+   code can
+   - **use** every key as an oracle (sign or decrypt anything) without
+     extracting it;
+   - call `export-secret`: the acknowledgement stops mistakes, not
+     attackers;
+   - call `mprotect` and read guarded memory directly through FFI.
+
+   A handle is a reference, not a credential (decision 8). Mitigation: an
+   out-of-process enclave ("Future: enclave tiers") prevents extraction;
+   misuse is limited only by that enclave's own policy (user
+   confirmation, rate limits, a PDP such as stroopwafel's).
+2. **Other processes of the same user.**
+   - **The Java Attach API** (`jcmd`, `jattach`) loads an agent into a
+     running JVM, which becomes case 1. It does not use `ptrace`, so
+     `PR_SET_DUMPABLE` does not stop it. Only the JVM flag
+     `-XX:+DisableAttachMechanism` does (a startup recommendation; it
+     can't be set at runtime).
+   - **Tampering with what is loaded:** jars in `~/.m2`, `LD_PRELOAD` or
+     `DYLD_*` at startup. And **`NACLJC_LIBSODIUM` /
+     `-Dnacljc.libsodium` choose the libsodium library to load**, so
+     whoever controls the environment can point it at a malicious one.
+     Document it; consider an option to pin the expected path or version.
+   - `ptrace` is blocked by `PR_SET_DUMPABLE` (Linux) and macOS's hardened
+     runtime.
+3. **Secrets outside the enclave by design.**
+   - Plaintexts: `read-message!`, `unbox` and `open` return byte arrays on
+     the heap. Protecting keys does not protect data.
+   - The JCA backend: under `:memory` keys are on the heap; only `:sodium`
+     gives guarded memory.
+   - Imported key bytes before they are wiped (and garbage-collector
+     copies), `export-secret` output, deprecated key records.
+   - Passwords, until the TTY-to-guarded-memory or agent path exists
+     (docs/08).
+   - The persisted vault file (future): offline guessing against the
+     password. Argon2id slows it down; a weak password still loses.
+4. **Crash artifacts beyond core dumps.**
+   - `hs_err_pid*.log`, the JVM crash log, contains register contents and
+     the top of the stack in hex, which may hold key material at the
+     moment of a crash. Use `-XX:ErrorFile=/dev/null`, or treat these logs
+     as sensitive.
+   - `-XX:+HeapDumpOnOutOfMemoryError` writes the whole heap to disk. It
+     can be switched off at runtime (`HotSpotDiagnosticMXBean`), so the
+     helper can do that or warn.
+   - Swap, hibernation, VM snapshots and live migration capture memory,
+     guarded pages included (machine settings: a README note).
+5. **Root, the kernel, the hypervisor, physical access** read everything;
+   cold-boot and DMA (Thunderbolt) attacks too. Only hardware enclaves or
+   confidential computing (SGX, SEV, TDX) help.
+6. **Side channels.** libsodium is constant-time, and signet's own
+   comparisons use `MessageDigest/isEqual`. Left: Spectre-class cache
+   attacks between processes or VMs on shared hardware; AEGIS in
+   libsodium.js is not constant-time on WebAssembly (Q9); power and
+   electromagnetic analysis with physical access.
+7. **Protocol and application misuse.**
+   - Treating *valid* as *verified*: forgetting `{:signer …}` or
+     `{:root …}`.
+   - **Noise KK message 1 can be replayed:** the responder starts a new
+     session for it, and its payload has weaker forward secrecy than later
+     messages. Don't put non-idempotent commands in the first handshake
+     payload (to note in docs/05).
+8. **Denial of service.** Sessions that are never closed fill the vault;
+   guarded memory counts against the mlock limit, and when it is
+   exhausted `sodium_malloc` fails.
+
+**Cheap fixes** (candidates for 0.10.0):
+- Extend the startup-hygiene helper and its README note with
+  `-XX:+DisableAttachMechanism`, `-XX:ErrorFile` and the
+  `HeapDumpOnOutOfMemoryError` check, besides core dumps and
+  `PR_SET_DUMPABLE`.
+- Document the `NACLJC_LIBSODIUM` risk (and consider pinning).
+- Note the message-1 replay in docs/05 and the `write-message!`
+  docstring.
+
+The structural answer to 1 and 2 remains an out-of-process enclave with
+its own policy.
+
 ## The model
 
 ### Handles
