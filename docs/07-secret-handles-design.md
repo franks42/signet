@@ -69,6 +69,15 @@ Findings from 2026-09-23 [verified]:
 
 ## Threat model
 
+**Audience (agreed 2026-09-25).** signet protects developers from mistakes
+and ordinary exposure: secrets printed, logged, serialised, copied or left
+around, keys handled as raw bytes, nonces reused. Keeping secret values
+away from application code is the point. Determined adversaries with code
+execution will still reach the crown jewels; they are not the target
+audience. The sections below document what they could still do and how a
+stronger design would stop them, so that the guarantee is not over-read,
+not as a promise.
+
 What this protects against: **copies and accidental exposure.** That
 covers logs, printing, `tap>`, the REPL, serialisation mistakes, ex-data,
 crash reports and heap dumps. With native protected memory it also covers
@@ -218,16 +227,77 @@ guarantee:
 - SCI's `:allow`/`:deny` for embedded interpreters;
 - `-XX:+DisableAttachMechanism`.
 
-**Consequence for priorities (0.10.0 and after):** the agent with a policy
-engine, and chain-based attenuation of working keys, come before further
-in-process hardening. Order of candidates:
-1. The `:agent` provider with request parsing and policy (PDP seam),
-   optional confirmation, and a signing log.
-2. Working keys endorsed by chains with caveats; verification enforcing
-   them.
-3. The cheap fixes above (startup hygiene, `NACLJC_LIBSODIUM`, the
-   message-1 replay note).
-4. Password unlocking (docs/08) and the hardware tiers.
+**Consequence for priorities.** *If* signet ever targets determined
+adversaries, the agent with a policy engine and chain-based attenuation
+of working keys come before any further in-process hardening. Given the
+audience above, the order for 0.10.0 and after is:
+1. The cheap fixes above (startup-hygiene helper, the `NACLJC_LIBSODIUM`
+   note, the message-1 replay note): small, and they prevent mistakes.
+2. Persistence and password unlocking (docs/08), with the password read
+   into guarded memory: the usability gap today.
+3. The `:agent` provider, first as ssh-agent-style convenience (the
+   password never enters the app), with the policy seam left open.
+4. Chain-attenuated working keys, policy in the agent, hardware tiers.
+
+### Far future: a policy-gated dynamic runtime (sketch, parked)
+
+Discussed 2026-09-25; **parked, deliberately not planned** ("maybe for
+version 25.0.0"). It is recorded because it keeps what makes Clojure
+powerful, REPL-driven development and live load/eval, instead of banning
+it.
+
+**Idea:** load/eval is a database update where the database is the
+runtime. Treat each eval as a **transaction**: submitted by an identity,
+authorized by policy, recorded in a log, replayable.
+
+**Prototype sketch** (bb first, since bb, nbb and scittle are SCI already):
+
+1. **Eval requests are signed EDN envelopes.** Code is data, so
+   `sign-edn` signs the form itself:
+   `{:op :eval :ns app.billing :form (defn …)}`, signed by the developer's
+   key and carrying a capability chain whose caveats say what may change:
+   namespaces, vars, a time window, dev versus production.
+2. **One gated entry point.** `(gated-eval envelope)`:
+   - verifies the signature and the chain back to a trusted root
+     (`chain/verify {:root …}`);
+   - asks a policy function (the PDP seam; stroopwafel's Datalog later)
+     whether this identity may make this change;
+   - on success, evaluates; otherwise returns `{:allowed? false :reason …}`.
+3. **Evaluation in a SCI context with granted capabilities only.** The
+   context exposes what the capability allows, for example a
+   policy-wrapped `sign` for the caller's own capability, never the vault,
+   `eval`, `alter-var-root` or host interop beyond an allowlist. This is
+   the object-capability pattern: code can use only what it was handed.
+4. **The REPL channel is a conclave:** a Noise KK session
+   (`signet.session`) between developer and runtime, mutually
+   authenticated with forward secrecy, like ssh. It replaces an
+   unauthenticated nREPL port; every eval inside it still carries its own
+   authorization.
+5. **A hash-chained, signed log.** Each accepted transaction is appended
+   with the hash of the previous entry (tamper-evident, as in certificate
+   transparency). The runtime state is then the boot image plus the log:
+   auditable, reproducible, revertible.
+
+**Denis's pieces that fit:**
+- code signing, as in minisign and his `wasmsign` (signed WebAssembly
+  modules), for jars and namespaces at boot;
+- trust anchors (verification keys, policy) in `sodium_malloc` memory
+  marked `sodium_mprotect_readonly`: they need integrity, not secrecy, and
+  ordinary Clojure code cannot change them;
+- Noise and AEAD for the channel, hashes for the log;
+- WebAssembly sandboxes (wasm-crypto, WASI, `was-not-wasm`) if SCI's
+  shared-heap sandbox is not enough.
+
+**Honest limit.** The gate and the trusted host share the process. Code
+that enters through an ungated path (a deserialization bug, the Attach
+API, a native memory-safety bug) can switch the gate off. It depends on a
+verified boot, closing the other entry points, and a small static trusted
+host. It moves the risk from "any REPL user or loaded library can do
+anything" to "a bug in a small trusted host": a real improvement, but not
+the hard boundary of an external signer. The two combine: the gated
+runtime runs the application; the agent outside decides what gets signed.
+
+**Scope:** a research project, likely its own library on top of signet.
 
 ## The model
 

@@ -122,13 +122,15 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   sign/box/chain, `signet.shared`. Phases 1–5 done (see CHANGELOG). Sessions
   move onto handles in the release after. Key records remain the raw layer;
   they are deprecated in that release (decision 17), not removed.
-- **main is 0.10.0-SNAPSHOT** (nothing started). Principle (docs/07,
-  2026-09-25): the dynamic runtime is untrusted, and authority lives
-  outside it. Guarded memory stops key theft, not misuse. Candidates, in
-  order: the `:agent` provider with policy over parsed EDN requests (PDP
-  seam, confirmation, signing log); working keys attenuated by chains with
-  caveats; the cheap fixes in docs/07's "Remaining attack surface";
-  password unlocking and hardware tiers.
+- **main is 0.10.0-SNAPSHOT** (nothing started). Audience (docs/07,
+  2026-09-25): signet protects developers from mistakes and ordinary
+  exposure; determined adversaries with code execution are documented, not
+  targeted. Candidates, in order: the cheap fixes in docs/07's "Remaining
+  attack surface" (startup-hygiene helper, `NACLJC_LIBSODIUM` note,
+  message-1 replay note); persistence and password unlocking; an
+  ssh-agent-style `:agent`; then chain attenuation, agent policy and
+  hardware tiers. A policy-gated dynamic runtime is sketched and parked
+  (docs/07).
 - **0.9.1 (released 2026-09-25):** nacljc 0.3.1 (`sodium_stackzero` after
   every secret operation). No signet code change.
 - **0.9.0 (released 2026-09-25):** implemented and merged
