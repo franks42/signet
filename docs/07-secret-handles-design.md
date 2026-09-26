@@ -529,6 +529,63 @@ a human password is a long-standing weak spot in many designs. Topics:
 - **Alternatives to passwords:** the OS keychain or Secure Enclave, or a
   hardware token (FIDO2 hmac-secret), which avoid low-entropy passwords.
 
+## Prior art: how libsodium's author uses the pieces
+
+Researched 2026-09-25 in Frank Denis's (jedisct1) repositories. The
+question was whether he built a handle or enclave layer himself, or only
+supplied the pieces. **Answer: the pieces, plus single-purpose tools that
+each assemble a few of them. There is no general layer where code holds
+only references** [source].
+
+- **The principle is stated, but not built.** libsodium-doc
+  (`helpers/memory_management.md`): `sodium_mprotect_noaccess` "can be
+  used to make confidential data inaccessible except when needed for a
+  specific operation". That is nacljc's no-access-outside-calls model and
+  this vault. In his own projects, `sodium_mprotect_noaccess` appears only
+  in the docs, never in code [source: GitHub code search, owner jedisct1].
+- **The same page recommends two things we don't do yet:**
+  - `sodium_stackzero()` after a batch of sensitive operations, since
+    secrets are copied into registers and onto the stack during use even
+    when they are stored in locked pages;
+  - disabling core dumps (`setrlimit(RLIMIT_CORE, …)`) outside
+    development, plus encrypted or disabled swap and no hibernation.
+    Memory locking is "defense-in-depth … not a complete solution".
+- **minisign (`src/minisign.c`, `get_line.c`) is password unlocking end
+  to end:**
+  - echo off (termios), and the password read straight into
+    `sodium_malloc` memory;
+  - scrypt writes its output into another guarded buffer, and the secret
+    key is XOR-decrypted in place, also in `sodium_malloc` memory;
+  - a BLAKE2b checksum detects a wrong password; every buffer is freed
+    with `sodium_free`.
+
+  This is option 3 in docs/08's password notes ("read the password into
+  guarded memory"). It is a short-lived command-line process, with no
+  no-access protection between uses.
+- **turbocrypt (his newer file tool) uses our two-layer key design:** a
+  random key in a key file, optionally protected with an Argon2 password.
+  "Changing a key file's password doesn't change the encryption key
+  inside it" (its `docs/safety.md`). It also uses fixed suites (Argon2,
+  AEGIS, HCTR2, TurboSHAKE) "with no insecure options", as in "Suites"
+  here.
+- **libhydrogen** has a key exchange "based on the Noise protocol" (N,
+  KK, XX, NK), but returns the session keys to the caller as plain arrays
+  (`hydro_kx_session_keypair { rx, tx }`). signet 0.9.0 keeps them in the
+  vault instead.
+- **blobcrypt's example** keeps the key and stream state in
+  `sodium_malloc` memory. **encpipe** takes passwords on the command line
+  or from a file: convenience over hygiene.
+- **cpace and spake2-ee** are his password-authenticated key exchanges
+  (PAKEs) on libsodium. They are the natural choice if signet ever needs
+  sessions authenticated by a password rather than static keys.
+
+**Follow-ups from this:**
+1. nacljc: call `sodium_stackzero` after each operation that reads a
+   secret (it clears a fixed amount of stack; measure the cost).
+2. signet or nacljc: a helper that disables core dumps
+   (`setrlimit(RLIMIT_CORE, 0)` over FFI), and a README note on startup
+   hygiene: no core dumps, encrypted or no swap, no hibernation.
+
 ## Future: enclave tiers (hardware unlocks, software works)
 
 Discussed 2026-09-25, after 0.9.0. Not planned for a release yet.
