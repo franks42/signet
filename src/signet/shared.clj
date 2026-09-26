@@ -43,9 +43,13 @@
             [signet.key :as key]
             [signet.vault :as vault]))
 
-(defn- utf8 ^bytes [^String s] (.getBytes s "UTF-8"))
+(defn- utf8
+  "The UTF-8 bytes of s. Pure."
+  ^bytes [^String s] (.getBytes s "UTF-8"))
 
-(defn- concat-bytes ^bytes [& arrays]
+(defn- concat-bytes
+  "The byte arrays concatenated into a new one. Pure."
+  ^bytes [& arrays]
   (let [out (byte-array (reduce + (map #(alength ^bytes %) arrays)))]
     (reduce (fn [off ^bytes a]
               (System/arraycopy a 0 out off (alength a))
@@ -53,9 +57,13 @@
             0 arrays)
     out))
 
-(defn- x25519-pub ^bytes [k] (:x (key/encryption-public-key k)))
+(defn- x25519-pub
+  "The X25519 public key bytes of k (Ed25519 converted). Pure."
+  ^bytes [k] (:x (key/encryption-public-key k)))
 
-(defn- sorted-pair [^bytes a ^bytes b]
+(defn- sorted-pair
+  "a and b in a fixed order (by hex), so both parties agree. Pure."
+  [^bytes a ^bytes b]
   (if (neg? (compare (enc/bytes->hex a) (enc/bytes->hex b))) [a b] [b a]))
 
 (def ^:private zero-nonce (byte-array 12))
@@ -92,21 +100,31 @@
                           {:my-x my-x :their-x their-x :context context
                            :mine (:kid my-handle) :peer (key/kid their)}))))
 
-(defn- meta! [h]
+(defn- checked-meta
+  "The metadata of shared key h, or throws. Impure: reads the vault.
+   Throws ex-info {:type ::not-a-shared-key} unless h is a shared key."
+  [h]
   (or (vault/shared-meta h)
       (throw (ex-info "Not a shared key handle" {:type ::not-a-shared-key :kid (:kid h)}))))
 
 (defn- message-key
   "The one-message key for direction sender-x → recipient-x, salted with
-   nonce, derived from root inside the call."
+   nonce, derived from root inside the call.
+   Impure: reads the vault."
   [h ^bytes nonce ^bytes sender-x ^bytes recipient-x]
   (vault/with-material
     h #(impl/hkdf-sha-256 % nonce
                           (concat-bytes (utf8 "signet/shared/v1/seal") sender-x recipient-x) 32)))
 
-(defn- commitment ^bytes [k] (impl/hmac-sha-256 k (utf8 "signet/shared/v1/commit")))
+(defn- commitment
+  "The key commitment for message key k (HMAC-SHA-256). Pure for bytes;
+   with a nacljc secret, impure: reads it."
+  ^bytes [k] (impl/hmac-sha-256 k (utf8 "signet/shared/v1/commit")))
 
-(defn- mac-key [h ^bytes sender-x ^bytes recipient-x]
+(defn- mac-key
+  "The directional MAC key sender-x -> recipient-x, derived from root h.
+   Impure: reads the vault."
+  [h ^bytes sender-x ^bytes recipient-x]
   (vault/with-material
     h #(impl/hkdf-sha-256 % (byte-array 0)
                           (concat-bytes (utf8 "signet/shared/v1/mac") sender-x recipient-x) 32)))
@@ -125,7 +143,7 @@
    Throws ex-info {:type ::not-a-shared-key}, or the vault's errors."
   ([h plaintext] (seal h plaintext nil))
   ([h plaintext opts]
-   (let [{:keys [my-x their-x]} (meta! h)
+   (let [{:keys [my-x their-x]} (checked-meta h)
          nonce  (impl/random-bytes 24)
          k      (message-key h nonce my-x their-x)]
      (try
@@ -136,7 +154,9 @@
          (assoc header :ct ct))
        (finally (impl/destroy-material! k))))))
 
-(defn- shape-error [sealed]
+(defn- shape-error
+  "The first structural problem of sealed, as a keyword, or nil. Pure."
+  [sealed]
   (cond
     (not (map? sealed))                                   :malformed
     (not= :signet/sealed (:type sealed))                  :not-sealed
@@ -158,7 +178,7 @@
    (try
      (if-let [err (shape-error sealed)]
        {:valid? false :error err}
-       (let [{:keys [my-x their-x]} (meta! h)]
+       (let [{:keys [my-x their-x]} (checked-meta h)]
          (cond
            (not= (:kid h) (:kid sealed)) {:valid? false :error :wrong-key}
            :else
@@ -189,7 +209,7 @@
    to the peer (the MAC key is directional). Authenticates between the two
    parties only: it is not a signature. Impure: reads the vault."
   [h message]
-  (let [{:keys [my-x their-x]} (meta! h)
+  (let [{:keys [my-x their-x]} (checked-meta h)
         k (mac-key h my-x their-x)]
     (try (impl/hmac-sha-256 k message)
          (finally (impl/destroy-material! k)))))
@@ -200,7 +220,7 @@
    Impure: reads the vault."
   [h message tag]
   (try
-    (let [{:keys [my-x their-x]} (meta! h)
+    (let [{:keys [my-x their-x]} (checked-meta h)
           k (mac-key h their-x my-x)]
       (try (boolean (and (bytes? tag)
                          (java.security.MessageDigest/isEqual (impl/hmac-sha-256 k message) tag)))

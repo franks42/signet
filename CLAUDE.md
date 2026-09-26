@@ -11,7 +11,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - **Name**: signet (like a signet ring — personal key for signing/sealing)
 - **Crypto backends** (`signet.impl` facade, selected once at load: `-Dsignet.backend` / `SIGNET_BACKEND`, default `jca`):
   - `:jca` — `signet.impl.jvm`, Java JCA. No native dependency. Its seed→public-key path (a `proxy [SecureRandom]` trick) does not work on babashka.
-  - `:sodium` — `signet.impl.sodium`, libsodium via `nacljc.core` (the backend keeps the name `:sodium`: it names libsodium, the native engine, not the wrapper) (github.com/franks42/nacljc, `com.github.franks42/nacljc 0.3.1` from Clojars via the `:sodium` alias; the version in bb.edn's test:bb-sodium and test/signet/consumer_check.clj (test:jar) must match; babashka.ffi). To test an unreleased nacljc, swap in `{:local/root "../nacljc"}`. Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
+  - `:sodium` — `signet.impl.sodium`, libsodium via `nacljc.core` (the backend keeps the name `:sodium`: it names libsodium, the native engine, not the wrapper) (github.com/franks42/nacljc, `com.github.franks42/nacljc 0.3.2` from Clojars via the `:sodium` alias; the version in bb.edn's test:bb-sodium and test/signet/consumer_check.clj (test:jar) must match; babashka.ffi). To test an unreleased nacljc, swap in `{:local/root "../nacljc"}`. Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
   - ClojureScript: not implemented (every `:cljs` branch throws). The browser plan is libsodium.js (see `../nacljc/docs/feasibility.md`).
 - **Dependencies**: canonical-edn (cedn) 1.6.1 for deterministic serialization, uuidv7 0.7.2 for request IDs (bumped from 1.2.0 / 0.5.0 in 0.7.0; see README "Compatibility"). Bouncy Castle for secp256k1 only (JVM). nacljc for the `:sodium` backend (alias `:sodium`: local snapshot jar, not published).
 - **Key fields**: JWK-inspired — `:x` (public), `:d` (private), `:crv` (:Ed25519/:X25519), `:type` (dispatch tag)
@@ -124,6 +124,8 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   they are deprecated in that release (decision 17), not removed.
 - **0.9.2 (released 2026-09-26):** cedn 1.6.1 (Devin review fixes: `#inst`
   locale independence, JS large numbers, java.sql dates). No signet code change.
+- **0.9.3 (released 2026-09-26):** nacljc 0.3.2; every function (255)
+  states Pure/Impure and its Throws :types; `bad-key!` and `meta!` renamed.
 - **main is 0.10.0-SNAPSHOT** (nothing started). Audience (docs/07,
   2026-09-25): signet protects developers from mistakes and ordinary
   exposure; determined adversaries with code execution are documented, not
@@ -269,5 +271,7 @@ The same convention holds in canonical-edn, uuidv7, nacljc and signet
   shell). When a function both computes and writes, offer the pure one and
   make the write a separate, explicit `!` call, rather than only renaming.
 
-Existing names that break this rule were inventoried on 2026-09-23 and
-have not been renamed yet.
+Every function, public and private, follows this since 0.9.3 (a check:
+each docstring's first paragraph says `Pure`, `Impure: …` or `Never
+returns`). The private throw-only helpers `ssh/bad-key!` and `shared/meta!`
+were renamed (`throw-bad-key`, `checked-meta`).

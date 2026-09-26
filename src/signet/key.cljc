@@ -89,7 +89,8 @@
 ;; -- URN helpers
 
 (defn- urn-algorithm
-  "Return the URN algorithm component for a key's curve."
+  "Return the URN algorithm component for a key's curve.
+   Pure."
   [crv]
   (case crv
     :Ed25519   "ed25519"
@@ -221,14 +222,28 @@
 ;; via the :signet/signing-* parent tags. Use record-instance checks or
 ;; (= (:crv k) :Ed25519) when curve-specific behavior is needed.
 
-(defn signing-keypair?      [k] (and k (isa? (:type k) :signet/signing-keypair)))
-(defn signing-public-key?   [k] (and k (isa? (:type k) :signet/signing-public-key)))
-(defn signing-private-key?  [k] (and k (isa? (:type k) :signet/signing-private-key)))
+(defn signing-keypair?
+  "Is k an Ed25519 or secp256k1 keypair record? Pure."
+  [k] (and k (isa? (:type k) :signet/signing-keypair)))
+(defn signing-public-key?
+  "Is k a signing public key record? Pure."
+  [k] (and k (isa? (:type k) :signet/signing-public-key)))
+(defn signing-private-key?
+  "Is k a signing private key record? Pure."
+  [k] (and k (isa? (:type k) :signet/signing-private-key)))
 
-(defn encryption-keypair?     [k] (= (:type k) :signet/x25519-keypair))
-(defn encryption-public-key?  [k] (= (:type k) :signet/x25519-public-key))
-(defn encryption-private-key? [k] (= (:type k) :signet/x25519-private-key))
-(defn raw-shared-secret?             [k] (= (:type k) :signet/x25519-shared-secret))
+(defn encryption-keypair?
+  "Is k an X25519 keypair record? Pure."
+  [k] (= (:type k) :signet/x25519-keypair))
+(defn encryption-public-key?
+  "Is k an X25519 public key record? Pure."
+  [k] (= (:type k) :signet/x25519-public-key))
+(defn encryption-private-key?
+  "Is k an X25519 private key record? Pure."
+  [k] (= (:type k) :signet/x25519-private-key))
+(defn raw-shared-secret?
+  "Is k an X25519 shared-secret record? Pure."
+  [k] (= (:type k) :signet/x25519-shared-secret))
 
 ;; -- Dispatch helpers
 
@@ -242,7 +257,8 @@
      (:secp256k1)          → [:generate :secp256k1]
      (m)                   → [:map (:type m)]
      (x d)                 → [:from-bytes]          (Ed25519 default)
-     (:secp256k1 x d)      → [:from-bytes :secp256k1]"
+     (:secp256k1 x d)      → [:from-bytes :secp256k1]
+   Pure."
   [& args]
   (case (count args)
     0 [:generate]
@@ -595,7 +611,10 @@
 
 (defn kid->public-key
   "Parse a kid URN and return the public key record.
-   Extracts the algorithm and public key bytes from the URN."
+   Extracts the algorithm and public key bytes from the URN.
+   Pure.
+   Throws for a kid that is not a signet URN of a known algorithm, or whose
+   key is not base64url."
   [kid-str]
   (let [[_ _ _ alg b64] (str/split kid-str #":")]
     (case alg
@@ -613,7 +632,9 @@
 
    NOTE: hex is a lossy representation — it drops the algorithm tag
    that the URN carries. Use only for interop with external tools
-   that expect raw hex."
+   that expect raw hex.
+   Pure.
+   Throws what kid->public-key throws."
   [k]
   (let [pub (if (string? k) (kid->public-key k) (public-key k))]
     (enc/bytes->hex (:x pub))))
@@ -645,7 +666,9 @@
 ;; ============================================================
 
 (defn- do-raw-shared-secret
-  "Perform DH given X25519 private bytes, X25519 public bytes, and both kids."
+  "Perform DH given X25519 private bytes, X25519 public bytes, and both kids.
+   Pure.
+   Throws what the backend's x25519-dh throws (a low-order public key)."
   [our-priv their-pub kid-a kid-b]
   #?(:clj  (let [k (impl/x25519-dh our-priv their-pub)]
              (->X25519SharedKey :signet/x25519-shared-secret :X25519 k kid-a kid-b))
@@ -728,7 +751,8 @@
    (do
      (defn- printable
        "A map describing key k for printing: its type, curve and kid, with
-        every secret field replaced by \"<redacted>\"."
+        every secret field replaced by \"<redacted>\".
+        Pure."
        [k]
        (let [kid-str (when (contains? k :crv)
                        (try (kid k) (catch Exception _ nil)))]
@@ -740,7 +764,9 @@
            (:kid-a k)        (assoc :kid-a (:kid-a k))
            (:kid-b k)        (assoc :kid-b (:kid-b k)))))
 
-     (defn- print-key [k ^java.io.Writer w]
+     (defn- print-key
+       "Print k as #signet/key {...} with secrets redacted. Impure: writes w."
+       [k ^java.io.Writer w]
        (.write w "#signet/key ")
        (print-method (printable k) w))
 

@@ -41,23 +41,29 @@
      (def ^:private header-slots #{:type :v :from :to :aad :nonce})
 
      (defn- x-pub
-       "The X25519 public key bytes of a key record or a vault handle."
+       "The X25519 public key bytes of a key record or a vault handle.
+        Impure for a handle: reads the vault's public side; pure for a record."
        [k]
        (:x (key/encryption-public-key (if (vault/handle? k) (vault/public-key k) k))))
 
-     (defn- x-priv [k] (:d (key/encryption-private-key k)))
+     (defn- x-priv
+       "The X25519 private key bytes of key record k (Ed25519 converted). Pure."
+       [k] (:d (key/encryption-private-key k)))
 
      (defn- dh
        "X25519 of our key (a keypair, or a handle: the DH then runs on
         material the vault lends for this call) with their X25519 public key
-        bytes. The caller wipes the result."
+        bytes. The caller wipes the result.
+        Impure for a handle: reads the vault; pure for a record.
+        Throws what the backend's x25519-dh throws (a low-order public key)."
        [ours their-xpk]
        (if (vault/handle? ours)
          (vault/x25519-dh ours their-xpk)
          (impl/x25519-dh (x-priv ours) their-xpk)))
 
      (defn- has-private?
-       "A keypair with its private part, or a handle whose vault holds it."
+       "A keypair with its private part, or a handle whose vault holds it.
+        Impure for a handle: reads the vault; pure for a record."
        [k]
        (if (vault/handle? k)
          (some? (vault/handle (:vault k) (:kid k)))
@@ -72,7 +78,8 @@
 
      (defn- message-key!
        "HKDF key for one message, bound to its direction. Consumes (wipes)
-        the DH output."
+        the DH output.
+        Impure: wipes (destroys) shared."
        [shared ^bytes nonce ^bytes sender-xpk ^bytes recipient-xpk]
        (let [info (byte-array (+ (alength info-prefix) 64))]
          (System/arraycopy info-prefix 0 info 0 (alength info-prefix))
@@ -124,11 +131,14 @@
 
 #?(:clj
    (do
-     (defn- expected-set [e] (cond (set? e) e (some? e) #{e}))
+     (defn- expected-set
+       "e as a set of kids: a set as is, one kid in a set, nil for nil. Pure."
+       [e] (cond (set? e) e (some? e) #{e}))
 
      (defn- same-identity?
        "Do kid string kid and key record pub name the same X25519 key? The
-        kid form (Ed25519 or X25519) does not matter."
+        kid form (Ed25519 or X25519) does not matter.
+        Impure: reads the vault's public side (vault/lookup)."
        [kid pub]
        (when-let [p (vault/lookup kid)]
          (java.util.Arrays/equals (x-pub p) (x-pub pub))))
@@ -136,7 +146,8 @@
      (defn- recipient-candidates
        "The keys unbox may try: a vault id (every key that vault holds), a
         handle, a keypair, or a collection of handles and keypairs. Handles
-        whose key is gone and keys without a private part are dropped."
+        whose key is gone and keys without a private part are dropped.
+        Impure: reads the vault."
        [x]
        (->> (cond (keyword? x)       (vault/handles x)
                   (vault/handle? x)  [x]
@@ -145,11 +156,14 @@
                   :else              [])
             (filter has-private?)))
 
-     (defn- invalid [reason & [extra]]
+     (defn- invalid
+       "An {:valid? false :error reason} result, merged with extra. Pure."
+       [reason & [extra]]
        (merge {:valid? false :error reason} extra))
 
      (defn- shape-error
-       "Why boxed is not a well-formed v2 box, or nil."
+       "Why boxed is not a well-formed v2 box, or nil.
+        Pure."
        [boxed]
        (cond
          (not (map? boxed))                                  :malformed
@@ -162,7 +176,9 @@
          (and (contains? boxed :to) (not (string? (:to boxed))))     :bad-to))
 
      (defn- try-open
-       "Plaintext if the box opens for this recipient/sender pair, else nil."
+       "Plaintext if the box opens for this recipient/sender pair, else nil.
+        Impure: reads the vault (for handles). Never throws for a box that
+        does not open: returns nil."
        [boxed recipient sender]
        (let [nonce (:nonce boxed)
              k     (message-key! (dh recipient (x-pub sender))

@@ -1,6 +1,23 @@
 # Changelog
 
-## 0.10.0 (unreleased)
+## 0.9.3 (2026-09-26)
+
+### Changed
+
+- **nacljc 0.3.2** (fixes from a review of nacljc):
+  - X-Wing operations wipe 64 KiB of stack instead of 16 KiB, and
+    X-Wing encapsulation now wipes at all.
+  - `with-secret` keeps the body's exception when destroying the secret
+    also fails.
+- **Every function states its purity and errors**, public and private, in
+  the fixed wording of the naming convention: `Pure.`, `Impure: <what it
+  reads or writes>`, and `Throws ex-info {:type ::x} when …`. Functions
+  that take a key record or a handle say which one reads the vault.
+  Docstrings only, except as follows.
+- `encoding/hex->bytes`: the odd-length error now carries
+  `{:type :signet.encoding/bad-hex}`.
+- Private helpers renamed to the convention (`!` only for writes):
+  `ssh/bad-key!` is `throw-bad-key`, `shared/meta!` is `checked-meta`.
 
 ## 0.9.2 (2026-09-26)
 

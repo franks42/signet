@@ -49,7 +49,9 @@
                       t)))))
 
 (defn- f
-  "The selected backend's function named sym."
+  "The selected backend's function named sym.
+   Pure (the backend is fixed at load).
+   Throws ex-info when the backend lacks sym."
   [sym]
   (or (some-> (ns-resolve backend-ns sym) deref)
       (throw (ex-info (str backend-ns " has no " sym) {:backend backend}))))

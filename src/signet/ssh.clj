@@ -21,14 +21,19 @@
 ;; Error data names the reason, never key bytes.
 ;; ---------------------------------------------------------------------------
 
-(defn- bad-key! [reason msg]
+(defn- throw-bad-key
+  "Throws ex-info {:type ::bad-ssh-key :reason reason} with msg. Never
+   returns."
+  [reason msg]
   (throw (ex-info (str "Not a usable SSH Ed25519 key: " msg)
                   {:type ::bad-ssh-key :reason reason})))
 
 (defn- read-uint32
-  "Big-endian uint32 from byte vector bs at offset (bounds-checked)."
+  "Big-endian uint32 from byte vector bs at offset (bounds-checked).
+   Pure.
+   Throws ex-info {:type ::bad-ssh-key :reason :truncated} past the end."
   [bs offset]
-  (when (> (+ offset 4) (count bs)) (bad-key! :truncated "truncated"))
+  (when (> (+ offset 4) (count bs)) (throw-bad-key :truncated "truncated"))
   (bit-or (bit-shift-left (bit-and (nth bs offset) 0xff) 24)
           (bit-shift-left (bit-and (nth bs (+ offset 1)) 0xff) 16)
           (bit-shift-left (bit-and (nth bs (+ offset 2)) 0xff) 8)
@@ -36,30 +41,39 @@
 
 (defn- read-ssh-string
   "A length-prefixed string/bytes from byte vector bs at offset
-   (bounds-checked). Returns {:value byte-vector :next next-offset}."
+   (bounds-checked). Returns {:value byte-vector :next next-offset}.
+   Pure.
+   Throws ex-info {:type ::bad-ssh-key :reason :truncated} past the end."
   [bs offset]
   (let [len (read-uint32 bs offset)
         end (+ offset 4 len)]
-    (when (> end (count bs)) (bad-key! :truncated "truncated"))
+    (when (> end (count bs)) (throw-bad-key :truncated "truncated"))
     {:value (subvec bs (+ offset 4) end)
      :next  end}))
 
-(defn- bytes->str [v] (String. (byte-array v) "UTF-8"))
+(defn- bytes->str
+  "The UTF-8 string of byte vector v. Pure."
+  [v] (String. (byte-array v) "UTF-8"))
 
-(defn- base64-decode [^String s]
+(defn- base64-decode
+  "s decoded, as a byte vector. Pure.
+   Throws ex-info {:type ::bad-ssh-key :reason :bad-base64} for non-base64."
+  [^String s]
   (try (vec (.decode (java.util.Base64/getDecoder) s))
-       (catch IllegalArgumentException _ (bad-key! :bad-base64 "not base64"))))
+       (catch IllegalArgumentException _ (throw-bad-key :bad-base64 "not base64"))))
 
 (defn- ed25519-public-blob
   "The 32-byte public key inside an SSH public-key blob
-   (string \"ssh-ed25519\" + string pk)."
+   (string \"ssh-ed25519\" + string pk).
+   Pure.
+   Throws ex-info {:type ::bad-ssh-key} for another key type or size."
   [blob]
   (let [t  (read-ssh-string blob 0)
         pk (read-ssh-string blob (:next t))]
     (when-not (= "ssh-ed25519" (bytes->str (:value t)))
-      (bad-key! :not-ed25519 (str "key type " (pr-str (bytes->str (:value t))))))
+      (throw-bad-key :not-ed25519 (str "key type " (pr-str (bytes->str (:value t))))))
     (when-not (= 32 (count (:value pk)))
-      (bad-key! :bad-length "the public key is not 32 bytes"))
+      (throw-bad-key :bad-length "the public key is not 32 bytes"))
     (:value pk)))
 
 ;; ---------------------------------------------------------------------------
@@ -79,8 +93,8 @@
   [ssh-pub-line]
   (let [[kind b64] (str/split (str/trim (str ssh-pub-line)) #"\s+")]
     (when-not (= "ssh-ed25519" kind)
-      (bad-key! :not-ed25519 (str "key type " (pr-str kind))))
-    (when-not b64 (bad-key! :truncated "no key data"))
+      (throw-bad-key :not-ed25519 (str "key type " (pr-str kind))))
+    (when-not b64 (throw-bad-key :truncated "no key data"))
     (key/->Ed25519PublicKey :signet/ed25519-public-key :Ed25519
                             (byte-array (ed25519-public-blob (base64-decode b64))))))
 
@@ -112,7 +126,7 @@
     (when-not (and (> (count decoded) 15)
                    (= magic (bytes->str (subvec decoded 0 14)))
                    (zero? (nth decoded 14)))
-      (bad-key! :not-openssh "not an OpenSSH private key"))
+      (throw-bad-key :not-openssh "not an OpenSSH private key"))
     (let [cipher  (read-ssh-string decoded 15)
           kdf     (read-ssh-string decoded (:next cipher))
           kdfopts (read-ssh-string decoded (:next kdf))
@@ -121,8 +135,8 @@
           priv    (read-ssh-string decoded (:next pubblob))]
       (when-not (and (= "none" (bytes->str (:value cipher)))
                      (= "none" (bytes->str (:value kdf))))
-        (bad-key! :encrypted "passphrase-protected keys are not supported; decrypt it first (ssh-keygen -p)"))
-      (when-not (= 1 nkeys) (bad-key! :key-count (str nkeys " keys in one file")))
+        (throw-bad-key :encrypted "passphrase-protected keys are not supported; decrypt it first (ssh-keygen -p)"))
+      (when-not (= 1 nkeys) (throw-bad-key :key-count (str nkeys " keys in one file")))
       (let [pub      (ed25519-public-blob (:value pubblob))
             blob     (:value priv)
             check1   (read-uint32 blob 0)
@@ -131,12 +145,12 @@
             pub2     (read-ssh-string blob (:next ktype))
             secret   (read-ssh-string blob (:next pub2))
             sk       (:value secret)]
-        (when-not (= check1 check2) (bad-key! :check-int-mismatch "the check-ints differ (corrupt or wrongly decrypted)"))
+        (when-not (= check1 check2) (throw-bad-key :check-int-mismatch "the check-ints differ (corrupt or wrongly decrypted)"))
         (when-not (= "ssh-ed25519" (bytes->str (:value ktype)))
-          (bad-key! :not-ed25519 "the private key is not ssh-ed25519"))
-        (when-not (= 64 (count sk)) (bad-key! :bad-length "the private key is not 64 bytes"))
+          (throw-bad-key :not-ed25519 "the private key is not ssh-ed25519"))
+        (when-not (= 64 (count sk)) (throw-bad-key :bad-length "the private key is not 64 bytes"))
         (when-not (= pub (:value pub2) (subvec sk 32 64))
-          (bad-key! :public-key-mismatch "the public key copies disagree"))
+          (throw-bad-key :public-key-mismatch "the public key copies disagree"))
         (key/->Ed25519KeyPair :signet/ed25519-keypair :Ed25519
                               (byte-array pub) (byte-array (subvec sk 0 32)))))))
 
@@ -202,7 +216,7 @@
              h  (vault/import-signing-key! vault-id (:d kp))]
          (when-not (= (:kid h) (key/kid (key/signing-public-key kp)))
            (vault/destroy! h)
-           (bad-key! :public-key-mismatch "the seed does not give the file's public key"))
+           (throw-bad-key :public-key-mismatch "the seed does not give the file's public key"))
          h)))))
 
 (defn ^{:deprecated "0.9.0"} load-keypair!

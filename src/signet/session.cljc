@@ -73,13 +73,15 @@
   nil)
 
 (defn- created!
-  "Record handles as created by the current call; returns the first."
+  "Record handles as created by the current call; returns the first.
+   Impure: appends to *created* (when consume! has bound it)."
   [h & more]
   (when-let [c *created*] (vswap! c into (cons h more)))
   h)
 
 (defn- live-handles
-  "The vault handles a state holds (never the caller's static key)."
+  "The vault handles a state holds (never the caller's static key).
+   Pure."
   [state]
   (set (remove nil? [(when (vault/handle? (:ck state)) (:ck state))
                      (:k state)
@@ -90,31 +92,40 @@
 #?(:clj
    (defn- destroy-quietly!
      "Destroy h, leaving it to close! if that fails (for example a secret
-      still in use by a racing call on another thread)."
+      still in use by a racing call on another thread).
+      Impure: writes the vault. Never throws."
      [h]
      (try (vault/destroy! h) (catch Exception _ nil))))
 
 #?(:clj
    (defn- fresh-marker
      "A one-shot marker for a session state value. Every state
-      write-message! / read-message! returns gets a fresh one."
+      write-message! / read-message! returns gets a fresh one.
+      Impure: returns a new, unset marker (it is mutable)."
      []
      ;; A Clojure atom, not AtomicBoolean: bb does not expose the latter,
      ;; and compare-and-set! is an atomic CAS on both platforms.
      (atom false)))
 
 #?(:clj
-   (defn- throw-stale []
+   (defn- throw-stale
+     "Throws ex-info {:type ::stale-session-state}. Never returns."
+     []
      (throw (ex-info "Stale session state: it was already used. Use the state returned by the previous write-message!/read-message!"
                      {:type ::stale-session-state}))))
 
 #?(:clj
-   (defn- throw-closed []
+   (defn- throw-closed
+     "Throws ex-info {:type ::session-closed}. Never returns."
+     []
      (throw (ex-info "The session was closed (close! or the end of with-conclave)"
                      {:type ::session-closed}))))
 
 #?(:clj
-   (defn- check-state [state]
+   (defn- check-state
+     "state, if it carries the session markers; throws otherwise. Pure.
+      Throws ex-info {:type ::not-a-session-state} otherwise."
+     [state]
      (when-not (and (instance? clojure.lang.Atom (:consumed state))
                     (instance? clojure.lang.Atom (:closed state)))
        (throw (ex-info "Not a signet session state (missing single-use marker)"
@@ -183,7 +194,10 @@
      "AEAD-decrypt a session message under key handle k. Every failure
       (forged, tampered, replayed out of order, wrong key) becomes one
       backend-independent error, {:type ::authentication-failed}, instead
-      of whatever the JCA or libsodium backend throws."
+      of whatever the JCA or libsodium backend throws.
+      Impure: reads the vault (the key).
+      Throws ex-info {:type ::authentication-failed} for every decryption
+      failure."
      [k nonce ciphertext aad]
      (try
        (vault/aead-decrypt k nonce ciphertext aad)
@@ -192,7 +206,9 @@
                          {:type ::authentication-failed} e))))))
 
 #?(:clj
-   (defn- sha-256-bytes [^bytes data]
+   (defn- sha-256-bytes
+     "Pure."
+     [^bytes data]
      (impl/sha-256 data)))
 
 #?(:clj
@@ -200,7 +216,8 @@
      "h ← SHA-256(h ‖ data). The transcript hash binds every AEAD
       ciphertext to the entire history of the handshake — an attacker
       who reorders or substitutes prior messages will fail decryption
-      on the next one."
+      on the next one.
+      Pure."
      [{:keys [h] :as state} ^bytes data]
      (let [combined (byte-array (+ (alength ^bytes h) (alength data)))]
        (System/arraycopy ^bytes h 0 combined 0 (alength ^bytes h))
@@ -222,7 +239,8 @@
 #?(:clj
    (defn- aead-nonce
      "Noise's AEAD nonce encoding (spec §5.1): 4 zero bytes followed by
-      the 8-byte little-endian counter. Total 12 bytes for ChaCha-Poly."
+      the 8-byte little-endian counter. Total 12 bytes for ChaCha-Poly.
+      Pure."
      [^long n]
      (let [out (byte-array 12)]
        ;; Bytes 0-3 are zero (already set by byte-array). Bytes 4-11
@@ -236,7 +254,8 @@
      "Encrypt `plaintext` under k (with h as AAD), increment n, then
       MixHash the produced ciphertext. If k is nil (no MixKey has run
       yet), passes plaintext through and just MixHashes it. Returns
-      [new-state ciphertext-bytes]."
+      [new-state ciphertext-bytes].
+      Impure: reads the vault (the key k)."
      [{:keys [k n h] :as state} ^bytes plaintext]
      (if k
        (let [ct       (vault/aead-encrypt k (aead-nonce n) plaintext h)
@@ -251,7 +270,9 @@
       failure — which signals tampering, wrong sender, or a wrong
       shared key from a botched DH. Important detail: MixHash is
       called with the CIPHERTEXT (not the plaintext) so both sides
-      compute the same h regardless of who decrypted."
+      compute the same h regardless of who decrypted.
+      Impure: reads the vault (the key k).
+      Throws ex-info {:type ::authentication-failed} (see open-aead)."
      [{:keys [k n h] :as state} ^bytes ciphertext]
      (if k
        (let [pt     (open-aead k (aead-nonce n) ciphertext h)
@@ -300,13 +321,16 @@
      #{:signet/ephemeral-x25519-keypair :signet/ephemeral-x25519-public-key}))
 
 #?(:clj
-   (defn- ephemeral? [k] (contains? ephemeral-types (:type k))))
+   (defn- ephemeral?
+     "Pure."
+     [k] (contains? ephemeral-types (:type k))))
 
 #?(:clj
    (defn- ->x25519-public-bytes
      "The 32-byte X25519 public key of a key record, an ephemeral, or a
       vault handle. X25519 keys are used as-is; Ed25519 identity keys go
-      through signet.key's conversion."
+      through signet.key's conversion.
+      Impure for a handle: reads the vault's public side; pure for a record."
      [k]
      (cond
        (vault/handle? k) (recur (vault/public-key k))
@@ -320,7 +344,8 @@
    (defn- ->x25519-private-bytes
      "The 32-byte X25519 private key of a static X25519 keypair record or,
       via conversion, of a static Ed25519 keypair record (deprecated
-      inputs; handles never expose their key)."
+      inputs; handles never expose their key).
+      Pure."
      [k]
      (case (:type k)
        :signet/x25519-keypair (:d k)
@@ -344,7 +369,9 @@
       handle computes inside the vault (the result is material that
       mix-key! consumes: bytes, or a nacljc secret under :sodium); a
       deprecated key record computes on the backend directly. Nothing is
-      registered anywhere."
+      registered anywhere.
+      Impure for a handle or an ephemeral: reads the vault; pure for a key
+      record. Throws what the backend's x25519-dh throws (a low-order key)."
      [local remote-pub]
      (let [their (->x25519-public-bytes remote-pub)]
        (cond
@@ -357,7 +384,10 @@
      "Static-static DH — Noise token ss. Returns the shared secret, which
       mix-key! consumes and destroys. Never registers keys.
       Throws ::ephemeral-in-dh if either side is ephemeral: that is edh's
-      job, and mixing them up must fail loudly, not silently."
+      job, and mixing them up must fail loudly, not silently.
+      Impure: as x25519-dh*.
+      Throws ex-info {:type ::ephemeral-in-dh} as above, and what x25519-dh*
+      throws."
      [local-static remote-static-pub]
      (when (or (ephemeral? local-static) (ephemeral? remote-static-pub))
        (throw (ex-info "dh is for static keys only (Noise ss); use edh for es/ee/se"
@@ -370,7 +400,10 @@
       ephemeral key. Never registers keys; the output is consumed and
       destroyed by mix-key!, and the local ephemeral is destroyed after
       Split. Ephemerals never leave this namespace. Throws
-      ::no-ephemeral-in-edh if neither side is ephemeral (that is dh)."
+      ::no-ephemeral-in-edh if neither side is ephemeral (that is dh).
+      Impure: as x25519-dh*.
+      Throws ex-info {:type ::no-ephemeral-in-edh} as above, and what
+      x25519-dh* throws."
      [local remote-pub]
      (when-not (or (ephemeral? local) (ephemeral? remote-pub))
        (throw (ex-info "edh needs an ephemeral key on at least one side (Noise es/ee/se); use dh for ss"
@@ -383,6 +416,8 @@
 
 #?(:clj
    (defn- initial-symmetric-state
+     "Pure."
+
      []
      ;; Spec §5.2: if len(protocol-name) ≤ 32 bytes, h = pad-with-zeros
      ;; to 32. Our name is exactly 32, so h = protocol-name as bytes.
@@ -399,7 +434,8 @@
       on — initiator's static, then responder's static. Pre-message
       processing runs no DHs; it only updates the transcript hash so
       that the static identities are bound into every subsequent AEAD
-      tag via h-as-AAD."
+      tag via h-as-AAD.
+      Pure."
      [state init-static-pub-bytes resp-static-pub-bytes]
      (-> state
          (mix-hash init-static-pub-bytes)
@@ -409,7 +445,9 @@
    (defn- check-local-static
      "The local static key: a vault handle for a key its vault holds (an
       X25519 or Ed25519 identity), or a deprecated key record with its
-      private part. Returns the vault id the session's secrets go into."
+      private part. Returns the vault id the session's secrets go into.
+      Impure: reads the vault.
+      Throws ex-info {:type ::no-private-key} for a key it cannot use."
      [local opts]
      (cond
        (vault/handle? local)
@@ -431,7 +469,9 @@
 #?(:clj
    (defn- resolve-remote
      "The peer's static public key: a key record, or a kid resolved through
-      the vault (its public side, else parsed from the kid)."
+      the vault (its public side, else parsed from the kid).
+      Impure: reads the vault's public side (for a kid).
+      Throws ex-info {:type ::unknown-peer} for a kid that cannot be resolved."
      [vault-id remote]
      (if (string? remote)
        (or (vault/lookup vault-id remote)
@@ -443,7 +483,9 @@
    (defn- start-handshake
      "Common scaffolding for both initiator and responder: build the
       symmetric state, mix in the prologue (defaults to empty bytes), then
-      run the pre-message MixHashes."
+      run the pre-message MixHashes.
+      Impure: draws a random session id and reads the vault.
+      Throws what check-local-static and resolve-remote throw."
      [role local-static remote-static prologue opts]
      (let [vault-id              (check-local-static local-static opts)
            remote-static-pub     (resolve-remote vault-id remote-static)
@@ -512,7 +554,8 @@
    (defn responder
      "Return a fresh Noise_KK responder handshake state. See
       `initiator` for argument shape, purity and errors; the only
-      difference is which role this side plays."
+      difference is which role this side plays.
+      Impure and throws as initiator."
      ([local-static remote-static]
       (responder local-static remote-static nil))
      ([local-static remote-static {:keys [prologue] :as opts}]
@@ -543,7 +586,9 @@
       - DH(my-ephemeral-priv, their-static-pub) → MixKey  (es)
       - DH(my-static-priv,    their-static-pub) → MixKey  (ss)
       - EncryptAndHash(payload). After 'es' the AEAD key exists,
-        so the payload is now encrypted under the chained ck."
+        so the payload is now encrypted under the chained ck.
+      Impure: draws from the CSPRNG and writes the vault (the ephemeral, ck
+      and k)."
      [{:keys [local-static remote-static-pub vault session-id] :as state} payload]
      (let [eph        (fresh-ephemeral vault session-id)
            eph-pub-bs (:x eph)
@@ -564,7 +609,10 @@
       - read ephemeral public key (32 bytes), MixHash it
       - DH(my-static-priv, their-ephemeral-pub) → MixKey (es)
       - DH(my-static-priv, their-static-pub)    → MixKey (ss)
-      - DecryptAndHash(payload)."
+      - DecryptAndHash(payload).
+      Impure: writes the vault (ck and k).
+      Throws ex-info {:type ::handshake-message-too-short} and
+      {:type ::authentication-failed}."
      [{:keys [local-static remote-static-pub] :as state} ^bytes msg]
      (when (< (alength msg) (+ 32 16))
        (throw (ex-info "Noise KK message 1 too short"
@@ -602,7 +650,9 @@
         this uses *my ephemeral* against *their static*, not the
         other way around, because the token's `s` is the INITIATOR's
         static, not the local sender's.
-      - EncryptAndHash(payload). After both DHs, Split into transport."
+      - EncryptAndHash(payload). After both DHs, Split into transport.
+      Impure: draws from the CSPRNG and writes the vault (the ephemeral, ck,
+      k and the transport keys)."
      [{:keys [remote-static-pub remote-ephemeral-pub vault session-id] :as state} payload]
      (let [eph        (fresh-ephemeral vault session-id)
            eph-pub-bs (:x eph)
@@ -623,7 +673,10 @@
       - read responder ephemeral pub, MixHash
       - DH(my-ephemeral-priv, their-ephemeral-pub) → MixKey (ee)
       - DH(my-static-priv, their-ephemeral-pub)     → MixKey (se)
-      - DecryptAndHash(payload). Then Split."
+      - DecryptAndHash(payload). Then Split.
+      Impure: writes the vault (ck, k and the transport keys).
+      Throws ex-info {:type ::handshake-message-too-short} and
+      {:type ::authentication-failed}."
      [{:keys [local-static local-ephemeral] :as state} ^bytes msg]
      (when (< (alength msg) (+ 32 16))
        (throw (ex-info "Noise KK message 2 too short"
@@ -644,7 +697,8 @@
 #?(:clj
    (defn- write-message-transport
      "AEAD-encrypt `plaintext` under the send key. The send counter
-      increments; no transcript hash is involved post-Split."
+      increments; no transcript hash is involved post-Split.
+      Impure: reads the vault (the send key)."
      [{:keys [send] :as state} ^bytes plaintext]
      (let [{:keys [k n]} send
            ct (vault/aead-encrypt k (aead-nonce n) plaintext nil)]
@@ -652,7 +706,9 @@
 
 #?(:clj
    (defn- read-message-transport
-     "Inverse of write-message-transport. Throws on AEAD auth failure."
+     "Inverse of write-message-transport. Throws on AEAD auth failure.
+      Impure: reads the vault (the receive key).
+      Throws ex-info {:type ::authentication-failed}."
      [{:keys [recv] :as state} ^bytes ciphertext]
      (let [{:keys [k n]} recv
            pt (open-aead k (aead-nonce n) ciphertext nil)]
@@ -661,7 +717,10 @@
 #?(:clj
    (defn- write-message*
      "Produce one outbound Noise message: [next-state ciphertext-bytes].
-      Throws if the state is not currently expecting an outbound message."
+      Throws if the state is not currently expecting an outbound message.
+      Impure: as the message function it dispatches to.
+      Throws ex-info {:type ::wrong-message-phase}, and what that function
+      throws."
      [{:keys [phase role pos] :as state} plaintext]
      (cond
        (= phase :transport)
@@ -682,7 +741,10 @@
    (defn- read-message*
      "Process one inbound Noise message. Inverse of write-message*.
       Throws on AEAD authentication failure (tampered ciphertext,
-      wrong peer, wrong shared key) or wrong message phase."
+      wrong peer, wrong shared key) or wrong message phase.
+      Impure: as the message function it dispatches to.
+      Throws ex-info {:type ::wrong-message-phase}, and what that function
+      throws."
      [{:keys [phase role pos] :as state} ciphertext]
      (cond
        (= phase :transport)
@@ -774,7 +836,8 @@
       call. A session that outlives a block (one kept per connection)
       needs an explicit close!, for example when the connection closes.
       Any state or lazy value that escapes the block and is used later
-      throws {:type ::session-closed}."
+      throws {:type ::session-closed}.
+      Impure: closes the session (see close!)."
      [[sym init] & body]
      `(let [~sym ~init]
         (try ~@body (finally (close! ~sym))))))

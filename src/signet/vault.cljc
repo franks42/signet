@@ -44,7 +44,9 @@
   [x]
   (instance? KeyHandle x))
 
-(defn- ->handle [vault-id kid]
+(defn- ->handle
+  "A KeyHandle for kid in vault-id. Pure."
+  [vault-id kid]
   (->KeyHandle :signet/key-handle kid vault-id))
 
 ;; ============================================================
@@ -65,13 +67,18 @@
   (-destroy! [p kid] "Wipe and forget kid's material. Returns true if it held kid."))
 
 #?(:clj
-   (defn- wipe! [^bytes bs] (when bs (java.util.Arrays/fill bs (byte 0)))))
+   (defn- wipe!
+     "Overwrite bs with zeros. Impure: writes bs."
+     [^bytes bs] (when bs (java.util.Arrays/fill bs (byte 0)))))
 
-(defn- copy-bytes [^bytes bs] #?(:clj (java.util.Arrays/copyOf bs (alength bs)) :cljs bs))
+(defn- copy-bytes
+  "A copy of bs (on JS the array itself). Pure."
+  [^bytes bs] #?(:clj (java.util.Arrays/copyOf bs (alength bs)) :cljs bs))
 
 (defn- public-key-record
   "The public key record for an Ed25519 seed or an X25519 secret key (bytes,
-   or whatever the backend accepts in their place)."
+   or whatever the backend accepts in their place).
+   Pure for byte material; with a nacljc secret, impure: reads it."
   [alg material]
   #?(:clj  (case alg
              :ed25519 (key/->Ed25519PublicKey :signet/ed25519-public-key :Ed25519
@@ -167,7 +174,8 @@
   (set (keys @vaults)))
 
 (defn- vault
-  "The vault named id. Throws ::unknown-vault, never falls back."
+  "The vault named id. Throws ::unknown-vault, never falls back.
+   Impure: reads the vault registry."
   [id]
   (or (get @vaults id)
       (throw (ex-info (str "Unknown vault " (pr-str id)) {:type ::unknown-vault :vault id}))))
@@ -207,7 +215,9 @@
    (or (get @(:public (vault vault-id)) kid)
        (key/lookup kid))))
 
-(defn- session-entry? [v kid] (contains? @(:session v) kid))
+(defn- session-entry?
+  "Is kid a session entry of vault v? Impure: reads the vault."
+  [v kid] (contains? @(:session v) kid))
 
 (defn handle
   "A handle for kid if vault's secret side (default :default) holds its
@@ -228,7 +238,10 @@
      (set (map #(->handle vault-id %)
                (remove #(session-entry? v %) (-kids (:provider v))))))))
 
-(defn- check-handle [h what]
+(defn- check-handle
+  "h, if it is a KeyHandle; throws otherwise. Pure.
+   Throws ex-info {:type ::not-a-handle} for anything else."
+  [h what]
   (when-not (handle? h)
     (throw (ex-info (str what " needs a key handle")
                     {:type ::not-a-handle :got (str (type h))})))
@@ -237,7 +250,8 @@
 (defn- provider-of
   "The provider holding h's key. Throws ::unknown-vault, or
    ::destroyed-key when the vault does not hold it (never held, or
-   destroyed)."
+   destroyed).
+   Impure: reads the vault."
   [h]
   (let [p (:provider (vault (:vault h)))]
     (when-not (-has? p (:kid h))
@@ -259,7 +273,8 @@
 
 (defn- add-key!
   "Record a key the provider now holds: its public key on the public side.
-   Returns its handle."
+   Returns its handle.
+   Impure: writes the vault's public side."
   [vault-id pub]
   (let [kid (key/kid pub)]
     (swap! (:public (vault vault-id)) assoc kid pub)
@@ -281,12 +296,19 @@
   ([vault-id]
    (add-key! vault-id (-generate! (:provider (vault vault-id)) :x25519))))
 
-(defn- check-secret-bytes [x what]
+(defn- check-secret-bytes
+  "Throws unless x is a 32-byte array. Pure.
+   Throws ex-info {:type ::bad-secret} otherwise."
+  [x what]
   (when-not (and #?(:clj (bytes? x) :cljs false) (= 32 (alength ^bytes x)))
     (throw (ex-info (str what " must be 32 bytes")
                     {:type ::bad-secret :what what :got (str (type x))}))))
 
-(defn- import-key! [vault-id alg secret-bytes]
+(defn- import-key!
+  "Import secret-bytes as a key of alg into vault-id; returns its handle.
+   Impure: writes the vault and wipes secret-bytes (also on failure).
+   Throws what the provider and the vault throw."
+  [vault-id alg secret-bytes]
   (try
     (add-key! vault-id (-import! (:provider (vault vault-id)) alg secret-bytes))
     (finally #?(:clj (wipe! secret-bytes)))))
@@ -363,7 +385,9 @@
     (->handle vault-id kid)))
 
 (defn ^:no-doc shared-meta
-  "INTERNAL to signet.shared: the public metadata of shared key h, or nil."
+  "INTERNAL to signet.shared: the public metadata of shared key h, or nil.
+   Impure: reads the vault.
+   Throws ex-info {:type ::unknown-vault} for an unknown vault."
   [h]
   (get @(:shared (vault (:vault h))) (:kid h)))
 
@@ -429,13 +453,17 @@
 ;; except session-entry-count (monitoring).
 ;; ============================================================
 
-(defn- new-entry-id []
+(defn- new-entry-id
+  "A random session-entry id, urn:signet:session:<base64url>. Impure:
+   draws from the CSPRNG."
+  []
   #?(:clj  (str "urn:signet:session:" (enc/bytes->base64url (impl/random-bytes 16)))
      :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
 
 (defn- adopt-session-entry!
   "Store material (the vault takes ownership) as a new session entry of
-   session-id. Returns its handle."
+   session-id. Returns its handle.
+   Impure: writes the vault."
   [vault-id session-id alg material]
   (let [v  (vault vault-id)
         id (new-entry-id)]

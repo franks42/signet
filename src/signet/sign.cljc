@@ -35,7 +35,9 @@
    (defn- secp256k1-fn
      "Lazy-resolve a function from signet.impl.jvm-secp256k1. Yields a
       clear error on bb (where BC isn't loadable) instead of the raw
-      ClassNotFoundException."
+      ClassNotFoundException.
+      Impure: may load the namespace (requiring-resolve).
+      Throws ex-info when Bouncy Castle cannot be loaded (bb)."
      [sym]
      (try
        (requiring-resolve sym)
@@ -45,7 +47,12 @@
                           :runtime (or (System/getProperty "babashka.version") :jvm)}
                          t))))))
 
-(defn- sign-with-keypair [k message-bytes]
+(defn- sign-with-keypair
+  "Ed25519 or secp256k1 signature of message-bytes with key record k.
+   Pure.
+   Throws ex-info {:type ::no-private-key} when k has no :d, and ex-info for
+   an unsupported curve."
+  [k message-bytes]
   (let [d (:d k)]
     (when-not d
       (throw (ex-info "Key has no private bytes (:d)" {:type ::no-private-key :key-type (:type k)})))
@@ -155,12 +162,14 @@
    (sign-edn (vault/ensure-default-signing-key!) payload opts)))
 
 (defn signed?
-  "Returns true if x is a signed envelope (reusable key)."
+  "Returns true if x is a signed envelope (reusable key).
+   Pure."
   [x]
   (and (map? x) (= :signet/signed (:type x))))
 
 (defn- expected-kid?
-  "Does kid satisfy the caller's expectation: a kid string or a set of them?"
+  "Does kid satisfy the caller's expectation: a kid string or a set of them?
+   Pure."
   [expected kid]
   (if (set? expected) (contains? expected kid) (= expected kid)))
 

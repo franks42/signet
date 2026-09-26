@@ -17,7 +17,9 @@
 
 (def ^:private ack {:i-understand :exposes-secret})
 
-(defn- public-key-record [alg s]
+(defn- public-key-record
+  "The public key record for alg and secret s. Impure: reads the secret."
+  [alg s]
   (case alg
     :ed25519 (key/->Ed25519PublicKey :signet/ed25519-public-key :Ed25519 (na/ed25519-public-key s))
     :x25519  (key/->X25519PublicKey :signet/x25519-public-key :X25519 (na/x25519-public-key s))))

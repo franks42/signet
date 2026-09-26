@@ -21,7 +21,9 @@
 
 (defn- read-bytes
   "If `s` starts with '@', read raw bytes from the named file; else
-   interpret `s` as a hex string."
+   interpret `s` as a hex string.
+   Impure: reads the file for an @path argument.
+   Throws ex-info when the file does not exist, and what hex->bytes throws."
   [s]
   (if (and s (.startsWith ^String s "@"))
     (let [path (subs s 1)
@@ -34,7 +36,10 @@
         out))
     (enc/hex->bytes s)))
 
-(defn- parse-args [args]
+(defn- parse-args
+  "Command-line args (--key value pairs) as a map. Pure.
+   Throws ex-info for an argument that is not a --flag."
+  [args]
   (loop [acc {} [k v & more] args]
     (cond
       (nil? k) acc
@@ -42,12 +47,18 @@
       (recur (assoc acc (keyword (subs k 2)) v) more)
       :else (throw (ex-info (str "unexpected arg: " k) {:arg k})))))
 
-(defn- die [code msg]
+(defn- die
+  "Print msg to stderr and exit with code. Impure: writes stderr, exits the
+   process. Never returns."
+  [code msg]
   (binding [*out* *err*]
     (println msg))
   (System/exit code))
 
-(defn -main [& args]
+(defn -main
+  "Verify a signature from the command line. Impure: reads files, writes
+   stdout and stderr, exits the process."
+  [& args]
   (let [opts (try (parse-args args)
                   (catch Exception e (die 2 (str "argument error: " (ex-message e)))))
         curve (keyword (or (:curve opts) "ed25519"))

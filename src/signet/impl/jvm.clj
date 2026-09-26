@@ -20,7 +20,8 @@
 
 (defn- extract-raw-keys
   "Extract raw key bytes from a JCA KeyPair.
-   Returns [public-key-bytes private-key-bytes]."
+   Returns [public-key-bytes private-key-bytes].
+   Pure."
   [kp]
   (let [x509-bytes (.getEncoded (.getPublic kp))
         pub-bytes (Arrays/copyOfRange x509-bytes 12 44)
@@ -30,7 +31,8 @@
 
 (defn- seed->keypair-via-kpg
   "Derive a JCA KeyPair from a seed by feeding it to KeyPairGenerator
-   via a custom SecureRandom. Works for both Ed25519 and X25519."
+   via a custom SecureRandom. Works for both Ed25519 and X25519.
+   Pure (the fake SecureRandom returns only the copied seed)."
   [^String algorithm ^bytes seed-bytes]
   (let [seed-copy (byte-array seed-bytes)
         fake-random (proxy [SecureRandom] []
@@ -47,24 +49,28 @@
     (.generateKeyPair kpg)))
 
 (defn generate-ed25519-keypair
-  "Generate an Ed25519 keypair. Returns [public-key-bytes private-key-seed-bytes]."
+  "Generate an Ed25519 keypair. Returns [public-key-bytes private-key-seed-bytes].
+   Impure: draws from the CSPRNG."
   []
   (extract-raw-keys (.generateKeyPair (KeyPairGenerator/getInstance "Ed25519"))))
 
 (defn ed25519-seed->public-key
-  "Derive the Ed25519 public key (32 bytes) from a seed (32 bytes)."
+  "Derive the Ed25519 public key (32 bytes) from a seed (32 bytes).
+   Pure."
   [seed-bytes]
   (let [[pub-bytes _] (extract-raw-keys (seed->keypair-via-kpg "Ed25519" seed-bytes))]
     pub-bytes))
 
 (defn sha-256
-  "Compute SHA-256 hash of byte array. Returns 32-byte hash."
+  "Compute SHA-256 hash of byte array. Returns 32-byte hash.
+   Pure."
   [^bytes bs]
   (.digest (MessageDigest/getInstance "SHA-256") bs))
 
 (defn ed25519-sign
   "Sign message bytes with an Ed25519 private key seed (32 bytes).
-   Returns 64-byte signature."
+   Returns 64-byte signature.
+   Pure (Ed25519 is deterministic)."
   [seed-bytes message-bytes]
   (let [;; Reconstruct PKCS#8 DER encoding from raw seed
         pkcs8-header (byte-array [0x30 0x2e 0x02 0x01 0x00 0x30 0x05 0x06
@@ -88,7 +94,8 @@
    SignatureException; verifying untrusted input must never crash.
    We catch the broadest Exception class here so this works both on
    JVM Clojure and under babashka's SCI (which doesn't have every
-   java.security exception class in its built-in class list)."
+   java.security exception class in its built-in class list).
+   Pure. Never throws: a malformed key or signature gives false."
   [pub-bytes message-bytes signature-bytes]
   (try
     (let [;; Reconstruct X.509 DER encoding from raw public key
@@ -107,12 +114,14 @@
     (catch Exception _ false)))
 
 (defn generate-x25519-keypair
-  "Generate an X25519 keypair. Returns [public-key-bytes private-key-bytes]."
+  "Generate an X25519 keypair. Returns [public-key-bytes private-key-bytes].
+   Impure: draws from the CSPRNG."
   []
   (extract-raw-keys (.generateKeyPair (KeyPairGenerator/getInstance "X25519"))))
 
 (defn x25519-private->public-key
-  "Derive the X25519 public key (32 bytes) from a private key (32 bytes)."
+  "Derive the X25519 public key (32 bytes) from a private key (32 bytes).
+   Pure."
   [priv-bytes]
   (let [[pub-bytes _] (extract-raw-keys (seed->keypair-via-kpg "X25519" priv-bytes))]
     pub-bytes))
@@ -135,7 +144,8 @@
   (.subtract (.pow (BigInteger/valueOf 2) 255) (BigInteger/valueOf 19)))
 
 (defn- le-bytes->bigint
-  "Convert 32 little-endian bytes to a non-negative BigInteger."
+  "Convert 32 little-endian bytes to a non-negative BigInteger.
+   Pure."
   [^bytes bs]
   (let [be (byte-array 32)]
     (dotimes [i 32]
@@ -143,7 +153,8 @@
     (BigInteger. 1 be)))
 
 (defn- bigint->le-bytes
-  "Convert a non-negative BigInteger to 32 little-endian bytes."
+  "Convert a non-negative BigInteger to 32 little-endian bytes.
+   Pure."
   [^BigInteger n]
   (let [be (.toByteArray n)
         result (byte-array 32)
@@ -165,7 +176,8 @@
 
 (defn ed25519-pub->x25519-pub
   "Convert an Ed25519 public key (32 bytes) to an X25519 public key (32 bytes).
-   Uses the birational map: u = (1 + y) / (1 - y) mod p."
+   Uses the birational map: u = (1 + y) / (1 - y) mod p.
+   Pure."
   [^bytes ed-pub]
   (let [;; Ed25519 public key encoding: y-coordinate in bits 0-254 (little-endian),
         ;; sign of x in bit 255. Clear the sign bit to get y.
@@ -183,7 +195,8 @@
 
 (defn ed25519-seed->x25519-private
   "Convert an Ed25519 seed (32 bytes) to an X25519 private key (32 bytes).
-   Applies SHA-512 to the seed, takes the first 32 bytes, and clamps."
+   Applies SHA-512 to the seed, takes the first 32 bytes, and clamps.
+   Pure."
   [^bytes seed]
   (let [md (MessageDigest/getInstance "SHA-512")
         h (.digest md seed)
@@ -196,7 +209,8 @@
 
 (defn ed25519-keypair->x25519-keypair
   "Convert an Ed25519 keypair to an X25519 keypair.
-   Returns [x25519-public-bytes x25519-private-bytes]."
+   Returns [x25519-public-bytes x25519-private-bytes].
+   Pure."
   [^bytes ed-pub ^bytes ed-seed]
   (let [x-priv (ed25519-seed->x25519-private ed-seed)
         x-pub (ed25519-pub->x25519-pub ed-pub)]
@@ -205,7 +219,8 @@
 ;; -- X25519 Diffie-Hellman key agreement
 
 (defn- x25519-raw->jca-private
-  "Reconstruct a JCA X25519 PrivateKey from raw 32 bytes."
+  "Reconstruct a JCA X25519 PrivateKey from raw 32 bytes.
+   Pure."
   [^bytes priv-bytes]
   (let [pkcs8-header (byte-array [0x30 0x2e 0x02 0x01 0x00 0x30 0x05 0x06
                                   0x03 0x2b 0x65 0x6e 0x04 0x22 0x04 0x20])
@@ -216,7 +231,8 @@
     (.generatePrivate kf (PKCS8EncodedKeySpec. pkcs8))))
 
 (defn- x25519-raw->jca-public
-  "Reconstruct a JCA X25519 PublicKey from raw 32 bytes."
+  "Reconstruct a JCA X25519 PublicKey from raw 32 bytes.
+   Pure."
   [^bytes pub-bytes]
   (let [x509-header (byte-array [0x30 0x2a 0x30 0x05 0x06 0x03 0x2b 0x65
                                  0x6e 0x03 0x21 0x00])
@@ -228,7 +244,8 @@
 
 (defn x25519-dh
   "Perform X25519 Diffie-Hellman key agreement.
-   Returns the 32-byte shared secret."
+   Returns the 32-byte shared secret.
+   Pure. Throws what JCA throws for a low-order public key."
   [^bytes our-private ^bytes their-public]
   (let [priv-key (x25519-raw->jca-private our-private)
         pub-key (x25519-raw->jca-public their-public)
@@ -246,7 +263,8 @@
 ;; symmetric primitives).
 
 (defn hmac-sha-256
-  "Compute HMAC-SHA-256(key, data). Returns 32 bytes."
+  "Compute HMAC-SHA-256(key, data). Returns 32 bytes.
+   Pure."
   [^bytes key ^bytes data]
   (let [mac      (javax.crypto.Mac/getInstance "HmacSHA256")
         key-spec (javax.crypto.spec.SecretKeySpec. key "HmacSHA256")]
@@ -255,7 +273,8 @@
 
 (defn hkdf-sha-256
   "HKDF (RFC 5869) extract-then-expand. Returns `length` bytes derived
-   from `ikm` with optional salt + info. salt and info default to empty."
+   from `ikm` with optional salt + info. salt and info default to empty.
+   Pure."
   ([^bytes ikm length]
    (hkdf-sha-256 ikm (byte-array 0) (byte-array 0) length))
   ([^bytes ikm ^bytes salt ^bytes info length]
@@ -279,7 +298,8 @@
      out)))
 
 (defn random-bytes
-  "Cryptographically secure random byte array of length n."
+  "Cryptographically secure random byte array of length n.
+   Impure: draws from the CSPRNG."
   [n]
   (let [bs  (byte-array n)
         rng (java.security.SecureRandom.)]
@@ -288,7 +308,8 @@
 
 (defn chacha20-poly1305-encrypt
   "AEAD encrypt: ChaCha20-Poly1305(key=32B, nonce=12B, plaintext, aad).
-   `aad` may be nil. Returns ciphertext || 16-byte tag."
+   `aad` may be nil. Returns ciphertext || 16-byte tag.
+   Pure."
   [^bytes key ^bytes nonce ^bytes plaintext aad]
   (let [cipher    (javax.crypto.Cipher/getInstance "ChaCha20-Poly1305")
         key-spec  (javax.crypto.spec.SecretKeySpec. key "ChaCha20")
@@ -299,7 +320,8 @@
 
 (defn chacha20-poly1305-decrypt
   "AEAD decrypt. `ciphertext` is the output of chacha20-poly1305-encrypt
-   (i.e. ciphertext || tag). Throws on auth failure or tampered AAD."
+   (i.e. ciphertext || tag). Throws on auth failure or tampered AAD.
+   Pure."
   [^bytes key ^bytes nonce ^bytes ciphertext aad]
   (let [cipher    (javax.crypto.Cipher/getInstance "ChaCha20-Poly1305")
         key-spec  (javax.crypto.spec.SecretKeySpec. key "ChaCha20")
@@ -308,7 +330,11 @@
     (when aad (.updateAAD cipher ^bytes aad))
     (.doFinal cipher ciphertext)))
 
-(defn- split-bytes [^bytes m lengths]
+(defn- split-bytes
+  "Pure.
+   Throws ex-info {:type :signet.impl/bad-split} unless the lengths add up
+   to m's size."
+  [^bytes m lengths]
   (when-not (= (alength m) (reduce + lengths))
     (throw (ex-info "split-material: lengths must add up to the material's size"
                     {:type :signet.impl/bad-split :size (alength m) :lengths (vec lengths)})))
@@ -319,7 +345,8 @@
   "Split secret material m (a byte array) into new byte arrays of the given
    lengths, in order. m is left unchanged: destroy it when done.
    Throws ex-info {:type :signet.impl/bad-split} unless the lengths add up
-   to m's size."
+   to m's size.
+   Pure."
   [m lengths]
   (split-bytes m lengths))
 

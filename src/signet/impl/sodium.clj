@@ -31,99 +31,124 @@
   :sodium)
 
 (defn generate-ed25519-keypair
-  "Generate an Ed25519 keypair. Returns [public-key-bytes private-key-seed-bytes]."
+  "Generate an Ed25519 keypair. Returns [public-key-bytes private-key-seed-bytes].
+   Impure: draws from the CSPRNG."
   []
   (let [seed (na/random-bytes 32)
         pk   (na/ed25519-public-key seed)]
     [pk seed]))
 
 (defn ed25519-seed->public-key
-  "Derive the Ed25519 public key (32 bytes) from a seed (32 bytes)."
+  "Derive the Ed25519 public key (32 bytes) from a seed (32 bytes).
+   Pure for a byte-array seed; with a nacljc secret, impure: reads it."
   [seed-bytes]
   (na/ed25519-public-key seed-bytes))
 
 (defn sha-256
-  "Compute SHA-256 hash of byte array. Returns 32-byte hash."
+  "Compute SHA-256 hash of byte array. Returns 32-byte hash.
+   Pure."
   [bs]
   (na/sha-256 bs))
 
 (defn ed25519-sign
   "Sign message bytes with an Ed25519 private key seed (32 bytes).
-   Returns 64-byte signature."
+   Returns 64-byte signature.
+   Pure for a byte-array seed; with a nacljc secret, impure: reads it."
   [seed-bytes message-bytes]
   (na/ed25519-sign seed-bytes message-bytes))
 
 (defn ed25519-verify
   "Verify an Ed25519 signature. Returns true if valid, false otherwise —
-   never throws on malformed input."
+   never throws on malformed input.
+   Pure. Never throws: a malformed key or signature gives false."
   [pub-bytes message-bytes signature-bytes]
   (try
     (na/ed25519-verify? pub-bytes message-bytes signature-bytes)
     (catch Exception _ false)))
 
 (defn generate-x25519-keypair
-  "Generate an X25519 keypair. Returns [public-key-bytes private-key-bytes]."
+  "Generate an X25519 keypair. Returns [public-key-bytes private-key-bytes].
+   Impure: draws from the CSPRNG."
   []
   (let [priv (na/random-bytes 32)]
     [(na/x25519-public-key priv) priv]))
 
 (defn x25519-private->public-key
-  "Derive the X25519 public key (32 bytes) from a private key (32 bytes)."
+  "Derive the X25519 public key (32 bytes) from a private key (32 bytes).
+   Pure for a byte-array key; with a nacljc secret, impure: reads it."
   [priv-bytes]
   (na/x25519-public-key priv-bytes))
 
 (defn ed25519-pub->x25519-pub
-  "Convert an Ed25519 public key (32 bytes) to an X25519 public key (32 bytes)."
+  "Convert an Ed25519 public key (32 bytes) to an X25519 public key (32 bytes).
+   Pure."
   [ed-pub]
   (na/ed25519->x25519-public-key ed-pub))
 
 (defn ed25519-seed->x25519-private
-  "Convert an Ed25519 seed (32 bytes) to an X25519 private key (32 bytes)."
+  "Convert an Ed25519 seed (32 bytes) to an X25519 private key (32 bytes).
+   Pure for a byte-array seed; with a nacljc secret, impure: reads it
+   and allocates guarded memory for the secret result."
   [seed]
   (na/ed25519->x25519-secret-key seed))
 
 (defn ed25519-keypair->x25519-keypair
   "Convert an Ed25519 keypair to an X25519 keypair.
-   Returns [x25519-public-bytes x25519-private-bytes]."
+   Returns [x25519-public-bytes x25519-private-bytes].
+   Pure for byte arrays; with a nacljc secret, impure: as
+   ed25519-seed->x25519-private."
   [ed-pub ed-seed]
   [(ed25519-pub->x25519-pub ed-pub) (ed25519-seed->x25519-private ed-seed)])
 
 (defn x25519-dh
   "Perform X25519 Diffie-Hellman key agreement. Returns the 32-byte shared
-   secret; throws for low-order points."
+   secret; throws for low-order points.
+   Pure for a byte-array key; with a nacljc secret, impure: reads it and
+   allocates guarded memory for the secret result.
+   Throws ex-info {:type :nacljc.core/low-order-point} for a low-order key."
   [our-private their-public]
   (na/x25519 our-private their-public))
 
 (defn hmac-sha-256
-  "Compute HMAC-SHA-256(key, data). Returns 32 bytes."
+  "Compute HMAC-SHA-256(key, data). Returns 32 bytes.
+   Pure for a byte-array key; with a nacljc secret, impure: reads it."
   [key data]
   (na/hmac-sha-256 key data))
 
 (defn hkdf-sha-256
   "HKDF (RFC 5869) extract-then-expand. Returns `length` bytes derived
-   from `ikm` with optional salt + info. salt and info default to empty."
+   from `ikm` with optional salt + info. salt and info default to empty.
+   Pure for byte arrays; with a nacljc secret (ikm or salt), impure: reads
+   it and allocates guarded memory for the secret result."
   ([ikm length]
    (hkdf-sha-256 ikm (byte-array 0) (byte-array 0) length))
   ([ikm salt info length]
    (na/hkdf-sha-256 ikm salt info length)))
 
 (defn random-bytes
-  "Cryptographically secure random byte array of length n."
+  "Cryptographically secure random byte array of length n.
+   Impure: draws from the CSPRNG."
   [n]
   (na/random-bytes n))
 
 (defn chacha20-poly1305-encrypt
   "AEAD encrypt: ChaCha20-Poly1305(key=32B, nonce=12B, plaintext, aad).
-   `aad` may be nil. Returns ciphertext || 16-byte tag."
+   `aad` may be nil. Returns ciphertext || 16-byte tag.
+   Pure for a byte-array key; with a nacljc secret, impure: reads it."
   [key nonce plaintext aad]
   (na/chacha20-poly1305-encrypt key nonce plaintext aad))
 
 (defn chacha20-poly1305-decrypt
-  "AEAD decrypt. Throws on auth failure or tampered AAD."
+  "AEAD decrypt. Throws on auth failure or tampered AAD.
+   Pure for a byte-array key; with a nacljc secret, impure: reads it."
   [key nonce ciphertext aad]
   (na/chacha20-poly1305-decrypt key nonce ciphertext aad))
 
-(defn- split-bytes [^bytes m lengths]
+(defn- split-bytes
+  "Pure.
+   Throws ex-info {:type :signet.impl/bad-split} unless the lengths add up
+   to m's size."
+  [^bytes m lengths]
   (when-not (= (alength m) (reduce + lengths))
     (throw (ex-info "split-material: lengths must add up to the material's size"
                     {:type :signet.impl/bad-split :size (alength m) :lengths (vec lengths)})))
@@ -135,7 +160,9 @@
    byte array into byte arrays, a nacljc secret into nacljc secrets (copied
    inside guarded memory). m is left unchanged: destroy it when done.
    Throws ex-info {:type :signet.impl/bad-split} (bytes) or nacljc's
-   ::bad-length (secrets) unless the lengths add up to m's size."
+   ::bad-length (secrets) unless the lengths add up to m's size.
+   Pure for byte arrays; with a nacljc secret, impure: reads it and
+   allocates guarded memory for the parts."
   [m lengths]
   (if (na/secret? m) (na/secret-split m lengths) (split-bytes m lengths)))
 

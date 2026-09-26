@@ -58,21 +58,24 @@
 
 (defn- proof-vault
   "The vault a chain's new proofs go into: the current proof's (or root
-   key's) vault when it is a handle, else :default."
+   key's) vault when it is a handle, else :default.
+   Pure."
   [k]
   (if (vault/handle? k) (:vault k) :default))
 
 (defn- make-proof!
   "A new ephemeral Ed25519 key for chain linking, born in vault-id; returns
    its handle. Its public kid is the next block's signer. Nothing goes into
-   the key store: verifiers resolve the kid from the URN itself."
+   the key store: verifiers resolve the kid from the URN itself.
+   Impure: draws from the CSPRNG and writes the vault."
   [vault-id]
   (vault/generate-signing-key! vault-id))
 
 (defn- proof-signer
   "What signs with an open token's proof: the handle itself, or, for the
    sendable form (the seed), a keypair rebuilt from it and the last block's
-   next-key."
+   next-key.
+   Pure."
   [token]
   (let [p (:proof token)]
     (if (vault/handle? p)
@@ -95,7 +98,9 @@
       :next-key next-key-kid   — links to next block's signer
       :prev-sig prev-sig}      — links to previous block's signature
 
-   Returns a signed envelope (from sign/sign-edn)."
+   Returns a signed envelope (from sign/sign-edn).
+   Impure: signs through the vault (reads it) or with a key record,
+   and reads the clock and the random generator (sign-edn)."
   [signing-key content next-key-kid prev-sig]
   (sign/sign-edn signing-key
                  {:data     content
@@ -114,7 +119,8 @@
    The ephemeral private key becomes the chain's 'proof' — it allows
    the token holder to extend the chain.
 
-   Returns: {:type :signet/chain :root <kid> :blocks [block-0] :proof <eph-sk>}"
+   Returns: {:type :signet/chain :root <kid> :blocks [block-0] :proof <eph-sk>}
+   Impure: writes the vault (a new proof key) and signs (see make-block)."
   [root-kp content]
   (let [;; A new ephemeral key for the next block's signer, born in the vault:
         ;; it links block 0 to whoever extends the chain
@@ -143,7 +149,9 @@
      - prev-sig linking to the previous block's signature (chain integrity)
      - next-key pointing to the new ephemeral public key
 
-   Returns: updated token with the new block appended and a fresh proof."
+   Returns: updated token with the new block appended and a fresh proof.
+   Impure: writes the vault (a new proof key, the old one destroyed when it
+   is a handle) and signs (see make-block)."
   [token content]
   (let [;; Get the previous block's signature — this links blocks together
         ;; Any attempt to remove or reorder blocks would break this chain
@@ -170,19 +178,22 @@
 ;; ============================================================
 
 (defn chain?
-  "Returns true if x is a chain token (open or sealed)."
+  "Returns true if x is a chain token (open or sealed).
+   Pure."
   [x]
   (and (map? x) (= :signet/chain (:type x))))
 
 (defn sealed?
-  "Returns true if the chain is sealed (no further extensions possible)."
+  "Returns true if the chain is sealed (no further extensions possible).
+   Pure."
   [token]
   (and (chain? token)
        (map? (:proof token))
        (:sealed (:proof token))))
 
 (defn open?
-  "Returns true if the chain is open (can be extended)."
+  "Returns true if the chain is open (can be extended).
+   Pure."
   [token]
   (and (chain? token)
        (not (sealed? token))))
@@ -386,7 +397,8 @@
 ;; ============================================================
 
 (defn- verify*
-  "The chain checks behind verify. May throw on a malformed token."
+  "The chain checks behind verify. May throw on a malformed token.
+   Impure: reads the clock unless :now is given (see sign/verify-edn)."
   [token verify-opts]
   (let [blocks (:blocks token)
         root   (:root token)

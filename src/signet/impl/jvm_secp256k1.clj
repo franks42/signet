@@ -28,7 +28,8 @@
 ;; ---------- byte-twiddling helpers ----------
 
 (defn- pad-left
-  "Big-endian pad/truncate a BigInteger to exactly n bytes."
+  "Big-endian pad/truncate a BigInteger to exactly n bytes.
+   Pure."
   [^BigInteger n size]
   (let [be (.toByteArray n)
         be-len (alength be)
@@ -45,7 +46,9 @@
 (defn- raw->der-sig
   "Convert a 64-byte raw r||s ECDSA signature to DER. Adds the leading
    0x00 padding when the high bit of r or s is set (DER INTEGER is
-   two's-complement and must not appear negative)."
+   two's-complement and must not appear negative).
+   Pure.
+   Throws ex-info unless raw is 64 bytes."
   [^bytes raw]
   (when-not (= 64 (alength raw))
     (throw (ex-info "raw secp256k1 signature must be 64 bytes" {:length (alength raw)})))
@@ -81,7 +84,9 @@
 (defn- der->raw-sig
   "Convert a DER-encoded ECDSA signature to 64-byte raw r||s. Strips
    DER framing and any leading 0x00 padding, left-pads each scalar to
-   32 bytes."
+   32 bytes.
+   Pure.
+   Throws ex-info for a malformed DER signature."
   [^bytes der]
   (let [n (alength der)]
     (when (< n 8)
@@ -109,7 +114,8 @@
 
 (defn detect-sig-format
   "Heuristic on signature length + first byte:
-   64 bytes ⇒ :raw; starts with 0x30 + plausible length ⇒ :der; else :unknown."
+   64 bytes ⇒ :raw; starts with 0x30 + plausible length ⇒ :der; else :unknown.
+   Pure."
   [^bytes sig]
   (let [n (alength sig)]
     (cond
@@ -123,7 +129,9 @@
       :unknown)))
 
 (defn- coerce-sig->der
-  "Take a signature in either raw or DER form and return DER bytes."
+  "Take a signature in either raw or DER form and return DER bytes.
+   Pure.
+   Throws ex-info for an unrecognized format."
   [^bytes sig]
   (case (detect-sig-format sig)
     :raw (raw->der-sig sig)
@@ -160,6 +168,9 @@
                     0x03 0x22 0x00])))
 
 (defn- compressed->jca-public
+  "A JCA public key for a 33-byte compressed secp256k1 point. Pure.
+   Throws ex-info for a wrong size or prefix byte."
+
   [^bytes pub33]
   (when-not (= 33 (alength pub33))
     (throw (ex-info "secp256k1 compressed pubkey must be 33 bytes" {:length (alength pub33)})))
@@ -175,6 +186,9 @@
     (.generatePublic kf (X509EncodedKeySpec. x509))))
 
 (defn- scalar->jca-private
+  "A JCA private key for a 32-byte secp256k1 scalar. Pure.
+   Throws ex-info unless it is 32 bytes."
+
   [^bytes priv32]
   (when-not (= 32 (alength priv32))
     (throw (ex-info "secp256k1 scalar must be 32 bytes" {:length (alength priv32)})))
@@ -191,7 +205,8 @@
   "Generate a fresh secp256k1 ECDSA keypair via BouncyCastle.
    Returns [pub-bytes priv-bytes]:
      pub-bytes  — 33-byte sec1 compressed
-     priv-bytes — 32-byte big-endian scalar"
+     priv-bytes — 32-byte big-endian scalar
+   Impure: draws from the CSPRNG."
   []
   (let [kpg (KeyPairGenerator/getInstance "EC" "BC")
         _ (.initialize kpg (ECGenParameterSpec. "secp256k1"))
@@ -213,7 +228,9 @@
 
 (defn secp256k1-sign
   "Sign message bytes with a secp256k1 private scalar (32 bytes).
-   Returns a 64-byte raw r||s signature."
+   Returns a 64-byte raw r||s signature.
+   Impure: draws from the CSPRNG (Bouncy Castle's ECDSA nonce).
+   Throws ex-info unless priv-bytes is 32 bytes."
   [^bytes priv-bytes ^bytes message-bytes]
   (let [priv-key (scalar->jca-private priv-bytes)
         signer (Signature/getInstance "SHA256withECDSA" "BC")]
@@ -224,7 +241,8 @@
 (defn secp256k1-verify
   "Verify a secp256k1 ECDSA signature. Accepts raw 64-byte r||s OR DER
    (auto-detected). Returns true if valid, false otherwise — never
-   throws on malformed signature input."
+   throws on malformed signature input.
+   Pure."
   [^bytes pub-bytes ^bytes message-bytes ^bytes signature-bytes]
   (try
     (let [pub-key (compressed->jca-public pub-bytes)
