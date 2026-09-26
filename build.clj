@@ -10,7 +10,7 @@
             [deps-deploy.deps-deploy :as dd]))
 
 (def lib 'com.github.franks42/signet)
-(def version "0.10.0-SNAPSHOT")
+(def version "0.9.1")
 (def class-dir "target/classes")
 (def jar-file (format "target/%s-%s.jar" (name lib) version))
 ;; :root nil keeps org.clojure/clojure out of the pom, but it also drops the

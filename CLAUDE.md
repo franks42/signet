@@ -11,7 +11,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - **Name**: signet (like a signet ring — personal key for signing/sealing)
 - **Crypto backends** (`signet.impl` facade, selected once at load: `-Dsignet.backend` / `SIGNET_BACKEND`, default `jca`):
   - `:jca` — `signet.impl.jvm`, Java JCA. No native dependency. Its seed→public-key path (a `proxy [SecureRandom]` trick) does not work on babashka.
-  - `:sodium` — `signet.impl.sodium`, libsodium via `nacljc.core` (the backend keeps the name `:sodium`: it names libsodium, the native engine, not the wrapper) (github.com/franks42/nacljc, `com.github.franks42/nacljc 0.3.0` from Clojars via the `:sodium` alias; the version in bb.edn's test:bb-sodium and test/signet/consumer_check.clj (test:jar) must match; babashka.ffi). To test an unreleased nacljc, swap in `{:local/root "../nacljc"}`. Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
+  - `:sodium` — `signet.impl.sodium`, libsodium via `nacljc.core` (the backend keeps the name `:sodium`: it names libsodium, the native engine, not the wrapper) (github.com/franks42/nacljc, `com.github.franks42/nacljc 0.3.1` from Clojars via the `:sodium` alias; the version in bb.edn's test:bb-sodium and test/signet/consumer_check.clj (test:jar) must match; babashka.ffi). To test an unreleased nacljc, swap in `{:local/root "../nacljc"}`. Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
   - ClojureScript: not implemented (every `:cljs` branch throws). The browser plan is libsodium.js (see `../nacljc/docs/feasibility.md`).
 - **Dependencies**: canonical-edn (cedn) 1.6.0 for deterministic serialization, uuidv7 0.7.2 for request IDs (bumped from 1.2.0 / 0.5.0 in 0.7.0; see README "Compatibility"). Bouncy Castle for secp256k1 only (JVM). nacljc for the `:sodium` backend (alias `:sodium`: local snapshot jar, not published).
 - **Key fields**: JWK-inspired — `:x` (public), `:d` (private), `:crv` (:Ed25519/:X25519), `:type` (dispatch tag)
@@ -122,8 +122,8 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   sign/box/chain, `signet.shared`. Phases 1–5 done (see CHANGELOG). Sessions
   move onto handles in the release after. Key records remain the raw layer;
   they are deprecated in that release (decision 17), not removed.
-- **main is 0.10.0-SNAPSHOT** (nothing planned yet; candidates: password
-  unlocking and an agent provider, see docs/08 and docs/07).
+- **0.9.1 (released 2026-09-25):** nacljc 0.3.1 (`sodium_stackzero` after
+  every secret operation). No signet code change.
 - **0.9.0 (released 2026-09-25):** implemented and merged
   (docs/08-sessions-on-handles-plan.md, phases 0–6): Noise vectors and the
   prologue-order fix (breaking for 0.8.0 peers), sessions on vault handles,
@@ -134,8 +134,8 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   (Argon2id, password-derived keys as vault handles) has notes in docs/08.
   **After every release, bump build.clj to the next -SNAPSHOT.**
 - Verified from the installed jar in a scratch consumer (`bb test:jar`,
-  signet's tests only, no src; 2026-09-25, nacljc 0.3.0): JVM jca 183/984,
-  JVM sodium 183/998 + parity 54/54, bb sodium 173/974.
+  signet's tests only, no src; 2026-09-25, nacljc 0.3.1): JVM jca 183/986,
+  JVM sodium 183/1000 + parity 54/54, bb sodium 173/974.
 - CI (`.github/workflows/ci.yml`, green): `jca` on Ubuntu JDK 21 + 25
   (`bb test:no-sodium`); `sodium-macos` (Homebrew libsodium; test:jvm-sodium,
   test:bb-sodium, test:jar); `sodium-linux` (libsodium 1.0.22 built from a
@@ -208,7 +208,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 ## Testing, lint, format
 
 ```bash
-bb test:jvm          # full suite, JCA backend (clojure -M:test): 183 tests / 984 assertions
+bb test:jvm          # full suite, JCA backend (clojure -M:test): 183 tests / 986 assertions
 bb test:jvm-sodium   # full suite, libsodium backend + JCA-vs-libsodium parity (54 checks)
 bb test:bb-sodium    # full suite on babashka, libsodium backend: 173 / 974 (all but secp256k1)
 bb smoke             # bb smoke suite (JCA): 9 tests

@@ -1,6 +1,13 @@
 # Changelog
 
-## 0.10.0 (unreleased)
+## 0.9.1 (2026-09-25)
+
+### Changed
+
+- **nacljc 0.3.1:** after every operation that reads a secret (all vault
+  operations under the `:sodium` provider), the stack the C code used is
+  wiped with `sodium_stackzero`, as libsodium's memory docs recommend.
+  About 0.2 µs per operation. No API change.
 
 ## 0.9.0 (2026-09-25)
 

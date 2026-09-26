@@ -580,8 +580,9 @@ only references** [source].
   sessions authenticated by a password rather than static keys.
 
 **Follow-ups from this:**
-1. nacljc: call `sodium_stackzero` after each operation that reads a
-   secret (it clears a fixed amount of stack; measure the cost).
+1. ~~nacljc: call `sodium_stackzero` after each operation that reads a
+   secret~~ **Done** in nacljc 0.3.1 / signet 0.9.1: 16 KiB after every
+   operation that opens a secret, about 0.2 µs per operation.
 2. signet or nacljc: a helper that disables core dumps
    (`setrlimit(RLIMIT_CORE, 0)` over FFI), and a README note on startup
    hygiene: no core dumps, encrypted or no swap, no hibernation.

@@ -187,11 +187,11 @@ keys and ciphertexts.
 | Backend | Namespace | Needs | Notes |
 |---|---|---|---|
 | `jca` (default) | `signet.impl.jvm` | a JDK | No native dependency. Deriving a public key from a seed does not work on babashka. |
-| `sodium` | `signet.impl.sodium` | libsodium >= 1.0.19 (`brew install libsodium`), [nacljc](https://github.com/franks42/nacljc) 0.3.0 from Clojars (added by the `:sodium` alias), JDK 25+ with `--enable-native-access=ALL-UNNAMED`, or bb >= 1.13.220 | The full test suite also passes on babashka. |
+| `sodium` | `signet.impl.sodium` | libsodium >= 1.0.19 (`brew install libsodium`), [nacljc](https://github.com/franks42/nacljc) 0.3.1 from Clojars (added by the `:sodium` alias), JDK 25+ with `--enable-native-access=ALL-UNNAMED`, or bb >= 1.13.220 | The full test suite also passes on babashka. |
 
 ```bash
 clojure -M:test:sodium      # the :sodium alias adds nacljc and selects the backend
-SIGNET_BACKEND=sodium bb …  # on babashka, with com.github.franks42/nacljc 0.3.0 added (see bb test:bb-sodium)
+SIGNET_BACKEND=sodium bb …  # on babashka, with com.github.franks42/nacljc 0.3.1 added (see bb test:bb-sodium)
 ```
 
 ## Compatibility
