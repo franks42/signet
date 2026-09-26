@@ -42,8 +42,12 @@
         ;; secret-import! copies into guarded memory and wipes secret-bytes
         (store! alg (na/secret-import! secret-bytes)))
       (-adopt! [_ kid alg material]
-        ;; derived material under this provider is already a nacljc secret
-        (swap! secrets assoc kid {:alg alg :secret material})
+        ;; Derived material from a secret input is already a nacljc secret.
+        ;; Bytes (derived from public inputs only) are moved into guarded
+        ;; memory: secret-import! copies them, then wipes the array. So this
+        ;; provider only ever holds secrets.
+        (let [s (if (na/secret? material) material (na/secret-import! material))]
+          (swap! secrets assoc kid {:alg alg :secret s}))
         nil)
       (-has? [_ kid] (contains? @secrets kid))
       (-kids [_] (set (keys @secrets)))

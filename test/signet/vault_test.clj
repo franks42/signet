@@ -5,6 +5,7 @@
   (:require [cedn.core :as cedn]
             [clojure.string :as str]
             [clojure.test :refer [deftest is testing use-fixtures]]
+            [signet.impl :as impl]
             [signet.key :as key]
             [signet.sign :as sign]
             [signet.vault :as vault]))
@@ -212,3 +213,132 @@
     (is (bytes? @leaked))
     (is (every? zero? @leaked) "the lent copy is zeroed as soon as the operation returns")
     (is (= 64 (alength ^bytes (vault/sign h (byte-array 1)))) "the stored key is unaffected")))
+
+;; ---- session entries: signet.session's secrets (docs/08 phase 2) ----
+
+(defn- session-vaults
+  "The vaults to run the session-entry checks on: :default (the backend's
+   default provider: :sodium on libsodium, else :memory) and an explicit
+   :memory vault."
+  []
+  (vault/register-vault! :mem (vault/memory-provider))
+  [:default :mem])
+
+(defn- public-side [vault-id] @(:public (#'vault/vault vault-id)))
+
+(def ^:private zero-nonce (byte-array 12))
+
+(defn- same-key?
+  "Does handle h hold the key bytes k? Compared through encryption, since
+   session entries cannot be exported."
+  [h ^bytes k]
+  (let [msg (.getBytes "probe" "UTF-8")]
+    (= (hex (impl/chacha20-poly1305-encrypt k zero-nonce msg nil))
+       (hex (vault/aead-encrypt h zero-nonce msg nil)))))
+
+(deftest session-entries-are-hidden-and-not-exportable
+  (doseq [vid (session-vaults)]
+    (testing (str vid)
+      (let [[eh epub] (vault/generate-ephemeral! vid :s1)
+            [a b]     (vault/hkdf-pair! vid :s1 (byte-array 32) (impl/random-bytes 32))]
+        (is (= 32 (alength ^bytes epub)))
+        (is (= 3 (vault/session-entry-count vid)))
+        (is (empty? (vault/handles vid)) "handles lists no session entry")
+        (doseq [h [eh a b]]
+          (is (nil? (vault/handle vid (:kid h))) "handle never returns a session entry")
+          (is (not (contains? (public-side vid) (:kid h))) "never on the public side")
+          (is (= ::vault/not-exportable (error-type #(vault/export-secret h ack)))))
+        (is (str/starts-with? (:kid a) "urn:signet:session:") "derived entries get random ids")
+        (is (not= (:kid a) (:kid b)))
+        (testing "ordinary keys are still listed"
+          (let [k (vault/generate-encryption-key! vid)]
+            (is (= #{k} (vault/handles vid)))))))))
+
+(deftest hkdf-pair-matches-the-backend-on-bytes
+  (doseq [vid (session-vaults)]
+    (testing (str vid)
+      (let [ck0  (impl/random-bytes 32)
+            dh1  (impl/random-bytes 32)
+            dh2  (impl/random-bytes 32)
+            hkdf #(impl/hkdf-sha-256 %1 %2 (byte-array 0) 64)
+            half (fn [^bytes bs i] (java.util.Arrays/copyOfRange bs (* 32 i) (* 32 (inc i))))
+            ;; two MixKeys and a Split, on bytes
+            out1 (hkdf (aclone ^bytes dh1) ck0)
+            out2 (hkdf (aclone ^bytes dh2) (half out1 0))
+            out3 (hkdf (byte-array 0) (half out2 0))
+            ;; the same in the vault: public salt first, then handle salts
+            [ck1 k1] (vault/hkdf-pair! vid :s (aclone ^bytes ck0) (aclone ^bytes dh1))
+            [ck2 k2] (vault/hkdf-pair! vid :s ck1 (aclone ^bytes dh2))
+            [t1 t2]  (vault/hkdf-pair! vid :s ck2 (byte-array 0))]
+        (is (same-key? k1 (half out1 1)))
+        (is (same-key? ck2 (half out2 0)) "a handle salt chains like a byte salt")
+        (is (same-key? k2 (half out2 1)))
+        (is (same-key? t1 (half out3 0)) "Split: empty ikm, handle salt")
+        (is (same-key? t2 (half out3 1)))))))
+
+(deftest hkdf-pair-destroys-its-ikm
+  (let [ikm (impl/random-bytes 32)]
+    (vault/hkdf-pair! :default :s (byte-array 32) ikm)
+    (is (every? zero? ikm))))
+
+(deftest aead-round-trips-under-a-session-entry
+  (doseq [vid (session-vaults)]
+    (let [[k _] (vault/hkdf-pair! vid :s (byte-array 32) (impl/random-bytes 32))
+          nonce (impl/random-bytes 12)
+          aad   (.getBytes "aad" "UTF-8")
+          ct    (vault/aead-encrypt k nonce (.getBytes "hi" "UTF-8") aad)]
+      (is (= "hi" (String. ^bytes (vault/aead-decrypt k nonce ct aad) "UTF-8")) (str vid))
+      (is (thrown? Exception (vault/aead-decrypt k nonce ct (.getBytes "other" "UTF-8")))
+          (str vid ": wrong aad fails")))))
+
+(deftest ephemeral-dh-matches-the-backend
+  (doseq [vid (session-vaults)]
+    (testing (str vid)
+      (let [[eh epub] (vault/generate-ephemeral! vid :s)
+            peer      (vault/generate-encryption-key! vid)
+            peer-sk   (vault/export-secret peer ack)
+            peer-pub  (:x (vault/public-key peer))
+            ours      (vault/x25519-dh eh peer-pub)
+            [a _]     (vault/hkdf-pair! vid :s (byte-array 32) ours)
+            expected  (impl/hkdf-sha-256 (impl/x25519-dh peer-sk epub) (byte-array 32) (byte-array 0) 64)]
+        (is (same-key? a (java.util.Arrays/copyOfRange ^bytes expected 0 32))
+            "DH with the ephemeral, both sides agree")))))
+
+(deftest destroy-session-destroys-only-that-session
+  (doseq [vid (session-vaults)]
+    (testing (str vid)
+      (let [[e1 _]   (vault/generate-ephemeral! vid :one)
+            [a1 b1]  (vault/hkdf-pair! vid :one (byte-array 32) (impl/random-bytes 32))
+            [a2 _]   (vault/hkdf-pair! vid :two (byte-array 32) (impl/random-bytes 32))
+            identity (vault/generate-signing-key! vid)]
+        (is (= 5 (vault/session-entry-count vid)))
+        (is (nil? (vault/destroy-session! vid :one)))
+        (is (= 2 (vault/session-entry-count vid)))
+        (doseq [h [e1 a1 b1]]
+          (is (= ::vault/destroyed-key (error-type #(vault/aead-encrypt h zero-nonce (byte-array 1) nil)))))
+        (is (bytes? (vault/aead-encrypt a2 zero-nonce (byte-array 1) nil)) "the other session still works")
+        (is (bytes? (vault/sign identity (byte-array 1))) "ordinary keys are untouched")
+        (vault/destroy-session! vid :one)
+        (is (= 2 (vault/session-entry-count vid)) "destroying again is a no-op")
+        (vault/destroy! a2)
+        (is (= 1 (vault/session-entry-count vid)) "destroy! of one entry updates the count")
+        (vault/destroy-session! vid :two)
+        (is (zero? (vault/session-entry-count vid)))))))
+
+(deftest session-secrets-stay-native-under-sodium
+  (if-not (= :sodium impl/backend)
+    (is true "the :sodium provider needs the libsodium backend; covered by test:jvm-sodium / test:bb-sodium")
+    (let [secret? @(requiring-resolve 'nacljc.core/secret?)
+          [eh _]  (vault/generate-ephemeral! :default :s)
+          peer    (vault/generate-encryption-key!)
+          [ck k]  (vault/hkdf-pair! :default :s (byte-array 32) (vault/x25519-dh eh (:x (vault/public-key peer))))
+          [t1 t2] (vault/hkdf-pair! :default :s ck (byte-array 0))]
+      (doseq [h [eh ck k t1 t2]]
+        (is (vault/with-material h secret?) (str (:kid h) " is a nacljc secret")))
+      (testing "material derived from public inputs only is moved into guarded memory"
+        (let [ikm   (impl/random-bytes 32)
+              [a _] (vault/hkdf-pair! :default :s (byte-array 32) ikm)]
+          (is (vault/with-material a secret?))
+          (is (every? zero? ikm))
+          (vault/destroy-session! :default :s)
+          (is (zero? (vault/session-entry-count))))))))

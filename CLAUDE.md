@@ -70,12 +70,12 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `bytes->base64url` / `base64url->bytes`
 
 ### signet.impl — backend facade
-- The 16 crypto functions every other namespace calls (`impl/…`), forwarded to the selected backend
+- The 18 crypto functions every other namespace calls (`impl/…`), forwarded to the selected backend
 - `impl/backend` — `:jca` or `:sodium`
 - Unknown backend, or `:sodium` without libsodium/nacljc → loud error at load (no silent fallback)
 
 ### signet.impl.sodium — libsodium backend
-- Same 16 functions and contracts as `signet.impl.jvm`, on `nacljc.core`
+- Same 18 functions and contracts as `signet.impl.jvm`, on `nacljc.core`
 - Fixed-size inputs length-checked (libsodium reads them blindly)
 
 ### signet.impl.jvm — JCA backend

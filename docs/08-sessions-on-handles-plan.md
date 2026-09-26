@@ -119,6 +119,23 @@ The `:memory`/JCA path needs none of this.
 
 ## Phase 2: vault support for session secrets
 
+**Done (2026-09-25)**, on branch `sessions-on-handles` (which uses
+`../nacljc` through `:local/root` until nacljc 0.3.0 is released). Two
+changes from the text below:
+
+- An ephemeral's id is its public key's kid, not a random id. The public
+  key goes over the wire in the clear anyway, and this lets the vault use
+  the provider's existing `-generate!`. Derived entries (`ck`, `k`,
+  transport keys) do get random ids.
+- `hkdf-pair!` splits the 64-byte output with a new backend function,
+  `impl/split-material` (bytes under JCA, `nacljc/secret-split` under
+  libsodium). The facade now has 18 functions.
+
+Found while testing: the `:sodium` provider's `-adopt!` stored byte
+material as it was, so destroying it failed. It now moves bytes into
+guarded memory with `secret-import!`, so a `:sodium` vault holds only
+secrets.
+
 These are internal, `^:no-doc` functions, called only by `signet.session`.
 
 **Session entries.** Session secrets are secret-side entries of a separate

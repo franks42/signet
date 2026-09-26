@@ -7,7 +7,7 @@
    namespaces call them.
 
    libsodium backend for signet, via nacljc.core (babashka.ffi): the same
-   16 functions and contracts as signet.impl.jvm (JCA). Selected through
+   18 functions and contracts as signet.impl.jvm (JCA). Selected through
    signet.impl; do not require directly.
 
    Requirements: libsodium >= 1.0.19 installed (e.g. brew install
@@ -122,6 +122,22 @@
   "AEAD decrypt. Throws on auth failure or tampered AAD."
   [key nonce ciphertext aad]
   (na/chacha20-poly1305-decrypt key nonce ciphertext aad))
+
+(defn- split-bytes [^bytes m lengths]
+  (when-not (= (alength m) (reduce + lengths))
+    (throw (ex-info "split-material: lengths must add up to the material's size"
+                    {:type :signet.impl/bad-split :size (alength m) :lengths (vec lengths)})))
+  (mapv (fn [off n] (java.util.Arrays/copyOfRange m (int off) (int (+ off n))))
+        (reductions + 0 lengths) lengths))
+
+(defn split-material
+  "Split secret material m into parts of the given lengths, in order: a
+   byte array into byte arrays, a nacljc secret into nacljc secrets (copied
+   inside guarded memory). m is left unchanged: destroy it when done.
+   Throws ex-info {:type :signet.impl/bad-split} (bytes) or nacljc's
+   ::bad-length (secrets) unless the lengths add up to m's size."
+  [m lengths]
+  (if (na/secret? m) (na/secret-split m lengths) (split-bytes m lengths)))
 
 (defn destroy-material!
   "Release secret material whose purpose has ended: overwrite a byte array

@@ -308,6 +308,21 @@
     (when aad (.updateAAD cipher ^bytes aad))
     (.doFinal cipher ciphertext)))
 
+(defn- split-bytes [^bytes m lengths]
+  (when-not (= (alength m) (reduce + lengths))
+    (throw (ex-info "split-material: lengths must add up to the material's size"
+                    {:type :signet.impl/bad-split :size (alength m) :lengths (vec lengths)})))
+  (mapv (fn [off n] (java.util.Arrays/copyOfRange m (int off) (int (+ off n))))
+        (reductions + 0 lengths) lengths))
+
+(defn split-material
+  "Split secret material m (a byte array) into new byte arrays of the given
+   lengths, in order. m is left unchanged: destroy it when done.
+   Throws ex-info {:type :signet.impl/bad-split} unless the lengths add up
+   to m's size."
+  [m lengths]
+  (split-bytes m lengths))
+
 (defn destroy-material!
   "Release secret material whose purpose has ended: overwrite a byte array
    with zeros. (The JCA backend only ever handles byte arrays.) Impure:

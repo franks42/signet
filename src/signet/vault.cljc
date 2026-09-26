@@ -29,7 +29,8 @@
    time (see with-material); signet's crypto code never keeps it. :memory
    keeps it on the Clojure heap, inside the vault only, and wipes each lent
    copy after use."
-  (:require [signet.key :as key]
+  (:require [signet.encoding :as enc]
+            [signet.key :as key]
             #?(:clj [signet.impl :as impl])))
 
 ;; ============================================================
@@ -142,7 +143,9 @@
    if id is already registered."
   ([id] (register-vault! id (default-provider)))
   ([id provider]
-   (let [v {:id id :provider provider :public (atom {}) :defaults (atom {}) :shared (atom {})}
+   (let [v {:id id :provider provider :public (atom {}) :defaults (atom {}) :shared (atom {})
+            ;; session entries (signet.session's secrets): entry id -> session id
+            :session (atom {})}
          [old _] (swap-vals! vaults (fn [m] (if (contains? m id) m (assoc m id v))))]
      (when (contains? old id)
        (throw (ex-info (str "Vault " id " is already registered") {:type ::vault-exists :vault id})))
@@ -204,20 +207,26 @@
    (or (get @(:public (vault vault-id)) kid)
        (key/lookup kid))))
 
+(defn- session-entry? [v kid] (contains? @(:session v) kid))
+
 (defn handle
   "A handle for kid if vault's secret side (default :default) holds its
-   private key, else nil. Impure: reads the vault."
+   private key, else nil. Never a session's internal secret.
+   Impure: reads the vault."
   ([kid] (handle :default kid))
   ([vault-id kid]
-   (when (-has? (:provider (vault vault-id)) kid)
-     (->handle vault-id kid))))
+   (let [v (vault vault-id)]
+     (when (and (-has? (:provider v) kid) (not (session-entry? v kid)))
+       (->handle vault-id kid)))))
 
 (defn handles
-  "Handles for every key vault's secret side (default :default) holds.
-   Impure: reads the vault."
+  "Handles for every key vault's secret side (default :default) holds,
+   except sessions' internal secrets. Impure: reads the vault."
   ([] (handles :default))
   ([vault-id]
-   (set (map #(->handle vault-id %) (-kids (:provider (vault vault-id)))))))
+   (let [v (vault vault-id)]
+     (set (map #(->handle vault-id %)
+               (remove #(session-entry? v %) (-kids (:provider v))))))))
 
 (defn- check-handle [h what]
   (when-not (handle? h)
@@ -315,12 +324,16 @@
    acknowledgement {:i-understand :exposes-secret}. Wipe the result when
    done. Impure: reads the vault.
    Throws ex-info {:type ::export-not-acknowledged} without it, and
-   ::not-a-handle, ::unknown-vault or ::destroyed-key."
+   ::not-a-handle, ::unknown-vault, ::destroyed-key, or ::not-exportable
+   for a session's internal secret."
   [h ack]
   (check-handle h "export-secret")
   (when-not (= export-acknowledgement ack)
     (throw (ex-info "export-secret needs {:i-understand :exposes-secret}"
                     {:type ::export-not-acknowledged})))
+  (when (session-entry? (vault (:vault h)) (:kid h))
+    (throw (ex-info "A session's internal secret cannot be exported"
+                    {:type ::not-exportable :kid (:kid h)})))
   (-export (provider-of h) (:kid h)))
 
 (defn destroy!
@@ -330,6 +343,7 @@
   [h]
   (check-handle h "destroy!")
   (-destroy! (:provider (vault (:vault h))) (:kid h))
+  (swap! (:session (vault (:vault h))) dissoc (:kid h))
   (swap! (:defaults (vault (:vault h)))
          (fn [d] (into {} (remove (fn [[_ v]] (= v h)) d))))
   nil)
@@ -403,6 +417,100 @@
       (throw (ex-info "sign needs an Ed25519 signing key" {:type ::wrong-algorithm :kid (:kid h)})))
     #?(:clj  (-with-material p (:kid h) #(impl/ed25519-sign % message-bytes))
        :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))))
+
+;; ============================================================
+;; Session entries: signet.session's secrets (docs/08)
+;;
+;; The chaining key, handshake key, transport keys and ephemerals of a
+;; Noise session live on the secret side as session entries, tagged with
+;; their session's id. They never go on the public side, never appear in
+;; handle/handles, cannot be exported, and are destroyed together by
+;; destroy-session!. The functions below are INTERNAL to signet.session,
+;; except session-entry-count (monitoring).
+;; ============================================================
+
+(defn- new-entry-id []
+  #?(:clj  (str "urn:signet:session:" (enc/bytes->base64url (impl/random-bytes 16)))
+     :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
+
+(defn- adopt-session-entry!
+  "Store material (the vault takes ownership) as a new session entry of
+   session-id. Returns its handle."
+  [vault-id session-id alg material]
+  (let [v  (vault vault-id)
+        id (new-entry-id)]
+    (swap! (:session v) assoc id session-id)
+    (-adopt! (:provider v) id alg material)
+    (->handle vault-id id)))
+
+(defn ^:no-doc generate-ephemeral!
+  "INTERNAL to signet.session: a new X25519 key born in vault-id's provider
+   (under :sodium, in guarded memory), as a session entry of session-id.
+   Returns [handle public-key-bytes]. Its id is its public key's kid: the
+   public key is sent in the clear anyway. Impure: draws from the CSPRNG
+   and writes the vault."
+  [vault-id session-id]
+  (let [v   (vault vault-id)
+        pub (-generate! (:provider v) :x25519)
+        kid (key/kid pub)]
+    (swap! (:session v) assoc kid session-id)
+    [(->handle vault-id kid) (:x pub)]))
+
+(defn ^:no-doc hkdf-pair!
+  "INTERNAL to signet.session: Noise's HKDF (RFC 5869, empty info) with two
+   32-byte outputs, kept in vault-id as two new session entries of
+   session-id. salt is public bytes (the initial chaining key) or a
+   handle; ikm is material (bytes, or a nacljc secret under :sodium),
+   which this consumes and destroys. Returns [handle1 handle2].
+   Impure: reads and writes the vault; destroys ikm."
+  [vault-id session-id salt ikm]
+  #?(:clj
+     (try
+       (let [derive (fn [salt-m] (impl/hkdf-sha-256 ikm salt-m (byte-array 0) 64))
+             out    (if (handle? salt) (with-material salt derive) (derive salt))]
+         (try
+           (let [[a b] (impl/split-material out [32 32])]
+             [(adopt-session-entry! vault-id session-id :session a)
+              (adopt-session-entry! vault-id session-id :session b)])
+           (finally (impl/destroy-material! out))))
+       (finally (impl/destroy-material! ikm)))
+     :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
+
+(defn ^:no-doc aead-encrypt
+  "INTERNAL to signet.session: ChaCha20-Poly1305 of plaintext under h's key
+   with the caller's nonce (12 bytes) and aad (nil for none). The caller
+   owns nonce uniqueness. Impure: reads the vault."
+  [h nonce plaintext aad]
+  (check-handle h "aead-encrypt")
+  #?(:clj  (with-material h #(impl/chacha20-poly1305-encrypt % nonce plaintext aad))
+     :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
+
+(defn ^:no-doc aead-decrypt
+  "INTERNAL to signet.session: inverse of aead-encrypt. Throws whatever the
+   backend throws on authentication failure (signet.session maps it to one
+   error). Impure: reads the vault."
+  [h nonce ciphertext aad]
+  (check-handle h "aead-decrypt")
+  #?(:clj  (with-material h #(impl/chacha20-poly1305-decrypt % nonce ciphertext aad))
+     :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
+
+(defn ^:no-doc destroy-session!
+  "INTERNAL to signet.session: destroy every entry of session-id in
+   vault-id. Destroying again is a no-op. Impure: writes the vault.
+   Returns nil."
+  [vault-id session-id]
+  (let [v (vault vault-id)]
+    (doseq [[id sid] @(:session v) :when (= sid session-id)]
+      (-destroy! (:provider v) id)
+      (swap! (:session v) dissoc id)))
+  nil)
+
+(defn session-entry-count
+  "How many session entries (Noise session secrets) vault (default
+   :default) holds. A session that is never closed leaves its entries
+   behind: this is for monitoring. Impure: reads the vault."
+  ([] (session-entry-count :default))
+  ([vault-id] (count @(:session (vault vault-id)))))
 
 ;; ============================================================
 ;; Default identity (per vault)
