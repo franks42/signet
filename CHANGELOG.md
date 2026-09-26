@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.10.0 (unreleased)
+
 ## 0.9.0 (2026-09-25)
 
 Sessions on vault handles (`docs/08-sessions-on-handles-plan.md`).

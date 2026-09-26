@@ -122,6 +122,8 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   sign/box/chain, `signet.shared`. Phases 1–5 done (see CHANGELOG). Sessions
   move onto handles in the release after. Key records remain the raw layer;
   they are deprecated in that release (decision 17), not removed.
+- **main is 0.10.0-SNAPSHOT** (nothing planned yet; candidates: password
+  unlocking and an agent provider, see docs/08 and docs/07).
 - **0.9.0 (released 2026-09-25):** implemented and merged
   (docs/08-sessions-on-handles-plan.md, phases 0–6): Noise vectors and the
   prologue-order fix (breaking for 0.8.0 peers), sessions on vault handles,
