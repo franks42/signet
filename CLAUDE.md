@@ -11,7 +11,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - **Name**: signet (like a signet ring — personal key for signing/sealing)
 - **Crypto backends** (`signet.impl` facade, selected once at load: `-Dsignet.backend` / `SIGNET_BACKEND`, default `jca`):
   - `:jca` — `signet.impl.jvm`, Java JCA. No native dependency. Its seed→public-key path (a `proxy [SecureRandom]` trick) does not work on babashka.
-  - `:sodium` — `signet.impl.sodium`, libsodium via `nacljc.core` (the backend keeps the name `:sodium`: it names libsodium, the native engine, not the wrapper) (github.com/franks42/nacljc, `com.github.franks42/nacljc 0.1.0` from Clojars via the `:sodium` alias; the version in bb.edn's test:bb-sodium and test:jar must match; babashka.ffi). To test an unreleased nacljc, swap in `{:local/root "../nacljc"}`. Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
+  - `:sodium` — `signet.impl.sodium`, libsodium via `nacljc.core` (the backend keeps the name `:sodium`: it names libsodium, the native engine, not the wrapper) (github.com/franks42/nacljc, `com.github.franks42/nacljc 0.3.0` from Clojars via the `:sodium` alias; the version in bb.edn's test:bb-sodium and test/signet/consumer_check.clj (test:jar) must match; babashka.ffi). To test an unreleased nacljc, swap in `{:local/root "../nacljc"}`. Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
   - ClojureScript: not implemented (every `:cljs` branch throws). The browser plan is libsodium.js (see `../nacljc/docs/feasibility.md`).
 - **Dependencies**: canonical-edn (cedn) 1.6.0 for deterministic serialization, uuidv7 0.7.2 for request IDs (bumped from 1.2.0 / 0.5.0 in 0.7.0; see README "Compatibility"). Bouncy Castle for secp256k1 only (JVM). nacljc for the `:sodium` backend (alias `:sodium`: local snapshot jar, not published).
 - **Key fields**: JWK-inspired — `:x` (public), `:d` (private), `:crv` (:Ed25519/:X25519), `:type` (dispatch tag)
@@ -122,27 +122,23 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   sign/box/chain, `signet.shared`. Phases 1–5 done (see CHANGELOG). Sessions
   move onto handles in the release after. Key records remain the raw layer;
   they are deprecated in that release (decision 17), not removed.
-- **Next: 0.9.0 (main is 0.9.0-SNAPSHOT),** plan in
-  docs/08-sessions-on-handles-plan.md. On `main`: phase 0 (Noise vectors;
-  prologue-order fix, breaking for 0.8.0 peers). On branch
-  `sessions-on-handles`: phases 1–6 (vault session entries, sessions on
-  handles, `close!`, `with-conclave`, docs, key records deprecated,
-  `ssh/import-keypair!`). **The branch uses
-  `../nacljc` via `:local/root`** (deps.edn `:sodium`, bb.edn
-  test:bb-sodium): release nacljc 0.3.0 to Clojars and switch both back to
-  `{:mvn/version "0.3.0"}` before merging, or CI cannot build it. Open
-  design topics (AEGIS suites, box key commitment, post-quantum,
-  persistence and password unlocking, names for keys) are in docs/07;
-  password unlocking has notes in docs/08.
+- **Next: 0.9.0 (main is 0.9.0-SNAPSHOT):** implemented and merged
+  (docs/08-sessions-on-handles-plan.md, phases 0–6): Noise vectors and the
+  prologue-order fix (breaking for 0.8.0 peers), sessions on vault handles,
+  `close!`, `with-conclave`, key records deprecated, `ssh/import-keypair!`.
+  Uses nacljc 0.3.0 (released 2026-09-25). Not released yet. Open design
+  topics (AEGIS suites, box key commitment, post-quantum, persistence and
+  password unlocking, names for keys) are in docs/07; password unlocking
+  (Argon2id, password-derived keys as vault handles) has notes in docs/08.
   **After every release, bump build.clj to the next -SNAPSHOT.**
 - Verified from the installed jar in a scratch consumer (`bb test:jar`,
-  signet's tests only, no src): JVM jca 131/652, JVM sodium 131/652 +
-  parity 54/54, bb sodium 121/628.
+  signet's tests only, no src; 2026-09-25, nacljc 0.3.0): JVM jca 183/984,
+  JVM sodium 183/998 + parity 54/54, bb sodium 173/974.
 - CI (`.github/workflows/ci.yml`, green): `jca` on Ubuntu JDK 21 + 25
   (`bb test:no-sodium`); `sodium-macos` (Homebrew libsodium; test:jvm-sodium,
   test:bb-sodium, test:jar); `sodium-linux` (libsodium 1.0.22 built from a
   sha256-pinned tarball, since Ubuntu ships 1.0.18; the dynamically linked
-  bb 1.13.224, sha256-pinned). nacljc comes from Clojars (0.2.0 on main). Every job
+  bb 1.13.224, sha256-pinned). nacljc comes from Clojars. Every job
   only calls bb tasks.
 - **Linux + babashka.ffi needs the dynamically linked bb.** The static
   build, which `setup-clojure` installs on Linux, cannot load any shared

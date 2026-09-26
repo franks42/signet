@@ -34,7 +34,7 @@
    ;; ignored by bb, which always uses its built-in babashka.ffi. No parity
    ;; run here: its JCA oracle cannot derive keys from seeds on bb.
    :task (shell {:extra-env {"SIGNET_BACKEND" "sodium"}}
-                "bb" "-e" (str "(babashka.deps/add-deps '{:deps {com.github.franks42/nacljc {:local/root \"../nacljc\"}}})"
+                "bb" "-e" (str "(babashka.deps/add-deps '{:deps {com.github.franks42/nacljc {:mvn/version \"0.3.0\"}}})"
                                "(require 'signet.suite) (signet.suite/-main \"sodium\")"))}
 
   test:no-sodium

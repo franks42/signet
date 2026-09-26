@@ -487,6 +487,29 @@ in docs/07.
   weak point: take it as bytes that the vault imports into a secret and
   then wipes (as `import-signing-key!` does). A string can't be wiped, so
   accepting one is only a documented convenience.
+- **Getting the password in without the Clojure heap** (asked
+  2026-09-25). Environment variables don't help: other processes of the
+  same user can read them (`/proc/<pid>/environ`, `ps -E`), children
+  inherit them, and `System/getenv` returns a `String`. Options, strongest
+  first:
+  1. An agent over a Unix socket, like ssh-agent or gpg-agent: the
+     password never enters the app. The agent prompts (pinentry), holds
+     the unlocked key and runs the operations; signet reaches it through an
+     `:agent` provider (docs/07). The socket is 0600 with a
+     peer-credential check. This is the target architecture.
+  2. No password at all: the OS keychain or Secure Enclave, libsecret,
+     a TPM, FIDO2 `hmac-secret` or a YubiKey wraps the master key; native
+     APIs over FFI put the unwrapped key straight into guarded memory.
+  3. A direct command-line read: a nacljc
+     `secret-read-passphrase!` that reads `/dev/tty` with echo off
+     (termios, or `readpassphrase(3)`) straight into `sodium_malloc`
+     memory, so the password is never a `String` or `byte[]`. It then goes
+     into Argon2id as a secret, and the derived key comes out as a secret.
+     Needs a few libc bindings.
+  4. Services: systemd `LoadCredential` or a file on tmpfs, read with an
+     FFI `read(2)` into guarded memory.
+  5. The minimum: `Console/readPassword` gives a `char[]` that can be
+     wiped (still on the heap).
 - **Not in libsodium:** BLAKE3. It has BLAKE2b (`crypto_generichash`),
   SHA-2, SHA-3 and SHAKE/TurboSHAKE.
 
