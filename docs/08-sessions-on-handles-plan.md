@@ -178,6 +178,29 @@ needed now.
 
 ## Phase 3: the session refactor
 
+**Done (2026-09-25), with phase 4,** on branch `sessions-on-handles`. The
+Noise vectors pass unchanged, with handles and with key records, on JCA,
+on libsodium on the JVM, and on bb. Details that differ from the steps
+below:
+
+- State keys are renamed: `:local-static`, `:local-ephemeral` (an
+  `EphemeralKeyPair` with `:handle`, no `:d`).
+- Tracking uses a private dynamic var, `*created*`, bound by `consume!`,
+  instead of passing a collector through every helper.
+- The winner's cleanup destroys quietly. A racing loser may still be
+  inside a call on the same secret (libsodium then refuses to free it
+  with `::secret-in-use`); such an entry stays until `close!`.
+- A loser whose op fails because the winner destroyed what it was using
+  gets `::stale-session-state`, not `::destroyed-key`.
+- The session id is `(random-uuid)`.
+- A local static handle must be one its vault holds as an identity
+  (`vault/handle` returns it, so not a session entry) with algorithm
+  `:ed25519` or `:x25519`; otherwise `::no-private-key`. A peer given as
+  a kid that can't be resolved throws `::unknown-peer`.
+- `with-conclave` gets a clj-kondo `lint-as` in the project config and in
+  `src/clj-kondo.exports/com.github.franks42/signet/config.edn`, for
+  consumers.
+
 1. **State shape:**
 
    ```clojure
@@ -290,6 +313,22 @@ needed now.
 
 ## Phase 4: tests
 
+**Done (2026-09-25).** `session_test.clj` runs on handles, with one
+deprecated-record test, plus lifecycle tests:
+- entry counts after each step;
+- a failed read leaves nothing behind;
+- no secret bytes in any state;
+- replaced secrets are destroyed;
+- `close!` from the first state;
+- `with-conclave` on normal exit and on an exception;
+- two independent sessions in one vault.
+
+`trust_test.clj` checks that ephemerals are destroyed in the vault, and
+has a new race test for handshake writes. Removing any one of seven guards
+(winner cleanup, failed-op cleanup, loser cleanup, close by session, the
+closed flag, single-use CAS, the local-handle check) fails at least one
+test.
+
 The existing tests are adapted to take handles; each keeps one
 deprecated-record case. The known-answer vectors from phase 0 must pass
 unchanged on both backends.
@@ -389,6 +428,36 @@ Separate commits, same release:
      free for a future block that runs against a given enclave.
    - `with-parley`, `with-confab`, `with-closing-session`: considered;
      `with-conclave` conveys a private, locked meeting best.
+
+## After 0.9.0: password unlocking (crypto_pwhash)
+
+Recorded 2026-09-25; it belongs to "persistence and password unlocking"
+in docs/07.
+
+- **nacljc** binds `crypto_pwhash` (Argon2id). Its output is a key, and
+  it should be a secret whenever the password is passed in as one.
+  `crypto_pwhash_str`/`_str_verify` are for storing login passwords
+  (server side). Key unlocking doesn't need them: the AEAD tag already
+  shows a wrong password, and a stored verifier would only give an
+  attacker a second target for offline guessing.
+- **Two layers of keys.** A random vault master key encrypts the stored
+  secrets. The password-derived key (Argon2id, random salt) encrypts only
+  the master key. So:
+  - changing the password rewraps one key;
+  - other unlock methods (OS keychain, hardware key, recovery code) can
+    each wrap their own copy of the master key.
+- **Header:** a suite id, the salt and the Argon2id cost settings
+  (`opslimit`, `memlimit`), authenticated as associated data (docs/07
+  "suites, not knobs"). Costs can then rise later without breaking old
+  files, and can't be quietly swapped for cheaper ones.
+- **Unlocked** means the master key is in guarded memory; **locking**
+  destroys it.
+- **Caveats:**
+  - Argon2id only makes each guess expensive: a weak password stays weak.
+  - A password arrives as a Clojure string and can't be wiped reliably.
+  - High memory settings are slow in the browser (WebAssembly).
+- **Not in libsodium:** BLAKE3. It has BLAKE2b (`crypto_generichash`),
+  SHA-2, SHA-3 and SHAKE/TurboSHAKE.
 
 ## Order and size
 

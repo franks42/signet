@@ -3,6 +3,8 @@
  ;; bindings and unresolved JVM-only symbols. Lint the :clj branch only;
  ;; drop this when ClojureScript support is implemented.
  :cljc {:features #{:clj}}
+ ;; Same as the export in src/clj-kondo.exports (for consumers).
+ :lint-as {signet.session/with-conclave clojure.core/let}
  :linters {:unused-private-var
            ;; defonce kept for its side effect: installing the BC provider
            {:exclude [signet.impl.jvm-secp256k1/bc-installed]}}}

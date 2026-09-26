@@ -14,14 +14,15 @@
    every backend the suite runs on (JCA, libsodium on the JVM and on bb).
 
    Fixed ephemerals are injected with with-redefs on the private
-   fresh-ephemeral, so production code has no injection hook."
+   fresh-ephemeral, so production code has no injection hook. The static
+   keys run both as vault handles and as (deprecated) key records."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [signet.encoding :as enc]
-            [signet.impl :as impl]
             [signet.key :as key]
-            [signet.session :as session]))
+            [signet.session :as session]
+            [signet.vault :as vault]))
 
-(use-fixtures :each (fn [f] (key/clear-key-store!) (f)))
+(use-fixtures :each (fn [f] (key/clear-key-store!) (vault/reset-default-vault!) (f)))
 
 (def ^:private vectors
   [{:source             "cacophony"
@@ -69,12 +70,12 @@
 
 (defn- fixed-ephemeral
   "A fresh-ephemeral replacement that returns the ephemeral with private
-   key priv-hex."
+   key priv-hex, imported into the session's vault."
   [priv-hex]
-  (fn []
-    (let [d (hex priv-hex)]
+  (fn [vault-id _session-id]
+    (let [h (vault/import-encryption-key! vault-id (hex priv-hex))]
       (session/->EphemeralKeyPair :signet/ephemeral-x25519-keypair :X25519
-                                  (impl/x25519-private->public-key d) d))))
+                                  (:x (vault/public-key h)) h))))
 
 (defn- write-with-ephemeral
   "write-message! with fresh-ephemeral returning the ephemeral priv-hex
@@ -87,34 +88,43 @@
 
 (defn- run-vector
   "Drive both sides through v's messages. Returns one entry per message:
-   [index ciphertext-matches? payload-matches?]."
-  [v]
-  ;; The vectors give each side's static private key and the peer's static
-  ;; public key; a side's own public key is its peer's remote-static.
-  (let [init-kp  (key/encryption-keypair (hex (:resp-remote-static v)) (hex (:init-static v)))
-        resp-kp  (key/encryption-keypair (hex (:init-remote-static v)) (hex (:resp-static v)))
-        init-pub (key/public-key init-kp)
-        resp-pub (key/public-key resp-kp)
-        opts     {:prologue (hex (:prologue v))}]
-    (loop [i 0
-           init (session/initiator init-kp resp-pub opts)
-           resp (session/responder resp-kp init-pub opts)
-           out  []]
-      (if-let [[payload-hex ct-hex] (get (:messages v) i)]
-        (let [from-init? (even? i)
-              eph        (case i 0 (:init-ephemeral v) 1 (:resp-ephemeral v) nil)
-              [sender receiver] (if from-init? [init resp] [resp init])
-              [sender' ct]      (write-with-ephemeral sender eph (hex payload-hex))
-              [receiver' pt]    (session/read-message! receiver ct)
-              [init' resp']     (if from-init? [sender' receiver'] [receiver' sender'])]
-          (recur (inc i) init' resp'
-                 (conj out [i (bytes= (hex ct-hex) ct) (bytes= (hex payload-hex) pt)])))
-        {:out out :established? (and (session/established? init) (session/established? resp))}))))
+   [index ciphertext-matches? payload-matches?]. statics is :handles (keys
+   imported into the vault) or :records (deprecated key records)."
+  ([v] (run-vector v :handles))
+  ([v statics]
+   ;; The vectors give each side's static private key and the peer's
+   ;; static public key; a side's own public key is its peer's remote-static.
+   (let [init-kp  (key/encryption-keypair (hex (:resp-remote-static v)) (hex (:init-static v)))
+         resp-kp  (key/encryption-keypair (hex (:init-remote-static v)) (hex (:resp-static v)))
+         init-pub (key/public-key init-kp)
+         resp-pub (key/public-key resp-kp)
+         [init-kp resp-kp] (case statics
+                             :records [init-kp resp-kp]
+                             :handles [(vault/import-encryption-key! (hex (:init-static v)))
+                                       (vault/import-encryption-key! (hex (:resp-static v)))])
+         opts     {:prologue (hex (:prologue v))}]
+     (loop [i 0
+            init (session/initiator init-kp resp-pub opts)
+            resp (session/responder resp-kp init-pub opts)
+            out  []]
+       (if-let [[payload-hex ct-hex] (get (:messages v) i)]
+         (let [from-init? (even? i)
+               eph        (case i 0 (:init-ephemeral v) 1 (:resp-ephemeral v) nil)
+               [sender receiver] (if from-init? [init resp] [resp init])
+               [sender' ct]      (write-with-ephemeral sender eph (hex payload-hex))
+               [receiver' pt]    (session/read-message! receiver ct)
+               [init' resp']     (if from-init? [sender' receiver'] [receiver' sender'])]
+           (recur (inc i) init' resp'
+                  (conj out [i (bytes= (hex ct-hex) ct) (bytes= (hex payload-hex) pt)])))
+         (let [result {:out out :established? (and (session/established? init) (session/established? resp))}]
+           (session/close! init)
+           (session/close! resp)
+           result))))))
 
 (deftest published-noise-kk-vectors
-  (doseq [v vectors]
-    (testing (:source v)
-      (let [{:keys [out established?]} (run-vector v)]
+  (doseq [v vectors, statics [:handles :records]]
+    (testing (str (:source v) " " statics)
+      (let [{:keys [out established?]} (run-vector v statics)]
         (is (= (count (:messages v)) (count out)))
         (is established?)
         (doseq [[i ct-ok? pt-ok?] out]

@@ -11,17 +11,23 @@
                  job (a policy decision point such as stroopwafel's).
 
    Ephemeral keys are used once and discarded: never registered in any key
-   store, dropped from protocol state, and their secret bytes zeroed —
+   store, never on a vault's public side or in its handles, dropped from
+   protocol state, and destroyed in the vault after the handshake —
    otherwise there is no forward secrecy."
   (:require [clojure.test :refer [deftest is testing use-fixtures]]
             [signet.chain :as chain]
             [signet.key :as key]
             [signet.session :as session]
-            [signet.sign :as sign]))
+            [signet.sign :as sign]
+            [signet.vault :as vault]))
 
-(use-fixtures :each (fn [f] (key/clear-key-store!) (f)))
+(use-fixtures :each (fn [f] (key/clear-key-store!) (vault/reset-default-vault!) (f)))
 
 (defn- store-kids [] (set (map key/kid (key/registered-keys))))
+
+(defn- throws-type [f]
+  (try (f) :no-throw
+       (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
 
 (defn- stranger-envelope
   "A validly signed envelope from a key the verifier has never seen."
@@ -30,8 +36,6 @@
         env (sign/sign-edn kp payload)]
     (key/clear-key-store!)
     env))
-
-(defn- all-zero? [^bytes bs] (every? zero? (seq bs)))
 
 ;; ---------------------------------------------------------------------------
 ;; Key store: only what the caller deliberately registers
@@ -56,11 +60,11 @@
 ;; ---------------------------------------------------------------------------
 
 (defn- handshake
-  "Complete a Noise_KK handshake between identities a and b; returns the
-   intermediate and final states."
+  "Complete a Noise_KK handshake between identities a and b (vault
+   handles); returns the intermediate and final states."
   [a b]
-  (let [i0 (session/initiator a (key/public-key b))
-        r0 (session/responder b (key/public-key a))
+  (let [i0 (session/initiator a (vault/public-key b))
+        r0 (session/responder b (vault/public-key a))
         [i1 m1] (session/write-message! i0 (.getBytes "hi" "UTF-8"))
         [r1 _]  (session/read-message! r0 m1)
         [r2 m2] (session/write-message! r1 (.getBytes "yo" "UTF-8"))
@@ -68,30 +72,38 @@
     {:i1 i1 :r1 r1 :i2 i2 :r2 r2}))
 
 (deftest session-ephemerals-never-registered
-  (let [a      (key/encryption-keypair!)
-        b      (key/encryption-keypair!)
+  (let [a      (vault/generate-encryption-key!)
+        b      (vault/generate-encryption-key!)
         before (store-kids)
-        {:keys [i2 r2]} (handshake a b)]
+        public (set (keys @(:public (#'vault/vault :default))))
+        {:keys [i1 i2 r2]} (handshake a b)]
     (is (session/established? i2))
     (is (session/established? r2))
-    (is (= 2 (count before)) "only the two static identity keypairs")
-    (is (= before (store-kids)) "the handshake registered nothing")))
+    (is (= before (store-kids)) "the handshake registered nothing in the key store")
+    (is (= public (set (keys @(:public (#'vault/vault :default)))))
+        "nor on the vault's public side")
+    (is (= #{a b} (vault/handles)) "the vault lists only the two identities")
+    (is (nil? (vault/handle (get-in i1 [:local-ephemeral :handle :kid])))
+        "handle never returns an ephemeral")))
 
-(deftest session-ephemerals-dropped-and-zeroed
-  (let [{:keys [i1 r1 i2 r2]} (handshake (key/encryption-keypair) (key/encryption-keypair))
-        i-eph (:local-ephemeral-kp i1)]
+(deftest session-ephemerals-dropped-and-destroyed
+  (let [{:keys [i1 r1 i2 r2]} (handshake (vault/generate-encryption-key!) (vault/generate-encryption-key!))
+        i-eph (:local-ephemeral i1)
+        dead? #(= :signet.vault/destroyed-key
+                  (throws-type (fn [] (vault/x25519-dh % (byte-array 32 (byte 9))))))]
     (testing "the initiator's ephemeral exists only between messages 1 and 2"
-      (is (some? (:d i-eph)) "i1 is waiting for message 2, so it must hold it"))
+      (is (vault/handle? (:handle i-eph)) "i1 is waiting for message 2, so it must hold it")
+      (is (nil? (:d i-eph)) "as a handle: no private key bytes in the state"))
     (testing "the responder's ephemeral never appears in any returned state:
-              it is created, used and wiped inside the call that writes message 2"
-      (is (nil? (:local-ephemeral-kp r1)))
-      (is (nil? (:local-ephemeral-kp r2))))
+              it is created, used and destroyed inside the call that writes message 2"
+      (is (nil? (:local-ephemeral r1)))
+      (is (nil? (:local-ephemeral r2))))
     (testing "the established states hold no ephemeral material"
       (doseq [st [i2 r2]]
-        (is (nil? (:local-ephemeral-kp st)))
+        (is (nil? (:local-ephemeral st)))
         (is (nil? (:remote-ephemeral-pub st)))))
-    (testing "the initiator's ephemeral private key bytes were zeroed once used"
-      (is (all-zero? (:d i-eph))))))
+    (testing "the initiator's ephemeral was destroyed in the vault once used"
+      (is (dead? (:handle i-eph))))))
 
 (deftest chain-ephemerals-never-registered
   (let [root   (key/signing-keypair)
@@ -169,27 +181,26 @@
 ;; dh vs edh: misuse fails loudly instead of relying on the reader
 ;; ---------------------------------------------------------------------------
 
-(def ^:private fresh-ephemeral @#'session/fresh-ephemeral)
+(def ^:private fresh-ephemeral* @#'session/fresh-ephemeral)
+(defn- fresh-ephemeral [] (fresh-ephemeral* :default :test-session))
 (def ^:private dh  @#'session/dh)
 (def ^:private edh @#'session/edh)
-
-(defn- throws-type [f]
-  (try (f) :no-throw
-       (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))
 
 (deftest ephemerals-have-their-own-type
   (let [eph (fresh-ephemeral)]
     (is (= :signet/ephemeral-x25519-keypair (:type eph)))
-    (is (= 32 (count (:d eph))))))
+    (is (= 32 (count (:x eph))))
+    (is (vault/handle? (:handle eph)) "its private key is a vault session entry")
+    (is (nil? (:d eph)))))
 
 (deftest dh-vs-edh-misuse-throws
   (let [static-a (key/encryption-keypair)
         static-b (key/public-key (key/encryption-keypair))
         eph      (fresh-ephemeral)]
     (testing "correct use works"
-      (is (= 32 (count (dh static-a static-b))) "ss: static x static")
-      (is (= 32 (count (edh eph static-b))) "es/se: ephemeral x static")
-      (is (= 32 (count (edh static-a eph))) "static x ephemeral public"))
+      (is (some? (dh static-a static-b)) "ss: static x static")
+      (is (some? (edh eph static-b)) "es/se: ephemeral x static")
+      (is (some? (edh static-a eph)) "static x ephemeral public"))
     (testing "dh refuses any ephemeral input"
       (is (= :signet.session/ephemeral-in-dh (throws-type #(dh eph static-b))))
       (is (= :signet.session/ephemeral-in-dh (throws-type #(dh static-a eph)))))
@@ -210,7 +221,7 @@
 (defn- transport-pair
   "Established [initiator responder] transport states."
   []
-  (let [{:keys [i2 r2]} (handshake (key/encryption-keypair) (key/encryption-keypair))]
+  (let [{:keys [i2 r2]} (handshake (vault/generate-encryption-key!) (vault/generate-encryption-key!))]
     [i2 r2]))
 
 (deftest second-write-from-same-state-is-refused
@@ -222,9 +233,9 @@
         "the returned state is the one to use")))
 
 (deftest second-write-from-handshake-state-is-refused
-  (let [a  (key/encryption-keypair)
-        b  (key/encryption-keypair)
-        i0 (session/initiator a (key/public-key b))]
+  (let [a  (vault/generate-encryption-key!)
+        b  (vault/generate-encryption-key!)
+        i0 (session/initiator a (vault/public-key b))]
     (session/write-message! i0 (.getBytes "m1" "UTF-8"))
     (is (stale? #(session/write-message! i0 (.getBytes "m1'" "UTF-8"))))))
 
@@ -253,4 +264,19 @@
                      (mapv deref))
         cts (filter bytes? results)]
     (is (= 1 (count cts)) "exactly one writer wins; no second ciphertext under the same nonce")
-    (is (every? #{:signet.session/stale-session-state} (remove bytes? results)))))
+    (is (every? #{:signet.session/stale-session-state} (remove bytes? results)))
+    (is (= 4 (vault/session-entry-count)) "the losers left no secrets in the vault")))
+
+(deftest concurrent-handshake-writes-leave-one-set-of-secrets
+  ;; Handshake writes create vault entries (ephemeral, ck, k): the losers'
+  ;; must be destroyed, not left behind.
+  (let [a  (vault/generate-encryption-key!)
+        b  (vault/generate-encryption-key!)
+        i0 (session/initiator a (vault/public-key b))
+        results (->> (range 16)
+                     (mapv (fn [_] (future
+                                     (try (second (session/write-message! i0 (.getBytes "m1" "UTF-8")))
+                                          (catch clojure.lang.ExceptionInfo e (:type (ex-data e)))))))
+                     (mapv deref))]
+    (is (= 1 (count (filter bytes? results))))
+    (is (= 3 (vault/session-entry-count)) "one ephemeral, one ck, one k: the winner's")))
