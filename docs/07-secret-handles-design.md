@@ -170,6 +170,65 @@ do things. Roughly in order of how much they matter:
 The structural answer to 1 and 2 remains an out-of-process enclave with
 its own policy.
 
+### Principle: the dynamic runtime is untrusted; authority lives outside it
+
+Agreed 2026-09-25. **Hiding the key is not controlling it.** Whoever can
+call `sign` with a handle signs anything, as the key's owner, and every
+such signature is valid and verified. Key secrecy is then beside the
+point. Clojure makes that easy:
+- vars are global and mutable (`alter-var-root`, `with-redefs`);
+- `requiring-resolve` and `eval` reach anything;
+- nREPL is a remote `eval`;
+- bb, nbb and scittle load code dynamically by design.
+
+Inside one runtime nothing can make "only this function may sign"
+enforceable: **the process is the smallest unit of trust.** Guarded memory
+stops *theft* of keys; only a boundary outside the runtime stops their
+*misuse*. Four layers bound the signing oracle:
+
+1. **A separate, small, static signer with policy.** The `:agent` tier
+   ("Future: enclave tiers") has no REPL and no dynamic loading, and a
+   minimal codebase. It decides what it is willing to sign, not only who
+   holds a handle. signet signs **structured EDN envelopes, not opaque
+   bytes**, so the agent can parse each request and check it against
+   policy: operation, audience, maximum TTL, amounts, rate limits. The PDP
+   (stroopwafel's Datalog) can run inside the agent. An HSM that signs
+   arbitrary hashes cannot do this.
+2. **What you see is what you sign, for high-value operations.** The agent
+   shows the parsed envelope and requires confirmation: a FIDO touch, a
+   pinentry dialog (like `ssh-add -c` or a hardware wallet). A compromised
+   app can ask; a human decides.
+3. **The app holds only attenuated, short-lived capabilities.** The root
+   key stays in the agent or hardware. The app gets a working key endorsed
+   by a capability chain with caveats (expiry, audience, allowed
+   operations): `signet.chain` / stroopwafel. A compromised app then
+   yields a narrow capability that expires soon, not "sign anything as
+   anyone".
+4. **Verifiers check authority, not just a signature.** "Signed by Alice's
+   key" is only *verified*; *authorized* means the chain's caveats allow
+   this action (the trust model: valid / verified / authorized). A stolen
+   oracle can't get past that check. A signing log kept by the agent, and
+   revocation, add detection and recovery.
+
+**Hardening inside the runtime** lowers the odds and never gives a
+guarantee:
+- no nREPL in production;
+- no `eval` or `read-string` on untrusted input;
+- trusted script sources for bb and nbb;
+- SCI's `:allow`/`:deny` for embedded interpreters;
+- `-XX:+DisableAttachMechanism`.
+
+**Consequence for priorities (0.10.0 and after):** the agent with a policy
+engine, and chain-based attenuation of working keys, come before further
+in-process hardening. Order of candidates:
+1. The `:agent` provider with request parsing and policy (PDP seam),
+   optional confirmation, and a signing log.
+2. Working keys endorsed by chains with caveats; verification enforcing
+   them.
+3. The cheap fixes above (startup hygiene, `NACLJC_LIBSODIUM`, the
+   message-1 replay note).
+4. Password unlocking (docs/08) and the hardware tiers.
+
 ## The model
 
 ### Handles
