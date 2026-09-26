@@ -1,6 +1,18 @@
 # Changelog
 
-## 0.10.0 (unreleased)
+## 0.9.2 (2026-09-26)
+
+### Changed
+
+- **cedn 1.6.1** (fixes from a review of canonical-edn):
+  - `#inst` values, and so signed envelopes' timestamps, no longer depend
+    on the JVM's default locale. Before, under a locale with non-Latin
+    digits (for example `ar-EG`), cedn wrote `#inst` digits in that script,
+    so signatures made on such a machine verified nowhere else.
+  - `java.sql.Date`/`Time` in a payload now fail with cedn's
+    `:cedn/unsupported-type` instead of a raw exception.
+  - Canonical bytes are otherwise unchanged for signet (JVM and bb): the
+    other byte fix in 1.6.1 is ClojureScript-only.
 
 ## 0.9.1 (2026-09-25)
 
