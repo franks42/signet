@@ -5,9 +5,10 @@
             [signet.ssh :as ssh]
             [signet.key :as key]
             [signet.sign :as sign]
-            [signet.chain :as chain]))
+            [signet.chain :as chain]
+            [signet.vault :as vault]))
 
-(use-fixtures :each (fn [f] (key/clear-key-store!) (f)))
+(use-fixtures :each (fn [f] (key/clear-key-store!) (vault/reset-default-vault!) (f)))
 
 ;; Generate a temp SSH keypair for testing
 (def ^:private test-key-dir (str (System/getProperty "java.io.tmpdir") "/signet-ssh-test"))
@@ -168,3 +169,44 @@
     (is (= (key/kid kp) (key/kid (ssh/load-keypair! test-priv-path))))
     (is (some? (key/lookup (key/kid kp))) "load-keypair! registered it")
     (is (= [(key/kid kp)] (map key/kid (key/registered-keys))) "exactly the key load-keypair! registered")))
+
+;; ---------------------------------------------------------------------------
+;; 0.9.0: import-keypair! puts the key in the vault and returns a handle
+;; ---------------------------------------------------------------------------
+
+(deftest import-keypair!-returns-a-vault-handle
+  (let [h   (ssh/import-keypair! test-priv-path)
+        pub (ssh/read-public-key (slurp (str test-priv-path ".pub")))
+        msg (.getBytes "from ssh" "UTF-8")]
+    (is (vault/handle? h))
+    (is (= (key/kid pub) (:kid h)) "the handle's kid is the .pub file's key")
+    (is (sign/verify pub msg (vault/sign h msg)) "signs inside the vault")
+    (is (= #{h} (vault/handles)))
+    (is (empty? (key/registered-keys)) "the key store is not touched")
+    (testing "into another vault"
+      (vault/register-vault! :ssh (vault/memory-provider))
+      (try
+        (is (= :ssh (:vault (ssh/import-keypair! :ssh test-priv-path))))
+        (finally (vault/unregister-vault! :ssh))))
+    (is (nil? (ssh/import-keypair! "/nonexistent/path")))))
+
+(deftest import-keypair!-refuses-bad-keys
+  (is (bad-ssh-key? #(ssh/import-keypair! (keygen! "rsa" "")) :not-ed25519))
+  (is (bad-ssh-key? #(ssh/import-keypair! (keygen! "ed25519" "secret-pass")) :encrypted))
+  (testing "a seed that does not give the file's public key"
+    ;; The public-key copies agree, so parsing succeeds; only the vault's
+    ;; derivation from the seed can notice.
+    (let [pem   (slurp test-priv-path)
+          raw   (.decode (java.util.Base64/getDecoder)
+                         ^String (apply str (remove #(str/starts-with? % "-----") (str/split-lines pem))))
+          rd    (fn [^bytes bs pos] (+ pos 4 (reduce (fn [a i] (+ (* a 256) (bit-and (aget bs (+ pos i)) 0xff))) 0 (range 4))))
+          p     (-> 15 (->> (rd raw)) (->> (rd raw)) (->> (rd raw)) (+ 4) (->> (rd raw)))
+          ;; private blob: length(4) check1(4) check2(4) "ssh-ed25519"(4+11) pub(4+32) len(4) seed…
+          seed0 (+ p 4 8 15 36 4)
+          bad   (let [c (aclone raw)] (aset-byte c seed0 (unchecked-byte (bit-xor (aget c seed0) 1))) c)
+          f     (java.io.File/createTempFile "signet-ssh-mismatch" "")]
+      (spit f (str "-----BEGIN OPENSSH PRIVATE KEY-----\n"
+                   (.encodeToString (java.util.Base64/getEncoder) bad)
+                   "\n-----END OPENSSH PRIVATE KEY-----\n"))
+      (is (bad-ssh-key? #(ssh/import-keypair! (str f)) :public-key-mismatch))
+      (is (empty? (vault/handles)) "the mismatched key did not stay in the vault"))))

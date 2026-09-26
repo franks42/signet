@@ -4,11 +4,13 @@
    Converts between SSH wire format and signet key records:
    - SSH public key (id_ed25519.pub) → Ed25519PublicKey
    - SSH private key (id_ed25519) → Ed25519KeyPair (seed + derived pub)
+   - SSH private key file → a vault handle (import-keypair!, 0.9.0)
    - SSH keypair files → Ed25519KeyPair (load-keypair; load-keypair! also
-     registers it in the key store)
+     registers it in the key store); deprecated since 0.9.0
 
    No external dependencies — just byte manipulation and base64."
   (:require [signet.key :as key]
+            [signet.vault :as vault]
             [clojure.string :as str]))
 
 ;; ---------------------------------------------------------------------------
@@ -86,7 +88,7 @@
 ;; Private key import
 ;; ---------------------------------------------------------------------------
 
-(defn read-private-key
+(defn- parse-private-key
   "Read an OpenSSH Ed25519 private key file and return a signet Ed25519KeyPair.
 
    Parses the OpenSSH private key format, unencrypted only:
@@ -138,12 +140,25 @@
         (key/->Ed25519KeyPair :signet/ed25519-keypair :Ed25519
                               (byte-array pub) (byte-array (subvec sk 0 32)))))))
 
+(defn ^{:deprecated "0.9.0"} read-private-key
+  "DEPRECATED since 0.9.0 (secret-carrying key records): use import-keypair!,
+   which puts the key in the vault and returns a handle.
+
+   Read an OpenSSH Ed25519 private key file's content and return a signet
+   Ed25519KeyPair. Unencrypted only; see parse-private-key for the checks.
+   Pure: parses the content; never touches the key store.
+   Throws ex-info {:type ::bad-ssh-key :reason …} when any check fails."
+  [pem-content]
+  (parse-private-key pem-content))
+
 ;; ---------------------------------------------------------------------------
 ;; Convenience: load keypair from file paths
 ;; ---------------------------------------------------------------------------
 
-(defn load-keypair
-  "Load an Ed25519 keypair from SSH key files. Never touches the key store;
+(defn ^{:deprecated "0.9.0"} load-keypair
+  "DEPRECATED since 0.9.0 (secret-carrying key records): use import-keypair!.
+
+   Load an Ed25519 keypair from SSH key files. Never touches the key store;
    load-keypair! also registers the result.
 
    Arguments:
@@ -159,15 +174,41 @@
   ([private-key-path]
    (let [priv-file (java.io.File. private-key-path)]
      (when (.exists priv-file)
-       (read-private-key (slurp priv-file)))))
+       (parse-private-key (slurp priv-file)))))
   ([private-key-path public-key-path]
    (let [priv-file (java.io.File. private-key-path)
          pub-file  (java.io.File. public-key-path)]
      (when (and (.exists priv-file) (.exists pub-file))
-       (read-private-key (slurp priv-file))))))
+       (parse-private-key (slurp priv-file))))))
 
-(defn load-keypair!
-  "load-keypair, then register! the keypair when one was found; returns it
+(defn import-keypair!
+  "Import an unencrypted OpenSSH Ed25519 private key file (default
+   ~/.ssh/id_ed25519) into vault (default :default) and return its handle,
+   or nil if the file does not exist. The seed goes into the vault and the
+   parsed copy is wiped (the file's contents, as read, stay on the heap
+   until collected). The vault's key must match the file's public key.
+   On babashka this needs the libsodium backend (as vault/import-signing-key!).
+   Impure: reads the file (and the user.home property for the default path)
+   and writes the vault.
+   Throws ex-info {:type ::bad-ssh-key :reason …} for anything but an
+   unencrypted Ed25519 key, or :public-key-mismatch when the seed does not
+   give the file's public key."
+  ([] (import-keypair! (str (System/getProperty "user.home") "/.ssh/id_ed25519")))
+  ([private-key-path] (import-keypair! :default private-key-path))
+  ([vault-id private-key-path]
+   (let [f (java.io.File. ^String private-key-path)]
+     (when (.exists f)
+       (let [kp (parse-private-key (slurp f))
+             h  (vault/import-signing-key! vault-id (:d kp))]
+         (when-not (= (:kid h) (key/kid (key/signing-public-key kp)))
+           (vault/destroy! h)
+           (bad-key! :public-key-mismatch "the seed does not give the file's public key"))
+         h)))))
+
+(defn ^{:deprecated "0.9.0"} load-keypair!
+  "DEPRECATED since 0.9.0 (secret-carrying key records): use import-keypair!.
+
+   load-keypair, then register! the keypair when one was found; returns it
    (or nil). Same arities. Impure: reads the files and writes the key store."
   [& paths]
   (some-> (apply load-keypair paths) key/register!))

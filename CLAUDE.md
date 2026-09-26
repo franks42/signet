@@ -57,10 +57,11 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - Block content is opaque EDN — stroopwafel adds Datalog semantics
 - Predicates: `chain?`, `open?`, `sealed?`
 
-### signet.session — Noise_KK forward-secret sessions ✅ (0.6.0)
+### signet.session — Noise_KK forward-secret sessions ✅ (0.6.0; on vault handles in 0.9.0)
 - `Noise_KK_25519_ChaChaPoly_SHA256` — KK handshake pattern, X25519 DH, ChaCha20-Poly1305 AEAD, SHA-256 hashing
-- API: `initiator`, `responder`, `write-message!`, `read-message!`, `established?`
-- Pure-functional state machine; no atoms or global state
+- API: `initiator`, `responder` (local static = vault handle; peer = public key or kid), `write-message!`, `read-message!`, `established?`, `close!`, `with-conclave`
+- Wire-compatible with other Noise implementations since 0.9.0 (prologue order fixed); `test/signet/noise_vectors_test.clj` checks the cacophony and snow vectors
+- Single-use state values; secrets (ck, k, transport keys, ephemerals) are vault session entries, the state holds handles only. `consume!` destroys what the next state doesn't need (or, on failure/lost race, what the call created); `close!` destroys the whole session from any state (docs/08)
 - Two-message handshake (KK exploits pre-shared static keys); after Split, transport messages are pure AEAD with monotonic nonces per direction
 - Forward secrecy via ephemeral-ephemeral DH (`ee` token); mutual authentication via static-static DH (`ss` token) and the cross-DH tokens (`es`, `se`)
 - Ed25519 keypair input via the existing birational map (one identity, multiple uses)
@@ -107,14 +108,11 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `docs/07-secret-handles-design.md` — DRAFT: secrets by reference (handles + vault + providers: memory, sodium secure memory, WebCrypto, agent); code never sees secret bytes; also records the 2026-09-23 naming/twin-rule decisions for 0.7.0
 - `docs/08-sessions-on-handles-plan.md` — 0.9.0 implementation plan: session secrets as vault session entries, `close!` by session, `with-conclave`; phase 0 (Noise known-answer vectors) done
 
-## Current state (2026-09-23)
+## Current state (2026-09-25)
 
-- `main` is 0.7.0 ready for release, the first Clojars release. It adds
-  PR #1 (libsodium backend, trust and key-store fixes, dh/edh enforcement,
-  single-use sessions, box v2) and the naming/purity batch: pure key
-  functions with `!` twins, `register!` sets no defaults, `sign-edn!`,
-  `write-message!`/`read-message!`, typed errors (`:type`) everywhere,
-  redacted printing, strict SSH import. See CHANGELOG.md.
+- **0.7.0** (first Clojars release) added PR #1 (libsodium backend, trust
+  and key-store fixes, dh/edh enforcement, single-use sessions, box v2)
+  and the naming/purity batch. See CHANGELOG.md.
 - **Release:** a `vX.Y.Z` tag runs `.github/workflows/release.yml`. It
   runs `bb release-check` and both backends' tests, deploys, then runs
   `bb test:clojars X.Y.Z` (signet's tests against the jar from Clojars,
@@ -124,11 +122,18 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   sign/box/chain, `signet.shared`. Phases 1–5 done (see CHANGELOG). Sessions
   move onto handles in the release after. Key records remain the raw layer;
   they are deprecated in that release (decision 17), not removed.
-- **Next: 0.9.0 (main is 0.9.0-SNAPSHOT):** sessions on vault handles
-  (chaining and transport keys in the vault, decision 9) and deprecating
-  key records (decision 17). Open design topics (AEGIS suites, box key
-  commitment, post-quantum, persistence and password unlocking, names for
-  keys) are in docs/07-secret-handles-design.md.
+- **Next: 0.9.0 (main is 0.9.0-SNAPSHOT),** plan in
+  docs/08-sessions-on-handles-plan.md. On `main`: phase 0 (Noise vectors;
+  prologue-order fix, breaking for 0.8.0 peers). On branch
+  `sessions-on-handles`: phases 1–6 (vault session entries, sessions on
+  handles, `close!`, `with-conclave`, docs, key records deprecated,
+  `ssh/import-keypair!`). **The branch uses
+  `../nacljc` via `:local/root`** (deps.edn `:sodium`, bb.edn
+  test:bb-sodium): release nacljc 0.3.0 to Clojars and switch both back to
+  `{:mvn/version "0.3.0"}` before merging, or CI cannot build it. Open
+  design topics (AEGIS suites, box key commitment, post-quantum,
+  persistence and password unlocking, names for keys) are in docs/07;
+  password unlocking has notes in docs/08.
   **After every release, bump build.clj to the next -SNAPSHOT.**
 - Verified from the installed jar in a scratch consumer (`bb test:jar`,
   signet's tests only, no src): JVM jca 131/652, JVM sodium 131/652 +
@@ -137,7 +142,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   (`bb test:no-sodium`); `sodium-macos` (Homebrew libsodium; test:jvm-sodium,
   test:bb-sodium, test:jar); `sodium-linux` (libsodium 1.0.22 built from a
   sha256-pinned tarball, since Ubuntu ships 1.0.18; the dynamically linked
-  bb 1.13.224, sha256-pinned). nacljc 0.1.0 comes from Clojars. Every job
+  bb 1.13.224, sha256-pinned). nacljc comes from Clojars (0.2.0 on main). Every job
   only calls bb tasks.
 - **Linux + babashka.ffi needs the dynamically linked bb.** The static
   build, which `setup-clojure` installs on Linux, cannot load any shared
@@ -170,10 +175,12 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   ex-data). Serialising a key record as data still exposes `:d` — the
   vault (0.8.0) fixes that.
 - **Ephemeral keys are never kept longer than needed:** never registered,
-  never exposed by the public API, and wiped after use. In `signet.session`:
-  `fresh-ephemeral`, `edh` (es/ee/se) vs `dh` (ss), `mix-key!` wipes each
-  DH output, `split!` wipes the ephemeral private key and the handshake
-  ck/k. `test/signet/trust_test.clj` asserts absence and zeroing.
+  never on a vault's public side or in `handles`, never exposed by the
+  public API, and destroyed after use. In `signet.session` (0.9.0):
+  `fresh-ephemeral` makes a vault session entry, `edh` (es/ee/se) vs `dh`
+  (ss), `mix-key!` (via `vault/hkdf-pair!`) destroys each DH output, and
+  `consume!` destroys the ephemeral and the handshake ck/k after Split.
+  `test/signet/trust_test.clj` asserts absence and destruction.
 - **dh vs edh is enforced, not just named.** Ephemerals are their own
   record types (`EphemeralKeyPair`, `EphemeralPublicKey`, private to
   `signet.session`). `dh` throws `::ephemeral-in-dh` on any ephemeral
@@ -203,9 +210,9 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 ## Testing, lint, format
 
 ```bash
-bb test:jvm          # full suite, JCA backend (clojure -M:test): 164 tests / 819 assertions
+bb test:jvm          # full suite, JCA backend (clojure -M:test): 183 tests / 984 assertions
 bb test:jvm-sodium   # full suite, libsodium backend + JCA-vs-libsodium parity (54 checks)
-bb test:bb-sodium    # full suite on babashka, libsodium backend: 154 / 802 (all but secp256k1)
+bb test:bb-sodium    # full suite on babashka, libsodium backend: 173 / 974 (all but secp256k1)
 bb smoke             # bb smoke suite (JCA): 9 tests
 bb test:no-sodium    # lint + fmt + JCA suite + bb smoke (no native libsodium needed)
 bb test:all          # test:no-sodium + test:jvm-sodium + test:bb-sodium

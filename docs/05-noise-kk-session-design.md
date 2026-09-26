@@ -157,18 +157,20 @@ What KK does **not** give you:
 
 ## API shape
 
-The session abstraction is a **pure-functional state machine**.
-No mutable state, no atoms. Each operation takes a state and
-returns a new state plus produced bytes (or consumes bytes and
-returns plaintext). The mpc consumer can persist intermediate
-state, retry on transient errors, and reason about lifecycles
-without thread-safety overhead.
+The session abstraction is a state machine of **single-use state
+values**. Each operation takes a state and returns the next state plus
+produced bytes (or consumes bytes and returns plaintext); the state it
+was given is consumed (a one-shot marker) and using it again throws
+`::stale-session-state`. Since 0.9.0 the secrets are not in the state at
+all: they are vault session entries (see "Where the secrets live").
 
 ```clojure
-(initiator local-static-kp remote-static-pub & {:keys [prologue]})
+(initiator local-static remote-static)            ; or with {:prologue bs}
+;; local-static: a vault handle (a key record still works, deprecated)
+;; remote-static: the peer's public key, or its kid
 ;; → handshake-state, role :initiator, message-pos 0
 
-(responder local-static-kp remote-static-pub & {:keys [prologue]})
+(responder local-static remote-static)
 ;; → handshake-state, role :responder, message-pos 0
 
 (write-message! state plaintext-bytes)
@@ -176,8 +178,8 @@ without thread-safety overhead.
 ;; During handshake, ciphertext carries: ephemeral-pub bytes,
 ;; encrypted application payload (AEAD-tagged with the running
 ;; transcript). After Split(), pure transport mode:
-;; ciphertext is just ChaCha20-Poly1305(send-key, nonce, plaintext, h)
-;; with nonce baked into state.
+;; ciphertext is just ChaCha20-Poly1305(send-key, nonce, plaintext)
+;; with the nonce counted in the state.
 
 (read-message! state ciphertext-bytes)
 ;; → [next-state plaintext-bytes]
@@ -186,6 +188,9 @@ without thread-safety overhead.
 
 (established? state)
 ;; → boolean. True iff Split() has run; transport messages may flow.
+
+(close! state)                                    ; from any state of the session
+(with-conclave [s (initiator me peer)] …)         ; close! on exit
 ```
 
 The handshake follows the KK pattern's two-message exchange. The
@@ -401,16 +406,37 @@ The library does NOT enforce a maximum message size, a maximum
 number of transport messages per session, or automatic re-keying.
 Those are policy decisions for the consumer.
 
+## Where the secrets live (0.9.0)
+
+A state holds the transcript hash `h`, public keys, counters and vault
+**handles**; the secrets themselves are vault session entries, in the
+vault of the local static key (docs/08):
+
+| Secret | Created | Destroyed |
+|---|---|---|
+| local ephemeral | writing a handshake message | once the handshake is done (Split) |
+| DH outputs | each DH token | inside the MixKey that consumes them |
+| `ck`, `k` | each MixKey | when replaced by the next MixKey, or at Split |
+| transport keys | Split | `close!` |
+
+`consume!` records every entry a call creates. When the call succeeds it
+destroys what the next state no longer needs; when it fails (a forged
+message) or loses a race it destroys what it created, so the vault gains
+nothing and the old state stays usable. Every entry is also tagged with
+the session's random id, and `close!` destroys all of them, from any
+state of the session: the per-step cleanup keeps forward secrecy tight
+during the handshake, and closing by session is the backstop.
+`with-conclave` calls `close!` when its block exits.
+
 ## Forward-secrecy boundary
 
 Forward secrecy in Noise KK is bounded by:
 
-1. **Both sides must actually destroy ephemerals** when the session
-   ends. The library does not enforce this — it returns immutable
-   state and trusts the caller to discard. For sessions whose state
-   is held in memory only and goes out of scope when the session
-   ends, this is automatic; for sessions persisted to disk, the
-   consumer is responsible.
+1. **Both sides must actually destroy ephemerals** when the handshake
+   ends, and the transport keys when the session ends. signet destroys
+   ephemerals itself (see above); transport keys go when the session is
+   closed (`close!`, `with-conclave`). A session that is never closed
+   keeps its transport keys in the vault.
 
 2. **Forward secrecy is only forward.** It protects past traffic
    against future compromise of either long-term key. It does *not*
@@ -432,10 +458,11 @@ Forward secrecy in Noise KK is bounded by:
 
 ## Scope of this release
 
-signet 0.6.0 ships:
+signet 0.6.0 shipped the items below; 0.9.0 moved the secrets into the
+vault and added `close!` / `with-conclave` (see above).
 - `Noise_KK_25519_ChaChaPoly_SHA256` only.
-- Pure-functional state machine; no atoms, no rebinding, no global
-  state.
+- A state machine of single-use state values (0.6.0 had no global
+  state; since 0.9.0 the secrets live in the vault).
 - Ed25519 keypair input via the existing birational conversion.
 - JCA-only on the JVM, bb-compatible (we use the same primitives
   signet.encryption already uses: `chacha20-poly1305-{encrypt,

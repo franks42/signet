@@ -266,8 +266,11 @@
 
 (defmulti -signing-keypair classify-args)
 
-(defn signing-keypair
-  "Create a signing keypair. Defaults to Ed25519; pass :secp256k1 (or
+(defn ^{:deprecated "0.9.0"} signing-keypair
+  "DEPRECATED since 0.9.0 (secret-carrying key records): use vault/generate-signing-key! (or vault/import-signing-key! for
+   an existing seed); secp256k1 has no vault equivalent yet.
+
+   Create a signing keypair. Defaults to Ed25519; pass :secp256k1 (or
    :Ed25519 explicit) as the leading argument to switch curves. Never
    touches the key store; signing-keypair! also registers the result.
 
@@ -286,8 +289,10 @@
   ([x d] (-signing-keypair x d))
   ([crv x d] (-signing-keypair crv x d)))
 
-(defn signing-keypair!
-  "signing-keypair, then register! the result; returns the keypair. Same
+(defn ^{:deprecated "0.9.0"} signing-keypair!
+  "DEPRECATED since 0.9.0 (secret-carrying key records): use vault/generate-signing-key! or vault/import-signing-key!.
+
+   signing-keypair, then register! the result; returns the keypair. Same
    arities. Impure: writes the key store (and draws from the CSPRNG when
    generating)."
   [& args]
@@ -361,8 +366,11 @@
 
 (defmulti -encryption-keypair classify-args)
 
-(defn encryption-keypair
-  "Create an X25519 encryption keypair. Always returns an X25519KeyPair.
+(defn ^{:deprecated "0.9.0"} encryption-keypair
+  "DEPRECATED since 0.9.0 (secret-carrying key records): use vault/generate-encryption-key! (or
+   vault/import-encryption-key! for an existing secret key).
+
+   Create an X25519 encryption keypair. Always returns an X25519KeyPair.
    Also accepts Ed25519 keys for cross-curve conversion. Never touches the
    key store; encryption-keypair! also registers the result.
 
@@ -377,8 +385,11 @@
   ([m] (-encryption-keypair m))
   ([x d] (-encryption-keypair x d)))
 
-(defn encryption-keypair!
-  "encryption-keypair, then register! the result; returns the keypair. Same
+(defn ^{:deprecated "0.9.0"} encryption-keypair!
+  "DEPRECATED since 0.9.0 (secret-carrying key records): use vault/generate-encryption-key! or
+   vault/import-encryption-key!.
+
+   encryption-keypair, then register! the result; returns the keypair. Same
    arities. Impure: writes the key store (and draws from the CSPRNG when
    generating)."
   [& args]
@@ -452,8 +463,11 @@
 
 (defmulti -signing-private-key :type)
 
-(defn signing-private-key
-  "The private key of a signing keypair (the curve is preserved). Pure:
+(defn ^{:deprecated "0.9.0"} signing-private-key
+  "DEPRECATED since 0.9.0 (secret-carrying key records): use a vault handle (vault/export-secret if the bytes are
+   really needed).
+
+   The private key of a signing keypair (the curve is preserved). Pure:
    never touches the key store."
   [k] (-signing-private-key k))
 
@@ -513,8 +527,11 @@
 
 (defmulti -encryption-private-key :type)
 
-(defn encryption-private-key
-  "The X25519 private key for any key holding a private part: X25519 as-is,
+(defn ^{:deprecated "0.9.0"} encryption-private-key
+  "DEPRECATED since 0.9.0 (secret-carrying key records): use a vault handle; box, shared keys and sessions
+   convert Ed25519 keys inside the vault.
+
+   The X25519 private key for any key holding a private part: X25519 as-is,
    Ed25519 via SHA-512 + clamping. Always returns X25519PrivateKey. Pure:
    never touches the key store."
   [k] (if (encryption-private-key? k) k (-encryption-private-key k)))
@@ -549,8 +566,10 @@
     :secp256k1 (signing-public-key k)
     :X25519    (encryption-public-key k)))
 
-(defn private-key
-  "Same-curve private key of a keypair. Delegates to signing-private-key
+(defn ^{:deprecated "0.9.0"} private-key
+  "DEPRECATED since 0.9.0 (secret-carrying key records): use a vault handle.
+
+   Same-curve private key of a keypair. Delegates to signing-private-key
    or encryption-private-key by curve. Pure."
   [k]
   (case (:crv k)
@@ -636,8 +655,11 @@
   (fn [our-key their-key]
     [(:type our-key) (:type their-key)]))
 
-(defn raw-shared-secret
-  "Compute a shared secret via X25519 Diffie-Hellman key agreement.
+(defn ^{:deprecated "0.9.0"} raw-shared-secret
+  "DEPRECATED since 0.9.0 (secret-carrying key records): use signet.shared/shared-key! (the shared key stays in
+   the vault).
+
+   Compute a shared secret via X25519 Diffie-Hellman key agreement.
    Accepts any combination of Ed25519 and X25519 keys — Ed25519 keys are
    automatically cross-converted to X25519.
    Pure: never touches the key store.

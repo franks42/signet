@@ -5,6 +5,19 @@
  :cljc {:features #{:clj}}
  ;; Same as the export in src/clj-kondo.exports (for consumers).
  :lint-as {signet.session/with-conclave clojure.core/let}
- :linters {:unused-private-var
+ :linters {;; Secret-carrying key records are deprecated since 0.9.0 (decision 17).
+           ;; signet itself keeps using and testing them; consumers get the warning.
+           :deprecated-var {:exclude {signet.key/signing-keypair {:namespaces ["signet\\..*"]}
+                                      signet.key/signing-keypair! {:namespaces ["signet\\..*"]}
+                                      signet.key/encryption-keypair {:namespaces ["signet\\..*"]}
+                                      signet.key/encryption-keypair! {:namespaces ["signet\\..*"]}
+                                      signet.key/signing-private-key {:namespaces ["signet\\..*"]}
+                                      signet.key/encryption-private-key {:namespaces ["signet\\..*"]}
+                                      signet.key/private-key {:namespaces ["signet\\..*"]}
+                                      signet.key/raw-shared-secret {:namespaces ["signet\\..*"]}
+                                      signet.ssh/read-private-key {:namespaces ["signet\\..*"]}
+                                      signet.ssh/load-keypair {:namespaces ["signet\\..*"]}
+                                      signet.ssh/load-keypair! {:namespaces ["signet\\..*"]}}}
+           :unused-private-var
            ;; defonce kept for its side effect: installing the BC provider
            {:exclude [signet.impl.jvm-secp256k1/bc-installed]}}}

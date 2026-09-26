@@ -95,9 +95,50 @@ not a credential: the vault decides what it can do.
   kid with no exchange. `seal` is directional and key-committing; a MAC is
   not a signature, and a static-static shared key has no forward secrecy.
 
-Key records (`signet.key`, carrying `:d`) still work everywhere and remain
-the raw layer. Sessions use them until they move onto vault handles, in the
-release after 0.8.0.
+Key records that carry a secret (`:d`) still work everywhere but are
+**deprecated since 0.9.0**: the functions that create them carry
+`^:deprecated` (clj-kondo warns) and name their vault replacement. SSH keys
+go into the vault with `ssh/import-keypair!`. Public-key records are not
+deprecated: `vault/public-key` returns them.
+
+## Sessions (Noise_KK, forward secret)
+
+`signet.session` implements `Noise_KK_25519_ChaChaPoly_SHA256`: both sides
+know each other's static public key in advance; a two-message handshake
+gives both sides fresh transport keys with forward secrecy. Its messages
+match other Noise implementations byte for byte (checked against the
+cacophony and snow test vectors).
+
+```clojure
+(require '[signet.session :as session])
+
+(session/with-conclave [s (session/initiator me bob-kid)]   ; me: a vault handle
+  (let [[s msg1] (session/write-message! s (.getBytes "hello"))
+        ;; … send msg1, receive msg2 …
+        [s reply] (session/read-message! s msg2)
+        [s ct]    (session/write-message! s (.getBytes "data"))]
+    …))
+;; the session's secrets are destroyed here, also if the body threw
+```
+
+- **No secrets in a state.** The chaining key, the transport keys and the
+  ephemeral keys are vault entries in the vault of your static key; a state
+  holds handles and public values only, so printing or logging it shows
+  nothing secret. Under the `:sodium` provider they live in guarded memory.
+- **Each state is single-use.** Continue with the state each call returns;
+  keys a state no longer needs are destroyed as it is consumed.
+- **Sessions must be closed.** `with-conclave` closes when the block exits.
+  `close!` closes from *any* state of the session, even the first one.
+  Afterwards any state of it throws `::session-closed`. A session never
+  closed leaves its secrets in the vault; `vault/session-entry-count`
+  shows how many.
+- **Who closes:** code that runs a whole session in one block (a request
+  and its reply, a script, a test) uses `with-conclave`. A session that
+  lives as long as a connection needs `close!` when the connection closes.
+  A transport layer that does this for its callers belongs to a consumer
+  or a companion library, not to signet.
+- A conclave is a closed meeting (*con clave*, "with a key"); an enclave is
+  where a vault keeps its secrets.
 
 ## Keys: what is stored, what is not
 
@@ -119,12 +160,13 @@ release after 0.8.0.
   `#signet/key {:type … :kid … :d "<redacted>"}` everywhere: the REPL, logs,
   `tap>`, ex-data. Serialising a key record as data (cedn, or walking it as
   a map) still exposes `:d`: use vault handles, which contain no secret.
-- **Ephemeral keys are never exposed, never stored, and wiped after use.**
-  Session and chain code creates them internally. Noise session
-  ephemerals, and every DH output, are zeroed as soon as they have been
-  used. Without that there is no forward secrecy. An open chain's
-  ephemeral key lives in the vault, behind the token's `:proof` handle,
-  until the chain is sealed.
+- **Ephemeral keys are never exposed, never stored, and destroyed after
+  use.** Session and chain code creates them internally. Noise session
+  ephemerals are vault session entries, never on the public side or in
+  `handles`, destroyed as soon as the handshake is done; every DH output is
+  destroyed once used. Without that there is no forward secrecy. An open
+  chain's ephemeral key lives in the vault, behind the token's `:proof`
+  handle, until the chain is sealed.
 - **Nonces are never the caller's job.** `box` draws its nonce internally,
   and a session counts its own nonces. Session states are single-use:
   `write-message!` / `read-message!` consume the state they are given and
@@ -145,11 +187,11 @@ keys and ciphertexts.
 | Backend | Namespace | Needs | Notes |
 |---|---|---|---|
 | `jca` (default) | `signet.impl.jvm` | a JDK | No native dependency. Deriving a public key from a seed does not work on babashka. |
-| `sodium` | `signet.impl.sodium` | libsodium >= 1.0.19 (`brew install libsodium`), [nacljc](https://github.com/franks42/nacljc) 0.1.0 from Clojars (added by the `:sodium` alias), JDK 25+ with `--enable-native-access=ALL-UNNAMED`, or bb >= 1.13.220 | The full test suite also passes on babashka. |
+| `sodium` | `signet.impl.sodium` | libsodium >= 1.0.19 (`brew install libsodium`), [nacljc](https://github.com/franks42/nacljc) 0.3.0 from Clojars (added by the `:sodium` alias), JDK 25+ with `--enable-native-access=ALL-UNNAMED`, or bb >= 1.13.220 | The full test suite also passes on babashka. |
 
 ```bash
 clojure -M:test:sodium      # the :sodium alias adds nacljc and selects the backend
-SIGNET_BACKEND=sodium bb …  # on babashka, with com.github.franks42/nacljc 0.1.0 added (see bb test:bb-sodium)
+SIGNET_BACKEND=sodium bb …  # on babashka, with com.github.franks42/nacljc 0.3.0 added (see bb test:bb-sodium)
 ```
 
 ## Compatibility

@@ -373,6 +373,11 @@ Suites: `bb test:all` (jca, jvm-sodium with parity, bb-sodium) and
 
 ## Phase 5: docs
 
+**Done (2026-09-25):** README (a sessions section; ephemerals destroyed,
+not zeroed; nacljc 0.3.0), docs/05 (API shape, "Where the secrets live",
+forward-secrecy boundary), docs/07 (sessions done), CHANGELOG 0.9.0,
+CLAUDE.md.
+
 - `docs/05-noise-kk-session-design.md`: the state shape and the
   lifecycle.
 - `docs/07`: mark sessions done, and fix the stale release-plan line
@@ -385,6 +390,21 @@ Suites: `bb test:all` (jca, jvm-sodium with parity, bb-sodium) and
 - CLAUDE.md: session section, test counts.
 
 ## Phase 6: deprecate key records (decision 17)
+
+**Done (2026-09-25),** as chosen: `^{:deprecated "0.9.0"}` plus a
+docstring pointer on the constructors of secret-carrying records
+(`key/signing-keypair(!)`, `encryption-keypair(!)`, `signing-private-key`,
+`encryption-private-key`, `private-key`, `raw-shared-secret`,
+`ssh/read-private-key`, `ssh/load-keypair(!)`). Record inputs to
+sign/box/chain/session keep working. The project's clj-kondo config
+exempts `signet.*` namespaces, so consumers get the warnings and signet
+doesn't. `ssh/import-keypair!` returns a handle and checks that the seed
+gives the file's public key.
+
+Accepted (2026-09-25): `key/signing-keypair` also makes secp256k1 keys,
+which have no vault equivalent yet (decision 13: `:memory` only, not
+built), so secp256k1 users get a warning they can't act on until that
+lands.
 
 Separate commits, same release:
 
@@ -456,6 +476,17 @@ in docs/07.
   - Argon2id only makes each guess expensive: a weak password stays weak.
   - A password arrives as a Clojure string and can't be wiped reliably.
   - High memory settings are slow in the browser (WebAssembly).
+- **Password-derived keys stay in the vault** (asked 2026-09-25): the
+  caller only ever gets handles. For example,
+  `(vault/password-key! vault-id password {:salt … :opslimit … :memlimit …})`
+  runs Argon2id inside the provider and returns a handle. Under `:sodium`
+  the key is born in guarded memory, since a secret password gives a
+  secret output. The handle can unwrap the vault master key (`unlock!`)
+  or serve as a symmetric key for seal/open, like `signet.shared` keys;
+  export is refused, as for session entries. The password itself is the
+  weak point: take it as bytes that the vault imports into a secret and
+  then wipes (as `import-signing-key!` does). A string can't be wiped, so
+  accepting one is only a documented convenience.
 - **Not in libsodium:** BLAKE3. It has BLAKE2b (`crypto_generichash`),
   SHA-2, SHA-3 and SHAKE/TurboSHAKE.
 

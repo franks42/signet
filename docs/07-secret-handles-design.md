@@ -191,7 +191,8 @@ operating system protects.
 - Consuming a state (`write-message!`, `read-message!`) destroys the
   entries it no longer needs.
 - This is the largest refactor, and the most valuable one: nonces and
-  wiping matter most here. Open: whether it goes into 0.7.0 or right after.
+  wiping matter most here. Done in 0.9.0 (docs/08), with `close!` and
+  `with-conclave` to end a session.
 
 ### Derived secrets
 
@@ -340,7 +341,7 @@ signet's `:sodium` provider is built on this. The JCA backend gets the
    - one-argument `sign-edn` replaced by `sign-edn!`.
 2. **nacljc 0.2.0:** native secrets. Then signet's `:sodium` provider on
    them.
-3. **Sessions on vault handles:** in 0.7.0 or next (open).
+3. **Sessions on vault handles:** done in 0.9.0 (docs/08).
 4. **Later:** `:memory-encrypted` where native is unavailable, `:webcrypto`
    for signet's ClojureScript side, then agent, keychain and HSM providers.
 

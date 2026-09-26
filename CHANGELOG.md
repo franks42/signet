@@ -2,6 +2,62 @@
 
 ## 0.9.0 (unreleased)
 
+Sessions on vault handles (`docs/08-sessions-on-handles-plan.md`).
+
+### Changed
+
+- **`signet.session` keeps its secrets in the vault.** The chaining key,
+  handshake key, transport keys and ephemerals are vault session entries,
+  in the vault of the local static key; a state holds only handles and
+  public values, so printing it shows nothing secret. Under the `:sodium`
+  provider they stay in libsodium's guarded memory.
+- **`initiator` / `responder` take a vault handle** as the local static
+  key, and the peer as a public key or a kid (`::unknown-peer` if it cannot
+  be resolved). Key records still work, deprecated; their session secrets
+  go to the `:vault` option's vault (default `:default`).
+- Each successful `write-message!` / `read-message!` destroys the secrets
+  only the consumed state needed; a failed or racing call destroys what it
+  created, so a forged message leaves nothing behind.
+- State keys renamed: `:local-static`, `:local-ephemeral`.
+- `initiator` / `responder` draw a random session id (documented as
+  impure: a read of the random generator).
+- nacljc 0.3.0 (`secret-split`, secret HKDF salt).
+
+### Added
+
+- **`session/close!`:** destroys every secret of a session from any of its
+  states (even the first); any later use throws `::session-closed`.
+- **`session/with-conclave`:** closes the session when the block exits,
+  also on an exception. A clj-kondo `lint-as` export ships with the jar.
+- **`vault/session-entry-count`:** how many session secrets a vault holds,
+  to monitor sessions that were never closed.
+- Internal: vault session entries (never on the public side, never in
+  `handles`, not exportable: `::not-exportable`), `impl/split-material`.
+- The `:sodium` provider moves byte material it adopts into guarded
+  memory, so it only ever holds secrets.
+- **`ssh/import-keypair!`:** imports an OpenSSH Ed25519 private key file
+  into a vault and returns a handle; the seed must give the file's public
+  key (`:public-key-mismatch` otherwise).
+
+### Deprecated (decision 17)
+
+Secret-carrying key records are deprecated in favour of vault handles.
+Nothing is removed; the functions below carry `^{:deprecated "0.9.0"}`
+(clj-kondo warns) and a docstring pointer to the replacement:
+
+- `key/signing-keypair`, `key/signing-keypair!` → `vault/generate-signing-key!`
+  / `vault/import-signing-key!` (secp256k1 has no vault equivalent yet)
+- `key/encryption-keypair`, `key/encryption-keypair!` →
+  `vault/generate-encryption-key!` / `vault/import-encryption-key!`
+- `key/signing-private-key`, `key/encryption-private-key`,
+  `key/private-key` → a vault handle
+- `key/raw-shared-secret` → `signet.shared/shared-key!`
+- `ssh/read-private-key`, `ssh/load-keypair`, `ssh/load-keypair!` →
+  `ssh/import-keypair!`
+
+Key-record inputs to sign, box, chain and session keep working.
+Public-key records and functions are not deprecated.
+
 ### Fixed
 
 - **`signet.session` is now wire-compatible with Noise.** The handshake
