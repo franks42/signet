@@ -1,5 +1,7 @@
 # Changelog
 
+## 0.10.0 (unreleased)
+
 ## 0.9.1 (2026-09-25)
 
 ### Changed

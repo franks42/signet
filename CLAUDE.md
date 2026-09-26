@@ -122,6 +122,8 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   sign/box/chain, `signet.shared`. Phases 1–5 done (see CHANGELOG). Sessions
   move onto handles in the release after. Key records remain the raw layer;
   they are deprecated in that release (decision 17), not removed.
+- **main is 0.10.0-SNAPSHOT** (nothing planned yet; candidates: password
+  unlocking, an agent provider, enclave tiers; see docs/07 and docs/08).
 - **0.9.1 (released 2026-09-25):** nacljc 0.3.1 (`sodium_stackzero` after
   every secret operation). No signet code change.
 - **0.9.0 (released 2026-09-25):** implemented and merged
