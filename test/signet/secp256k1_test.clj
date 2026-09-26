@@ -71,9 +71,16 @@
           ;; Convert raw → DER via the private helper (exercising the converter).
           der (#'bc-secp/raw->der-sig raw)]
       (is (= 64 (count raw)))
-      (is (#{70 71 72} (count der)) "DER for secp256k1 is 70-72 bytes")
+      ;; Usually 70-72 bytes; shorter when r or s starts with zero bytes
+      ;; (about 1 signature in 500 gives 69). DER integers are minimal.
+      (is (<= 8 (count der) 72) "DER for secp256k1 is at most 72 bytes")
       (is (sign/verify kp msg raw))
-      (is (sign/verify kp msg der)))))
+      (is (sign/verify kp msg der))))
+  (testing "a leading zero byte in r gives a shorter DER form (deterministic)"
+    (let [raw (byte-array (concat [0 0x11] (repeat 30 1) [0x22] (repeat 31 2)))
+          der (#'bc-secp/raw->der-sig raw)]
+      (is (= (+ 6 31 32) (count der)) "r is encoded in 31 bytes, s in 32")
+      (is (= [0x30 (- (count der) 2) 0x02 31 0x11] (map #(bit-and % 0xff) (take 5 der)))))))
 
 ;; -- External fixture (openssl-generated) --
 ;;
