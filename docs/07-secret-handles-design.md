@@ -168,10 +168,13 @@ do things. Roughly in order of how much they matter:
    exhausted `sodium_malloc` fails.
 
 **Cheap fixes** (candidates for 0.10.0):
-- Extend the startup-hygiene helper and its README note with
-  `-XX:+DisableAttachMechanism`, `-XX:ErrorFile` and the
-  `HeapDumpOnOutOfMemoryError` check, besides core dumps and
-  `PR_SET_DUMPABLE`.
+- An **opt-in** hardening helper (decided 2026-09-27: never automatic,
+  a deployment choice; the default keeps core dumps) and a README
+  "Deployment hardening" section. Options: core dumps and
+  `PR_SET_DUMPABLE` (both cost debugging and profiling), the
+  `HeapDumpOnOutOfMemoryError` check; and, as documented JVM flags only,
+  `-XX:+DisableAttachMechanism` and `-XX:ErrorFile`; machine settings for
+  swap and hibernation.
 - Document the `NACLJC_LIBSODIUM` risk (and consider pinning).
 - Note the message-1 replay in docs/05 and the `write-message!`
   docstring.
@@ -802,6 +805,10 @@ only references** [source].
 2. signet or nacljc: a helper that disables core dumps
    (`setrlimit(RLIMIT_CORE, 0)` over FFI), and a README note on startup
    hygiene: no core dumps, encrypted or no swap, no hibernation.
+   **Decided 2026-09-27: opt-in, never automatic.** Nothing changes
+   process settings by default; core dumps stay on unless a deployment
+   calls the helper. It is a deployment choice, documented in the README
+   with each option's trade-off (see "Remaining attack surface").
 
 ## Future: enclave tiers (hardware unlocks, software works)
 

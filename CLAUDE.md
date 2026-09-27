@@ -136,8 +136,9 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   2026-09-25): signet protects developers from mistakes and ordinary
   exposure; determined adversaries with code execution are documented, not
   targeted. Candidates, in order: the cheap fixes in docs/07's "Remaining
-  attack surface" (startup-hygiene helper, `NACLJC_LIBSODIUM` note,
-  message-1 replay note); persistence and password unlocking; an
+  attack surface" (an opt-in hardening helper: never automatic, core
+  dumps stay on by default, a deployment choice documented in the README;
+  the `NACLJC_LIBSODIUM` note; the message-1 replay note); persistence and password unlocking; an
   ssh-agent-style `:agent`; then chain attenuation, agent policy and
   hardware tiers. A policy-gated dynamic runtime is sketched and parked
   (docs/07).
