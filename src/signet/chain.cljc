@@ -142,7 +142,8 @@
 
    The proof (ephemeral private key) from the token is used to sign the
    new block. A fresh ephemeral keypair is generated for the next potential
-   block. The old proof is consumed and discarded.
+   block. The old proof stays usable (one token can be extended several
+   ways); closing destroys the final one.
 
    The new block includes:
      - Developer's content in :data
@@ -268,10 +269,14 @@
    Sealing works by signing the last block's signature with the
    current proof (ephemeral private key), then destroying the key in its
    vault. The proof field changes from a key to a signature. After
-   sealing, no one can extend the chain: the key is gone.
+   sealing, no one can extend the chain: the key is gone. For a token in
+   sendable form (export-token), the seed array is wiped and any vault's
+   copy of the same key is destroyed too, so a local token holding that
+   key can no longer be extended either.
 
-   Impure: signs with the proof and destroys it in its vault; (close token
-   content) also draws a key and a request id like extend.
+   Impure: signs with the proof, destroys it in its vault (every vault
+   holding it, for the sendable form) and wipes a sendable seed; (close
+   token content) also draws a key and a request id like extend.
    Throws ex-info {:type ::sealed} when the token is already sealed.
 
    Returns a sealed token: {:type :signet/chain :blocks [...] :proof {:sealed ...}}"
@@ -286,12 +291,24 @@
          ;; This proves we had the key, without revealing it
          seal-sig (sign/sign (proof-signer token) last-sig)]
 
-     ;; The proof's key is gone for good: destroyed in its vault
-     (when (vault/handle? (:proof token)) (vault/destroy! (:proof token)))
+     ;; The proof's key is gone for good: destroyed in its vault. For the
+     ;; sendable form (the seed), wipe the seed and destroy the vault's copy
+     ;; of the same key wherever it lives (export-token leaves one behind).
+     (let [p (:proof token)]
+       (if (vault/handle? p)
+         (vault/destroy! p)
+         (let [kid (get-in last-block [:envelope :message :next-key])]
+           (doseq [vid (vault/vault-ids)
+                   :let [h (vault/handle vid kid)]
+                   :when h]
+             (vault/destroy! h))
+           (when (bytes? p) (java.util.Arrays/fill ^bytes p (byte 0))))))
      (assoc token
             :proof {:sealed    true
                     :signature seal-sig})))
   ([token content]
+   (when (sealed? token)
+     (throw (ex-info "Chain is already sealed" {:type ::sealed})))
    ;; Add the final block, then seal
    (-> (extend-chain token content)
        (close))))
@@ -332,9 +349,11 @@
    Arguments:
      - `request`  : from `third-party-request` — contains :prev-sig
      - `content`  : opaque EDN (the third party's assertions)
-     - `tp-key`   : the third party's signing keypair
+     - `tp-key`   : the third party's signing key: a vault handle or a
+                    keypair record
 
-   Pure for Ed25519 (deterministic signing).
+   Pure for an Ed25519 keypair record (deterministic signing); with a
+   handle, impure: reads the vault.
 
    Returns:
      {:type          :signet/third-party-block

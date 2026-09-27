@@ -57,6 +57,45 @@
     (check "chacha20-poly1305 cross decrypt" (and (same? msg (na/chacha20-poly1305-decrypt key nonce (jca/chacha20-poly1305-encrypt key nonce msg aad) aad))
                                                   (same? msg (jca/chacha20-poly1305-decrypt key nonce (na/chacha20-poly1305-encrypt key nonce msg aad) aad))))))
 
+(defn- outcome
+  "The hex of what f returns, or the ex-data :type (or class) it throws."
+  [f]
+  (try (apply str (map #(format "%02x" (bit-and % 0xff)) (f)))
+       (catch clojure.lang.ExceptionInfo e [:throws (:type (ex-data e))])
+       (catch Throwable e [:throws (.getSimpleName (class e))])))
+
+(defn- point-parity-checks
+  "Both backends must accept and refuse the same Ed25519 public keys, with
+   the same result or the same error (REVIEW.md finding 4): random 32-byte
+   strings (about half decode onto the curve, and most of those lie outside
+   the prime-order subgroup), special points, and real keys."
+  []
+  (let [le  (fn [^BigInteger n] (let [be (.toByteArray n) out (byte-array 32)]
+                                  (dotimes [i (min 32 (alength be))]
+                                    (aset out i (aget be (- (alength be) 1 i))))
+                                  out))
+        p   (.subtract (.shiftLeft BigInteger/ONE 255) (BigInteger/valueOf 19))
+        special (concat [(byte-array 32)                            ; y = 0
+                         (le BigInteger/ONE)                         ; y = 1: the identity
+                         (le (.subtract p BigInteger/ONE))           ; y = -1: order 2
+                         (le p)                                      ; y = p: non-canonical 0
+                         (byte-array 32 (byte -1))]                  ; all ones
+                        (repeatedly 50 #(first (jca/generate-ed25519-keypair))))
+        inputs  (concat special (repeatedly 400 #(jca/random-bytes 32)))
+        results (map (fn [x] [(outcome #(jca/ed25519-pub->x25519-pub x))
+                              (outcome #(na/ed25519-pub->x25519-pub x))])
+                     inputs)
+        refused (count (filter #(vector? (first %)) results))]
+    (check (str "ed25519-pub->x25519-pub agrees on " (count inputs) " inputs (" refused " refused by both)")
+           (every? (fn [[a b]] (= a b)) results))
+    (check "refusals are :signet.impl/invalid-public-key on both"
+           (every? (fn [[a]] (or (string? a) (= a [:throws :signet.impl/invalid-public-key]))) results))
+    (check "x25519-dh with a low-order point: :signet.impl/low-order-point on both"
+           (let [sk (jca/random-bytes 32)]
+             (= [:throws :signet.impl/low-order-point]
+                (outcome #(jca/x25519-dh sk (byte-array 32)))
+                (outcome #(na/x25519-dh sk (byte-array 32))))))))
+
 (defn -main [& [expected]]
   (println "runtime:" (or (some->> (System/getProperty "babashka.version") (str "babashka "))
                           (str "JVM " (System/getProperty "java.version")))
@@ -65,6 +104,7 @@
     (println "WRONG BACKEND: expected" expected)
     (System/exit 2))
   (dotimes [_ 3] (parity-checks))
+  (point-parity-checks)
   (let [fails (remove second @results)]
     (println (format "%d checks, %d failed" (count @results) (count fails)))
     (System/exit (if (seq fails) 1 0))))

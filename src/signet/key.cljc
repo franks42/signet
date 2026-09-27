@@ -134,8 +134,9 @@
 
    For private-only keys, derives the public key bytes for kid
    computation when the platform supports it. secp256k1 private-only
-   derivation is not yet implemented (JDK doesn't expose point
-   multiplication directly); such keys register without a kid."
+   derivation is not implemented (the JDK doesn't expose point
+   multiplication), so such a key cannot be indexed: it is refused.
+   Throws ex-info {:type ::no-kid} for it."
   ([k] (register! default-key-store k))
   ([store k]
    ;; Ephemeral keys (signet.session) must never be kept: refuse loudly
@@ -155,6 +156,9 @@
            kid-str (when (and x-bytes alg)
                      (str "urn:signet:pk:" alg ":" (enc/bytes->base64url x-bytes)))
            new-rank (get type-rank (:type k) 0)]
+       (when-not kid-str
+         (throw (ex-info "Cannot register a key without a kid (secp256k1 private-only keys: register the keypair)"
+                         {:type ::no-kid :key-type (:type k)})))
        (when kid-str
          (swap! store (fn [m]
                         (let [existing (get m kid-str)
@@ -610,20 +614,14 @@
       (str "urn:signet:pk:" (urn-algorithm (:crv pub)) ":" (enc/bytes->base64url (:x pub))))))
 
 (defn kid->public-key
-  "Parse a kid URN and return the public key record.
-   Extracts the algorithm and public key bytes from the URN.
+  "Parse a kid URN and return the public key record. The same parser as
+   lookup: urn:signet:pk:<algorithm>:<base64url>, a known algorithm and the
+   right length (32 bytes; 33 for secp256k1).
    Pure.
-   Throws for a kid that is not a signet URN of a known algorithm, or whose
-   key is not base64url."
+   Throws ex-info {:type ::malformed-kid} for anything else."
   [kid-str]
-  (let [[_ _ _ alg b64] (str/split kid-str #":")]
-    (case alg
-      "ed25519"   (->Ed25519PublicKey :signet/ed25519-public-key :Ed25519
-                                      (enc/base64url->bytes b64))
-      "x25519"    (->X25519PublicKey :signet/x25519-public-key :X25519
-                                     (enc/base64url->bytes b64))
-      "secp256k1" (->Secp256k1PublicKey :signet/secp256k1-public-key :secp256k1
-                                        (enc/base64url->bytes b64)))))
+  (or (parse-kid kid-str)
+      (throw (ex-info "Not a well-formed signet kid" {:type ::malformed-kid :kid kid-str}))))
 
 (defn kid->hex
   "Return the key's 32-byte public key as a lowercase hex string.

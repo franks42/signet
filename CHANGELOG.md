@@ -2,6 +2,68 @@
 
 ## 0.10.0 (unreleased)
 
+## 0.9.4 (2026-09-26)
+
+Fixes from a review of signet (`docs/review-devin-20260926.md`), at the
+seams between the vault, shared keys, key records and the two backends.
+Each fix has a regression test (`test/signet/seams_test.clj`) shown to
+fail before it.
+
+### Fixed
+
+- **`unbox` rejected valid boxes when the vault held a shared key.**
+  `vault/handles` lists shared keys, and unbox tried them as recipients: in
+  about half of all runs (depending on hash-set order) a correct box came
+  back `{:valid? false :error :malformed}`. Box and unbox now consider
+  identity keys only (Ed25519, X25519). `vault/x25519-dh` and
+  `vault/public-key` throw `:signet.vault/wrong-algorithm` for a shared
+  key, and so does `box` with a shared-key handle as sender. New
+  `vault/identity-key?`. Since 0.8.0.
+- **`(chain/close sealed-token content)`** threw a raw
+  `ArrayStoreException`; it now throws `::sealed`, like `(close token)`.
+- **Closing an exported token left its key alive.** `export-token` copies
+  the proof's seed out; `close` of that sendable token destroyed nothing,
+  so the vault's copy could still extend the "sealed" chain. `close` now
+  destroys the vault's copy of that key (in every vault) and wipes the
+  seed array.
+- **The backends disagreed on invalid Ed25519 public keys.** The JCA
+  backend now validates points as libsodium does (on the curve, not small
+  order, in the prime-order subgroup); before, it threw
+  `ArithmeticException` for y = 1 and accepted other invalid points. Both
+  throw `:signet.impl/invalid-public-key`, and low-order X25519 is
+  `:signet.impl/low-order-point` on both. A parity check covers 455
+  inputs.
+- **`key/kid->public-key`** accepted malformed kids (a 5-byte key, say)
+  that `lookup` refused; one parser now, throwing `::malformed-kid`.
+- **`sign/verify`** accepts a vault handle.
+- **Typed errors** for wrong key types at public entry points:
+  `session/initiator`/`responder` (`::bad-key-type`, e.g. a secp256k1
+  peer), `shared/shared-key!` and `vault/register-public-key!`.
+- **`key/register!`** of a secp256k1 private-only key silently stored
+  nothing; it throws `::no-kid`.
+- **JCA `hkdf-sha-256`** refuses lengths beyond 8160 bytes (RFC 5869);
+  `:signet.impl/bad-length`.
+- **Sessions** pass the vault's own errors (`::destroyed-key`,
+  `::unknown-vault`) through, instead of reporting them as
+  `::authentication-failed`.
+- A session entry is recorded only after the provider accepted it.
+- The verify CLI (`signet.cli.verify`): a flag without a value is a usage
+  error.
+
+### Changed
+
+- `unbox`'s `:from` accepts key records and handles, not only kids.
+- `bb release-check` requires a dated `## X.Y.Z (YYYY-MM-DD)` heading.
+- uuidv7 0.7.3 (CLI fixes only; the library is unchanged).
+- Docstrings: `chain/close` (the sendable form), `extend-chain` (the old
+  proof stays usable), `create-third-party-block` (impure with a handle).
+
+### Deferred to 0.10.0
+
+- `chain/verify` errors as keywords and a uniform `:blocks` shape
+  (a breaking change for consumers that read the strings).
+- `verify-edn` rejecting a wrong `:type` early.
+
 ## 0.9.3 (2026-09-26)
 
 ### Changed

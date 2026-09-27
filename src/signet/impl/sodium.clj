@@ -81,9 +81,17 @@
 
 (defn ed25519-pub->x25519-pub
   "Convert an Ed25519 public key (32 bytes) to an X25519 public key (32 bytes).
-   Pure."
+   Pure.
+   Throws ex-info {:type :signet.impl/invalid-public-key} for a point that
+   is not on the curve, has small order, or is outside the prime-order
+   subgroup (the same type the JCA backend throws)."
   [ed-pub]
-  (na/ed25519->x25519-public-key ed-pub))
+  (try (na/ed25519->x25519-public-key ed-pub)
+       (catch clojure.lang.ExceptionInfo e
+         (if (= :nacljc.core/invalid-public-key (:type (ex-data e)))
+           (throw (ex-info "Not a valid Ed25519 public key"
+                           {:type :signet.impl/invalid-public-key} e))
+           (throw e)))))
 
 (defn ed25519-seed->x25519-private
   "Convert an Ed25519 seed (32 bytes) to an X25519 private key (32 bytes).
@@ -105,9 +113,15 @@
    secret; throws for low-order points.
    Pure for a byte-array key; with a nacljc secret, impure: reads it and
    allocates guarded memory for the secret result.
-   Throws ex-info {:type :nacljc.core/low-order-point} for a low-order key."
+   Throws ex-info {:type :signet.impl/low-order-point} for a low-order key
+   (the same type the JCA backend throws)."
   [our-private their-public]
-  (na/x25519 our-private their-public))
+  (try (na/x25519 our-private their-public)
+       (catch clojure.lang.ExceptionInfo e
+         (if (= :nacljc.core/low-order-point (:type (ex-data e)))
+           (throw (ex-info "X25519 with a low-order public key"
+                           {:type :signet.impl/low-order-point} e))
+           (throw e)))))
 
 (defn hmac-sha-256
   "Compute HMAC-SHA-256(key, data). Returns 32 bytes.

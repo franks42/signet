@@ -38,11 +38,14 @@
 
 (defn- parse-args
   "Command-line args (--key value pairs) as a map. Pure.
-   Throws ex-info for an argument that is not a --flag."
+   Throws ex-info for an argument that is not a --flag, or a --flag
+   without its value."
   [args]
   (loop [acc {} [k v & more] args]
     (cond
       (nil? k) acc
+      (and (string? k) (.startsWith ^String k "--") (or (nil? v) (.startsWith ^String v "--")))
+      (throw (ex-info (str "missing value for " k) {:arg k}))
       (and (string? k) (.startsWith ^String k "--"))
       (recur (assoc acc (keyword (subs k 2)) v) more)
       :else (throw (ex-info (str "unexpected arg: " k) {:arg k})))))

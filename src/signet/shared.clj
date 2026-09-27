@@ -79,7 +79,8 @@
    Returns its handle, whose kid (urn:signet:shared:…) both parties compute
    identically. Calling it again returns an equal handle.
    Impure: reads and writes the vault.
-   Throws ex-info {:type ::unknown-peer} if their-public is a kid that
+   Throws ex-info {:type ::bad-key-type} unless their-public is an Ed25519
+   or X25519 public key (or its kid), {:type ::unknown-peer} if it is a kid that
    cannot be resolved; the vault's errors for my-handle."
   ([my-handle their-public] (shared-key! my-handle their-public nil))
   ([my-handle their-public {:keys [context]}]
@@ -87,6 +88,9 @@
                  (or (vault/lookup (:vault my-handle) their-public)
                      (throw (ex-info "Cannot resolve the peer's kid" {:type ::unknown-peer :kid their-public})))
                  their-public)
+         _       (when-not (and (map? their) (#{:Ed25519 :X25519} (:crv their)) (:x their))
+                   (throw (ex-info "shared-key! needs their Ed25519 or X25519 public key (or its kid)"
+                                   {:type ::bad-key-type})))
          my-x    (x25519-pub (vault/public-key my-handle))
          their-x (x25519-pub their)
          [a b]   (sorted-pair my-x their-x)

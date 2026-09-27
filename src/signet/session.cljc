@@ -197,13 +197,18 @@
       of whatever the JCA or libsodium backend throws.
       Impure: reads the vault (the key).
       Throws ex-info {:type ::authentication-failed} for every decryption
-      failure."
+      failure, and the vault's own errors (::destroyed-key, ::unknown-vault)
+      unchanged."
      [k nonce ciphertext aad]
      (try
        (vault/aead-decrypt k nonce ciphertext aad)
        (catch Exception e
-         (throw (ex-info "Noise session: message authentication failed"
-                         {:type ::authentication-failed} e))))))
+         ;; the vault's own errors (a destroyed key, a removed vault) are
+         ;; not authentication failures: pass them through unchanged
+         (if (= "signet.vault" (some-> (ex-data e) :type namespace))
+           (throw e)
+           (throw (ex-info "Noise session: message authentication failed"
+                           {:type ::authentication-failed} e)))))))
 
 #?(:clj
    (defn- sha-256-bytes
@@ -469,15 +474,22 @@
 #?(:clj
    (defn- resolve-remote
      "The peer's static public key: a key record, or a kid resolved through
-      the vault (its public side, else parsed from the kid).
+      the vault (its public side, else parsed from the kid). It must be an
+      Ed25519 or X25519 key.
       Impure: reads the vault's public side (for a kid).
-      Throws ex-info {:type ::unknown-peer} for a kid that cannot be resolved."
+      Throws ex-info {:type ::unknown-peer} for a kid that cannot be resolved,
+      and {:type ::bad-key-type} for anything but an Ed25519 or X25519 key."
      [vault-id remote]
-     (if (string? remote)
-       (or (vault/lookup vault-id remote)
-           (throw (ex-info "Noise session: cannot resolve the peer's kid"
-                           {:type ::unknown-peer :kid remote})))
-       remote)))
+     (let [pub (if (string? remote)
+                 (or (vault/lookup vault-id remote)
+                     (throw (ex-info "Noise session: cannot resolve the peer's kid"
+                                     {:type ::unknown-peer :kid remote})))
+                 remote)]
+       ;; Noise_KK_25519: the peer's static key must be X25519 or Ed25519
+       (when-not (and (map? pub) (#{:Ed25519 :X25519} (:crv pub)) (:x pub))
+         (throw (ex-info "Noise session: the peer's static key must be an Ed25519 or X25519 public key"
+                         {:type ::bad-key-type :crv (when (map? pub) (:crv pub))})))
+       pub)))
 
 #?(:clj
    (defn- start-handshake
@@ -524,7 +536,9 @@
       message. Reads the vault to check local-static and resolve a kid.
       Throws ex-info {:type ::no-private-key} when local-static is not a
       key its vault holds as an identity (or a record without its private
-      part), and {:type ::unknown-peer} for a kid that cannot be resolved.
+      part), {:type ::unknown-peer} for a kid that cannot be resolved, and
+      {:type ::bad-key-type} when remote-static is not an Ed25519 or X25519
+      public key (a secp256k1 key, say).
 
       `local-static` — this side's long-term key: a vault handle for an
         X25519 or Ed25519 key. The session's secrets are kept in that

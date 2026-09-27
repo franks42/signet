@@ -1,5 +1,5 @@
 {:deps  {com.github.franks42/cedn    {:mvn/version "1.6.1"}
-         com.github.franks42/uuidv7  {:mvn/version "0.7.2"}}
+         com.github.franks42/uuidv7  {:mvn/version "0.7.3"}}
 
  :paths ["src" "test"]
 
@@ -75,8 +75,11 @@
              (nil? ver) (fail "cannot parse the version from build.clj")
              (not (re-matches (re-pattern "\\d+\\.\\d+\\.\\d+") ver))
              (fail "version" (pr-str ver) "is not a stable X.Y.Z")
-             (not (clojure.string/includes? (slurp "CHANGELOG.md") (str "## " ver)))
-             (fail "CHANGELOG.md has no \"##" ver "\" section")
+             ;; a dated heading, "## X.Y.Z (YYYY-MM-DD)": "(unreleased)" is refused
+             (not (re-find (re-pattern (str "(?m)^## " (java.util.regex.Pattern/quote ver)
+                                            " \\(\\d{4}-\\d{2}-\\d{2}\\)"))
+                           (slurp "CHANGELOG.md")))
+             (fail (str "CHANGELOG.md has no dated \"## " ver " (YYYY-MM-DD)\" section"))
              :else (println "release-check: version" ver "is releasable")))}
 
   lint

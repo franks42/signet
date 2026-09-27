@@ -198,10 +198,14 @@
 (defn register-public-key!
   "Put public key pub on vault's public side (default :default). Returns
    its kid. Keys enter the public side only through this function (or
-   through generation and import). Impure: writes the public side."
+   through generation and import). Impure: writes the public side.
+   Throws ex-info {:type ::bad-key-type} unless pub is a key record."
   ([pub] (register-public-key! :default pub))
   ([vault-id pub]
-   (let [pub (key/public-key pub)
+   (let [pub (try (key/public-key pub)
+                  (catch IllegalArgumentException _
+                    (throw (ex-info "register-public-key! needs a key record"
+                                    {:type ::bad-key-type :got (str (type pub))}))))
          kid (key/kid pub)]
      (swap! (:public (vault vault-id)) assoc kid pub)
      kid)))
@@ -392,15 +396,23 @@
   (get @(:shared (vault (:vault h))) (:kid h)))
 
 (defn public-key
-  "The public key record of h's key. Impure: reads the vault's public side.
-   Throws ::not-a-handle or ::unknown-vault."
+  "The public key record of h's key, or nil if the vault does not know it.
+   Impure: reads the vault's public side.
+   Throws ex-info {:type ::wrong-algorithm} for a shared key (it has no
+   public key), and ::not-a-handle or ::unknown-vault."
   [h]
   (check-handle h "public-key")
-  (or (get @(:public (vault (:vault h))) (:kid h))
-      (key/lookup (:kid h))))
+  (let [v (vault (:vault h))]
+    (when (contains? @(:shared v) (:kid h))
+      (throw (ex-info "A shared key has no public key"
+                      {:type ::wrong-algorithm :kid (:kid h) :algorithm :shared})))
+    (or (get @(:public v) (:kid h))
+        (key/lookup (:kid h)))))
 
 (defn algorithm
-  "h's algorithm, :ed25519 or :x25519. Impure: reads the vault."
+  "h's algorithm: :ed25519 or :x25519 for an identity key, :shared for a
+   shared key, :session or :x25519 for a session's secret.
+   Impure: reads the vault."
   [h]
   (check-handle h "algorithm")
   (-alg (provider-of h) (:kid h)))
@@ -409,15 +421,47 @@
 ;; Operations
 ;; ============================================================
 
+(def ^:private identity-algorithms
+  "The kinds of key that are an identity: they have a public key and take
+   part in signing or key agreement. Shared keys (:shared) and session
+   secrets are not."
+  #{:ed25519 :x25519})
+
+(defn identity-key?
+  "Does h name an identity key (Ed25519 or X25519) that its vault holds?
+   False for shared keys, session secrets and keys it does not hold.
+   Impure: reads the vault. Throws ex-info {:type ::not-a-handle} for
+   anything but a handle, and {:type ::unknown-vault} for an unknown vault."
+  [h]
+  (check-handle h "identity-key?")
+  (let [p (:provider (vault (:vault h)))]
+    (boolean (and (-has? p (:kid h)) (identity-algorithms (-alg p (:kid h)))))))
+
+(defn ^:no-doc check-identity
+  "INTERNAL to signet: h, if its vault holds it as an identity key; throws
+   otherwise.
+   Impure: reads the vault.
+   Throws ex-info {:type ::wrong-algorithm} for a shared key or a session
+   secret, and what provider-of throws."
+  [h what]
+  (let [p (provider-of h)]
+    (when-not (identity-algorithms (-alg p (:kid h)))
+      (throw (ex-info (str what " needs an Ed25519 or X25519 key, not a " (name (-alg p (:kid h))) " key")
+                      {:type ::wrong-algorithm :kid (:kid h) :algorithm (-alg p (:kid h))})))
+    h))
+
 (defn ^:no-doc x25519-dh
   "INTERNAL to signet's crypto code (box, shared keys): the X25519 shared
    secret of h's key (X25519, or Ed25519 converted inside the call) and
    their X25519 public key bytes: a byte array, or under the :sodium
    provider a nacljc secret. The caller must release it with
    impl/destroy-material! as soon as it is consumed. Impure: reads the vault.
-   Throws ::not-a-handle, ::unknown-vault or ::destroyed-key."
+   Throws ::not-a-handle, ::unknown-vault, ::destroyed-key, or
+   ::wrong-algorithm for a shared key or a session secret."
   [h their-x25519-pub]
   (check-handle h "x25519-dh")
+  (when-not (session-entry? (vault (:vault h)) (:kid h)) ; ephemerals are X25519 session entries
+    (check-identity h "x25519-dh"))
   (let [p (provider-of h) kid (:kid h)]
     #?(:clj  (-with-material
               p kid
@@ -426,7 +470,9 @@
                   :x25519  (impl/x25519-dh m their-x25519-pub)
                   :ed25519 (let [xsk (impl/ed25519-seed->x25519-private m)]
                              (try (impl/x25519-dh xsk their-x25519-pub)
-                                  (finally (impl/destroy-material! xsk)))))))
+                                  (finally (impl/destroy-material! xsk))))
+                  (throw (ex-info "x25519-dh needs an X25519 or Ed25519 key"
+                                  {:type ::wrong-algorithm :kid kid :algorithm (-alg p kid)})))))
        :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))))
 
 (defn sign
@@ -467,8 +513,9 @@
   [vault-id session-id alg material]
   (let [v  (vault vault-id)
         id (new-entry-id)]
-    (swap! (:session v) assoc id session-id)
+    ;; the provider first: a refused adoption leaves no orphan tag
     (-adopt! (:provider v) id alg material)
+    (swap! (:session v) assoc id session-id)
     (->handle vault-id id)))
 
 (defn ^:no-doc generate-ephemeral!

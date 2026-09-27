@@ -62,11 +62,12 @@
          (impl/x25519-dh (x-priv ours) their-xpk)))
 
      (defn- has-private?
-       "A keypair with its private part, or a handle whose vault holds it.
+       "A keypair with its private part, or a handle whose vault holds it as
+        an identity key (Ed25519 or X25519).
         Impure for a handle: reads the vault; pure for a record."
        [k]
        (if (vault/handle? k)
-         (some? (vault/handle (:vault k) (:kid k)))
+         (vault/identity-key? k)          ; not a shared key or session secret
          (some? (:d k))))
 
      (defn- wipe!
@@ -107,12 +108,16 @@
 
    Impure: draws a random nonce. Never touches the key store.
    Throws ex-info {:type ::no-private-key} when sender-kp has no private
-   part; cedn's error when :aad is not canonical EDN (CEDN-P)."
+   part, {:type :signet.vault/wrong-algorithm} for a shared-key handle;
+   cedn's error when :aad is not canonical EDN (CEDN-P)."
   ([sender-kp recipient-pub plaintext]
    (box sender-kp recipient-pub plaintext nil))
   ([sender-kp recipient-pub plaintext {:keys [aad] from? :from? to? :to? :or {from? true to? true} :as opts}]
    #?@(:clj
-       [(when-not (has-private? sender-kp)
+       [(when (and (vault/handle? sender-kp) (vault/handle (:vault sender-kp) (:kid sender-kp)))
+          ;; a shared key or session secret: ::wrong-algorithm, not ::no-private-key
+          (vault/check-identity sender-kp "box"))
+        (when-not (has-private? sender-kp)
           (throw (ex-info "box: sender key has no private part" {:type ::no-private-key})))
         (let [nonce  (impl/random-bytes 24)
               s-xpk  (x-pub sender-kp)
@@ -132,8 +137,12 @@
 #?(:clj
    (do
      (defn- expected-set
-       "e as a set of kids: a set as is, one kid in a set, nil for nil. Pure."
-       [e] (cond (set? e) e (some? e) #{e}))
+       "e as a set of kids: e may be a kid, a key record, a handle, or a set
+        of them; nil for nil. Pure."
+       [e]
+       (let [as-kid #(if (string? %) % (key/kid %))]
+         (cond (set? e)  (set (map as-kid e))
+               (some? e) #{(as-kid e)})))
 
      (defn- same-identity?
        "Do kid string kid and key record pub name the same X25519 key? The
@@ -197,7 +206,8 @@
    {:valid? false :error <reason>}.
 
    opts:
-     :from  expected sender: a kid, or a set of kids. Needed when the box
+     :from  expected sender: a kid, key record or handle, or a set of them
+            (0.9.4; before, only kids). Needed when the box
             has no :from slot. With it the result has :verified?, and
             :valid? also requires it.
      :aad   expected caller context: must equal the box's :aad slot

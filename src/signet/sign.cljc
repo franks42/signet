@@ -84,14 +84,16 @@
 
 (defn verify
   "Verify a signature against message bytes. Returns true if valid.
-   Dispatches on (:crv k); accepts any key that contains a public key.
+   k is any key record holding a public key, or a vault handle.
    For secp256k1, the signature may be raw 64-byte r||s OR DER —
-   auto-detected on input. Pure.
+   auto-detected on input.
+   Pure for a key record; with a handle, impure: reads the vault's public
+   side.
 
    Throws ex-info {:type ::unsupported-curve} for a curve that cannot
-   verify."
+   verify, and :signet.vault/wrong-algorithm for a shared-key handle."
   [k message-bytes signature-bytes]
-  (let [pub (key/public-key k)
+  (let [pub (key/public-key (if (vault/handle? k) (vault/public-key k) k))
         x (:x pub)]
     (case (:crv pub)
       :Ed25519

@@ -174,16 +174,95 @@
         (aset result j tmp)))
     result))
 
+;; -- Ed25519 point validation, as libsodium's
+;;    crypto_sign_ed25519_pk_to_curve25519 does it, so that both backends
+;;    accept and refuse exactly the same public keys: the point must decode
+;;    onto the curve, must not have small order, and must be in the
+;;    prime-order subgroup (L * P = identity).
+
+(defn- fmul ^BigInteger [^BigInteger a ^BigInteger b] (.mod (.multiply a b) field-prime))
+(defn- fadd ^BigInteger [^BigInteger a ^BigInteger b] (.mod (.add a b) field-prime))
+(defn- fsub ^BigInteger [^BigInteger a ^BigInteger b] (.mod (.subtract a b) field-prime))
+
+(def ^:private ^BigInteger ed-d
+  "The Edwards curve constant d = -121665/121666 mod p."
+  (fmul (.mod (BigInteger/valueOf -121665) field-prime)
+        (.modInverse (BigInteger/valueOf 121666) field-prime)))
+
+(def ^:private ^BigInteger ed-2d (fadd ed-d ed-d))
+
+(def ^:private ^BigInteger sqrt-m1
+  "A square root of -1 mod p: 2^((p-1)/4)."
+  (.modPow (BigInteger/valueOf 2) (.divide (.subtract field-prime BigInteger/ONE) (BigInteger/valueOf 4))
+           field-prime))
+
+(def ^:private ^BigInteger group-order
+  "L = 2^252 + 27742317777372353535851937790883648493."
+  (.add (.shiftLeft BigInteger/ONE 252) (BigInteger. "27742317777372353535851937790883648493")))
+
+(defn- decode-point
+  "[x y] of the Ed25519 point that 32-byte encoding bs names, or nil if it
+   is not on the curve. The sign bit is ignored (x or -x: the checks below
+   do not depend on it), and y is reduced mod p, as libsodium does.
+   Pure."
+  [^bytes bs]
+  (let [yb (byte-array bs)
+        _  (aset yb 31 (unchecked-byte (bit-and (aget yb 31) 0x7f)))
+        y  (.mod (le-bytes->bigint yb) field-prime)
+        yy (fmul y y)
+        u  (fsub yy BigInteger/ONE)                   ; y^2 - 1
+        v  (fadd (fmul ed-d yy) BigInteger/ONE)       ; d y^2 + 1 (never 0)
+        x2 (fmul u (.modInverse v field-prime))
+        r  (.modPow x2 (.divide (.add field-prime (BigInteger/valueOf 3)) (BigInteger/valueOf 8)) field-prime)]
+    (cond
+      (= (fmul r r) x2)                    [r y]
+      (= (fmul r r) (fsub BigInteger/ZERO x2)) [(fmul r sqrt-m1) y]
+      :else                                nil)))
+
+(defn- small-order?
+  "Does point [x y] have small order (x = 0, y = 0, or y*sqrt(-1) = +-x)?
+   Pure."
+  [[^BigInteger x ^BigInteger y]]
+  (let [ys (fmul y sqrt-m1)]
+    (or (zero? (.signum x)) (zero? (.signum y))
+        (= ys x) (= ys (fsub BigInteger/ZERO x)))))
+
+(defn- ext-add
+  "Sum of two points in extended coordinates [X Y Z T] (a = -1): the
+   add-2008-hwcd-3 formula, complete on this curve, so it also doubles.
+   Pure."
+  [[x1 y1 z1 t1] [x2 y2 z2 t2]]
+  (let [a (fmul (fsub y1 x1) (fsub y2 x2))
+        b (fmul (fadd y1 x1) (fadd y2 x2))
+        c (fmul (fmul t1 ed-2d) t2)
+        d (fmul (fadd z1 z1) z2)
+        e (fsub b a) f (fsub d c) g (fadd d c) h (fadd b a)]
+    [(fmul e f) (fmul g h) (fmul f g) (fmul e h)]))
+
+(defn- in-prime-subgroup?
+  "Is L * [x y] the identity? Pure."
+  [[x y]]
+  (let [p [x y BigInteger/ONE (fmul x y)]
+        [rx ry rz] (reduce (fn [r i]
+                             (let [r2 (ext-add r r)]
+                               (if (.testBit ^BigInteger group-order i) (ext-add r2 p) r2)))
+                           [BigInteger/ZERO BigInteger/ONE BigInteger/ONE BigInteger/ZERO]
+                           (range (dec (.bitLength ^BigInteger group-order)) -1 -1))]
+    (and (zero? (.signum ^BigInteger rx)) (= ry rz))))
+
 (defn ed25519-pub->x25519-pub
   "Convert an Ed25519 public key (32 bytes) to an X25519 public key (32 bytes).
    Uses the birational map: u = (1 + y) / (1 - y) mod p.
-   Pure."
+   Pure.
+   Throws ex-info {:type :signet.impl/invalid-public-key} for a point that
+   is not on the curve, has small order, or is outside the prime-order
+   subgroup: the same keys libsodium refuses."
   [^bytes ed-pub]
-  (let [;; Ed25519 public key encoding: y-coordinate in bits 0-254 (little-endian),
-        ;; sign of x in bit 255. Clear the sign bit to get y.
-        y-bytes (byte-array ed-pub)
-        _ (aset y-bytes 31 (unchecked-byte (bit-and (aget y-bytes 31) 0x7f)))
-        y (le-bytes->bigint y-bytes)
+  (let [pt (decode-point ed-pub)
+        _  (when-not (and pt (not (small-order? pt)) (in-prime-subgroup? pt))
+             (throw (ex-info "Not a valid Ed25519 public key"
+                             {:type :signet.impl/invalid-public-key})))
+        y  (second pt)
         ;; u = (1 + y) * (1 - y)^(-1) mod p
         one BigInteger/ONE
         p field-prime
@@ -245,14 +324,27 @@
 (defn x25519-dh
   "Perform X25519 Diffie-Hellman key agreement.
    Returns the 32-byte shared secret.
-   Pure. Throws what JCA throws for a low-order public key."
+   Pure.
+   Throws ex-info {:type :signet.impl/low-order-point} when the result is
+   all zeros (their key has small order), as the libsodium backend does."
   [^bytes our-private ^bytes their-public]
   (let [priv-key (x25519-raw->jca-private our-private)
         pub-key (x25519-raw->jca-public their-public)
         ka (KeyAgreement/getInstance "X25519")]
     (.init ka priv-key)
-    (.doPhase ka pub-key true)
-    (.generateSecret ka)))
+    (try
+      (.doPhase ka pub-key true)
+      (let [out (.generateSecret ka)]
+        (when (every? zero? out)
+          (throw (ex-info "X25519 with a low-order public key" {:type :signet.impl/low-order-point})))
+        out)
+      (catch Exception e
+        ;; JCA refuses a small-order point itself with an InvalidKeyException
+        ;; (matched by name: babashka does not expose that class)
+        (if (= "java.security.InvalidKeyException" (.getName (class e)))
+          (throw (ex-info "X25519 with a low-order public key"
+                          {:type :signet.impl/low-order-point} e))
+          (throw e))))))
 
 ;; ============================================================
 ;; AEAD primitives: HKDF-SHA-256 + ChaCha20-Poly1305 via JCA
@@ -274,10 +366,15 @@
 (defn hkdf-sha-256
   "HKDF (RFC 5869) extract-then-expand. Returns `length` bytes derived
    from `ikm` with optional salt + info. salt and info default to empty.
-   Pure."
+   Pure.
+   Throws ex-info {:type :signet.impl/bad-length} unless length is 1..8160."
   ([^bytes ikm length]
    (hkdf-sha-256 ikm (byte-array 0) (byte-array 0) length))
   ([^bytes ikm ^bytes salt ^bytes info length]
+   ;; RFC 5869: at most 255 blocks; the one-byte counter wraps beyond that
+   (when-not (and (integer? length) (<= 1 length 8160))
+     (throw (ex-info "HKDF-SHA-256 output length must be 1..8160"
+                     {:type :signet.impl/bad-length :length length})))
    (let [;; Extract: PRK = HMAC(salt, ikm)
          salt' (if (zero? (alength salt)) (byte-array 32) salt)
          prk   (hmac-sha-256 salt' ikm)
