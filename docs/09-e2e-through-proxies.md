@@ -109,6 +109,116 @@ way to verify the bundle. The same likely applies to libsodium.js as
 loaded in nacljc's browser tests. A small follow-up: check whether
 Scittle supports integrity checks.
 
+#### How trusted apps handle it (added 2026-09-27)
+
+[recalled]: from general knowledge of the companies' published designs,
+not checked for this note; verify before citing.
+
+1. **The serious crypto runs in installed code; the web app is openly the
+   weaker option.** 1Password's main clients are native apps and the
+   browser extension, installed and updated through signed channels; its
+   security white paper says its web client is only as trustworthy as the
+   server that delivers it [recalled]. Proton (Mail, Pass, VPN) splits the
+   same way: VPN is native only, Mail has apps and Bridge, the web client
+   is the convenience path [recalled]. Signal has no browser client at
+   all, and its developers have cited this problem as the reason
+   [recalled].
+2. **A passive server learns nothing.** 1Password logs in with SRP (a
+   PAKE: the password is never sent) and a Secret Key (two-secret key
+   derivation); Proton encrypts in the client with OpenPGP [recalled].
+   That covers the passive, breached and compelled rows; injected
+   JavaScript could still capture a password as it is typed.
+3. **Tampering is made visible.** Open-source clients, reproducible
+   builds and audits (Proton, Bitwarden [recalled]); Meta's Code Verify
+   extension compares WhatsApp Web's served JavaScript with hashes
+   published by a third party [source].
+4. **Pinning code in the browser was tried and broke.** Cyph's WebSign
+   locked a web app's code after the first visit with a Service Worker
+   and HPKP; it stopped working when browsers removed HPKP [recalled].
+   The web platform has no durable way to pin application code; Isolated
+   Web Apps are meant to change that.
+
+The common pattern: a high-trust path in installed code, a convenience
+path in the web app documented for what it protects, protocol design
+(PAKE, client-side encryption, keys bound to the client) to make the
+convenience path as strong as it can be, and transparency to make attacks
+on it detectable.
+
+#### The high-trust path: a second trust path that bypasses the proxy (added 2026-09-27)
+
+**Two trust paths.** For a normal page, everything the browser runs and
+every key it uses arrives on one path:
+
+    DNS -> TLS certificate (a CA) -> the proxy -> the page's HTML and JS -> keys
+
+The proxy sits on that path, so it can change anything on it. A browser
+extension or an Isolated Web App adds a second path, which the proxy is
+not on:
+
+    the developer's signing key -> the store (extension) or the signed bundle (IWA) -> the code, with the pinned server keys
+
+On the second path the proxy is reduced to a transport. It still sees
+metadata and can delay or block traffic, but it cannot change the code,
+swap the server key, or read the payloads.
+
+**How an extension provides it.**
+- **Code integrity:** extensions are signed packages, distributed and
+  updated through the browser vendor's store (Chrome Web Store, Firefox
+  Add-ons, which require Mozilla's signature on every extension, Safari
+  through the App Store) [source]. The proxy of the site never serves
+  that code.
+- **Key authenticity:** the extension carries the application server's
+  public key (a signet kid), so the key never travels through the proxy.
+  Better: it carries an offline **root** key, and accepts the server's
+  operational keys only as endorsed by that root in a signet chain with
+  an expiry (the endorsement pattern of docs/07, "enclave tiers"). Server
+  keys can then rotate without an extension update.
+- **Where secrets are entered:** in the extension's own pages (its popup,
+  side panel or `chrome-extension://…` pages), which have their own origin
+  and code from the store. **Never in the proxied page:** its JavaScript
+  comes from the proxy and can read anything typed into it. The extension
+  encrypts before anything reaches the page or the network. Either the
+  whole application runs in extension pages (roughly 1Password's model),
+  or the page is only a shell and every sensitive interaction happens in
+  extension UI.
+- **Checking the page, optionally** (Code Verify's model): the extension
+  compares the page's scripts with a manifest of expected hashes. The
+  manifest must come from **somewhere the proxy does not control** (baked
+  into the extension, a transparency log, an independent host). Fetched
+  from the proxied domain, it adds nothing.
+
+**What the second path relies on instead.** It does not remove trust; it
+moves it to parties other than the proxy:
+- **The developer's store account and signing key.** Extensions update
+  silently, so a compromised developer account pushes malicious code to
+  every user within hours. This has happened: the Cyberhaven extension was
+  hijacked through a phished developer account in December 2024
+  [recalled]. Mitigations: hardware-key 2FA on the account, a small team
+  with publish rights, reproducible builds that others can compare, and
+  enterprise policies that pin versions.
+- **The store** (its review and infrastructure) and **the browser**
+  itself.
+- **The user's machine** (malware beats every design here).
+- **Look-alike UI:** a malicious page can imitate the extension's prompt
+  ("enter your password here") inside the page. Users need to know that
+  secrets go only into the extension's own UI, and the extension should
+  make its UI unmistakable.
+
+**Isolated Web Apps** go one step further [source]: the app is a signed
+web bundle whose origin (`isolated-app://<id>`) is derived from the
+developer's public key, so the app's identity *is* the key. Updates must
+be signed by the same key; the files can be hosted anywhere, even behind
+the proxy, which can only withhold them, not alter them. No store is
+involved, which removes one party. The catch: availability has been
+limited, initially enterprise-managed installs on ChromeOS [recalled].
+
+**What the second path gives, in short:** the proxy can no longer read
+payloads, forge server keys or change code. It can still see metadata
+and deny service. The trust that remains sits with the developer's
+signing key and account, the store (for extensions), the browser and the
+user's machine: parties you choose and can harden, instead of a
+middlebox you cannot see.
+
 ### 2. The server's key must be authentic
 
 For the browser to encrypt to the application server, it needs the
