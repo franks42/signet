@@ -1,0 +1,195 @@
+# End-to-end protection through TLS-terminating proxies
+
+Status: **design note, 2026-09-27.** Nothing is built yet. It records a
+discussion: the problem, what exists, what signet already has, and what a
+first slice could be.
+
+## The problem
+
+Many web applications sit behind an edge proxy (Cloudflare, AWS
+CloudFront, Azure Front Door, Google Cloud CDN, Akamai, …) that
+terminates TLS. The browser's TLS channel ends at the proxy. If the
+operator is careful, a second TLS channel carries the request on to the
+application server. Either way **the proxy sees every request and
+response in plaintext**. For a large share of the web that is one company
+in one place, under whatever jurisdiction the edge node sits in.
+
+The convenience is real (DDoS protection, caching, WAF, global routing,
+certificate management), and the trust is usually settled by contract.
+But it is trust in a third party that the user never chose, and it is
+not a technical guarantee.
+
+**Is it a real concern?** Yes:
+- **Cloudbleed (February 2017)** [source]: a Cloudflare HTML-parser bug
+  leaked uninitialised memory into responses: other customers' plaintext
+  traffic, including cookies, tokens and POST bodies, some of it cached
+  by search engines.
+- Plaintext at the edge can be **compelled** (lawful access) and is
+  **processed and stored** in normal operation (logs, WAF analytics,
+  sampling).
+- **Keyless SSL** [source] keeps the site's TLS private key off the
+  proxy, but the proxy still decrypts the traffic: it protects the key,
+  not the data.
+
+For high-value data (credentials, keys, health, financial data, secrets:
+exactly what signet exists for), end-to-end protection past the proxy is
+justified.
+
+## Who we defend against
+
+The value of any design depends on which proxy we assume:
+
+| Proxy behaviour | Example | Can application-layer E2E help? |
+|---|---|---|
+| **Honest but curious**: logs, samples, analyses | WAF analytics, debug logging | Yes: it only sees ciphertext |
+| **Breached or buggy** | Cloudbleed; a compromised edge node | Yes: leaked memory holds ciphertext |
+| **Compelled**: hands over stored or live data | lawful access at the edge | Yes for content; metadata still visible |
+| **Actively malicious**: rewrites what it serves | injected JavaScript | **Only if code and keys are anchored outside the proxy** (below) |
+
+The honest claim: application-layer E2E removes the proxy's plaintext by
+default and protects fully against the first three. Against the fourth
+it forces the proxy to tamper with code, which is detectable and a
+scandal, unless code integrity is anchored elsewhere.
+
+## The two hard problems (not the crypto)
+
+### 1. The code comes through the proxy
+
+The JavaScript that does the key exchange is served by the same proxy. A
+malicious proxy can change it to exfiltrate keys or plaintext.
+Subresource Integrity does not help: the HTML carrying the hashes comes
+through the proxy too. Ways to anchor code outside the proxy:
+- **Installed code:** a native app, a browser extension, or a
+  desktop/mobile wrapper, updated through a signed channel.
+- **Isolated Web Apps** (Chrome) [source]: web apps shipped as
+  developer-signed bundles, installed rather than fetched on each load.
+- **Code transparency:** publish the hashes of every served bundle; an
+  independent checker compares (Meta's Code Verify for WhatsApp Web
+  [source]).
+
+Without one of these, the design defends against the first three rows
+of the table, not the fourth.
+
+### 2. The server's key must be authentic
+
+For the browser to encrypt to the application server, it needs the
+server's public key. Delivered through the proxy, the proxy can swap in
+its own. The key has to be anchored somewhere the proxy does not control:
+- in the signed code bundle (Isolated Web Apps, installed apps);
+- in DNS with DNSSEC;
+- in a key-transparency log;
+- pinned on first use (TOFU), with a clear warning when it changes.
+
+## What the proxy keeps, loses, and still sees
+
+- **Keeps:** routing (host, path, method), caching of public assets, DDoS
+  protection, rate limiting by IP and endpoint, TLS certificate
+  management.
+- **Loses:** WAF inspection and bot detection on encrypted bodies. This
+  is the real operational cost; abuse protection moves to the application
+  or to what remains visible (rates, sizes, paths).
+- **Still sees:** metadata: endpoints, sizes, timing, client IPs,
+  unencrypted headers.
+- **Sessions are the trap.** Cookies and bearer tokens in headers stay
+  visible, so a proxy could replay them. Authorisation has to be bound
+  to the protected channel: requests signed with a client key (as in
+  DPoP, RFC 9449 [source], or signet's `sign-edn`), or the session token
+  itself carried inside the encrypted payload.
+
+## Existing solutions
+
+The idea is established; there is no single general toolkit for it.
+
+1. **Client-side encryption for payments** (Braintree, Adyen, Stripe
+   hosted fields) [source]: card data is encrypted in the browser to the
+   payment processor's key, so neither the merchant nor its CDN sees it.
+   Field-level E2E, deployed at scale.
+2. **Zero-knowledge web apps** (1Password, Bitwarden, Proton) [source]:
+   data is encrypted in the browser; servers and CDNs see ciphertext.
+   They also face problem 1 and address it partly with installed apps
+   and extensions.
+3. **Oblivious HTTP (RFC 9458)** on **HPKE (RFC 9180)** [source]: a
+   request is encapsulated to a gateway's public key and passes a relay
+   that cannot read it. Standardised and deployed (Apple Private Relay,
+   Chrome; Cloudflare runs relays). The closest standard shape for
+   "encrypted payload, transparent transport", though designed to hide
+   who asks from the gateway rather than content from a CDN.
+4. **DPoP (RFC 9449):** proof of possession for OAuth tokens: a stolen or
+   observed token is useless without the client's key.
+5. **TLS passthrough** (layer-4 proxying, e.g. Cloudflare Spectrum): the
+   proxy does not terminate TLS at all, at the cost of caching, WAF and
+   content routing.
+6. **Messaging protocols** (Signal, MLS): E2E between users, not between
+   a browser and its application server, but the same building blocks.
+
+## What we have, and what is missing
+
+**Have:**
+- libsodium on the server (nacljc) and in the browser (libsodium.js,
+  already tested against nacljc's vectors in Node and in headless
+  Chrome). WebCrypto now also has X25519 and Ed25519 [source].
+- signet: signed EDN envelopes (`sign-edn`, request binding), box
+  (per-message, sender-authenticated encryption), Noise KK sessions,
+  handles and the vault.
+
+**Missing:**
+- **signet in ClojureScript.** Every `:cljs` branch throws today. This
+  is the largest piece. The vault's `:webcrypto` provider (docs/07) fits
+  here: non-extractable browser keys.
+- **A handshake that fits browsers.** KK assumes both sides have
+  long-term keys. A browser usually knows only the server's key: Noise
+  **NK** (the client stays anonymous), **XK** (the client proves a key
+  later), or **IK** (0-RTT with a client key). Or no session at all (next
+  point).
+- **Per-request or session?**
+
+  | | Per request (box / HPKE) | Session (Noise) |
+  |---|---|---|
+  | Behind load balancers | stateless: any server can answer | needs session affinity or shared state |
+  | Forward secrecy | a later server-key compromise exposes past requests | yes (ephemeral-ephemeral DH) |
+  | Round trips | none extra | one handshake |
+  | Fit with signet | box already works this way | KK exists; NK/XK/IK needed |
+
+  A first slice is simpler per request; sessions can follow where
+  forward secrecy matters.
+- **The HTTP binding:** Ring middleware on the server, a `fetch` wrapper
+  in the browser, and a message format. Adopting OHTTP's framing (or
+  HPKE's suite identifiers) would make it reviewable and interoperable,
+  rather than inventing a format.
+- **Key anchoring and code integrity** (above): documentation and
+  deployment guidance more than code, but they decide what the whole thing
+  is worth.
+
+## A possible first slice
+
+1. **Scope:** protect selected request and response bodies (a JSON or EDN
+   payload), with paths, methods and public assets left transparent for
+   the proxy.
+2. **Per request:** the browser encrypts to the server's published X25519
+   key with a fresh ephemeral key (HPKE base mode, or signet box with an
+   ephemeral sender). The response is encrypted under a key derived from
+   the same exchange, as OHTTP does.
+3. **Authorisation inside:** the client signs the request (Ed25519) and
+   the signature travels inside the encrypted payload, so tokens in
+   headers are not needed or not sufficient.
+4. **Server side:** Ring middleware that decrypts, verifies and hands the
+   application an ordinary request, in Clojure on the JVM or bb.
+5. **Browser side:** first with libsodium.js from plain JavaScript or
+   Scittle, before a full ClojureScript signet.
+6. **Key anchoring:** start with TOFU plus an explicit pin in the served
+   configuration, with documentation of what that does and does not
+   protect; offer DNSSEC or a signed bundle as the stronger option.
+
+## Open questions
+
+1. **Adopt HPKE and OHTTP framing, or signet's own box format?** Standards
+   bring review and interoperability; signet's format is EDN-native and
+   already has directional keys and key commitment.
+2. **Which Noise pattern,** if sessions come later: NK, XK or IK?
+3. **Key anchoring default:** TOFU with a pin, DNSSEC, or signed bundles
+   only?
+4. **Where it lives:** part of signet, or a companion library (e.g.
+   "signet-http") on top of signet, like stroopwafel?
+5. **Abuse protection** without body inspection: what the proxy's WAF did
+   that the application must now do.
+6. **Metadata:** padding sizes, or accepting that the proxy sees them.
