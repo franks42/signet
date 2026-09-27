@@ -1,6 +1,6 @@
 # Password unlocking and vault persistence
 
-Status: **design proposal, 2026-09-27.** Builds on docs/07 ("Future:
+Status: **design, decisions taken 2026-09-27** (see the end); not built. Builds on docs/07 ("Future:
 persistence and password unlocking"), docs/08 (password-derived keys as
 handles; getting the password in) and nacljc 0.4.0 (`argon2id`, secret
 password in, secret key out). Nothing is built yet; the decisions at the
@@ -127,18 +127,43 @@ agent (docs/07) for applications that should never see the password.
 - **Not:** code running in the process while the vault is unlocked (the
   audience note in docs/07), or a keylogger capturing the password.
 
-## Decisions needed
+## The recovery key (optional)
 
-1. **Order:** first the password-derived key handle (`password-key!`,
-   seal/open with a password), then the vault file on top of it? Or the
-   file directly?
-2. **The JCA backend:** password features on the libsodium backend only,
-   or also on the JVM through Bouncy Castle's Argon2 (not on bb)?
-3. **Saving:** an explicit `save!`, or a vault bound to a file that saves
-   itself whenever a key is added or destroyed?
-4. **A recovery key** in the first version (a random, high-entropy key
-   shown once, as a second unlock method), or later?
-5. **nacljc 0.5.0 first:** `wrap-secret` / `unwrap-secret`, so that secrets
-   never touch the heap during save and load. (Recommended; the
-   alternative is exporting secrets during save and load, which breaks the
-   model.)
+Decided 2026-09-27: **optional, off by default.**
+
+- **Created only when asked for:** `create-file!` with
+  `{:recovery-key? true}`, or `add-recovery-key!` later on an unlocked
+  vault (it needs the master key).
+- **Never stored itself.** It is 32 random bytes. The file holds only one
+  more `:unlock` entry, `{:method :recovery-key :nonce … :wrapped …}`: the
+  master key wrapped under a key derived from the recovery key by **HKDF,
+  not Argon2id** (256 random bits cannot be guessed, so no slowdown is
+  needed, and unlocking with it is instant).
+- **Shown once, by the application.** signet returns it once, as the one
+  deliberate exit of a secret for a human: as **bytes** (so the caller can
+  wipe them after displaying or printing), behind the acknowledgement
+  `{:i-understand :exposes-secret}`, like `export-secret`. The format is
+  made for people: Crockford base32 in groups (no 0/O, 1/I/l confusion)
+  with a checksum, so a typo is caught before any decryption, e.g.
+  `SIGNET-RK1-7K3M-QX9P-2ABF-…-C4` (the prefix names the format, like age's
+  `AGE-SECRET-KEY-1…`).
+- **Using it:** `unlock-with-recovery-key!` (bytes, wiped), then
+  `reset-password!`, which rewraps the master key under a new password
+  without the old one. `remove-recovery-key!` revokes it (its only wrapped
+  copy is gone); `add-recovery-key!` replaces it.
+- **Security:** the recovery key is full access, with no Argon2id cost: it
+  must be kept offline. There is no backdoor: without the password and
+  without a recovery key, the keys are gone, and the docs say so.
+
+## Decisions (2026-09-27)
+
+1. **nacljc 0.5.0 first:** `wrap-secret` / `unwrap-secret`, so secrets never
+   touch the heap during save and load.
+2. **Order:** the password-derived key handle first (`password-key!`, seal
+   and open with a password), then the vault file on top.
+3. **Saving: both,** explicit `save!` by default, and an `:auto-save`
+   option when opening a file (write whenever a key is generated,
+   imported or destroyed).
+4. **The libsodium backend only** for password features; on the JCA
+   backend they throw a clear `::unsupported` error.
+5. **The recovery key is in v1, optional and off by default** (above).
