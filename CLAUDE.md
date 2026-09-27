@@ -108,6 +108,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `docs/07-secret-handles-design.md` — DRAFT: secrets by reference (handles + vault + providers: memory, sodium secure memory, WebCrypto, agent); code never sees secret bytes; also records the 2026-09-23 naming/twin-rule decisions for 0.7.0
 - `docs/08-sessions-on-handles-plan.md` — 0.9.0 implementation plan: session secrets as vault session entries, `close!` by session, `with-conclave`; phase 0 (Noise known-answer vectors) done
 - `docs/09-e2e-through-proxies.md` — design note (2026-09-27): application-layer E2E through TLS-terminating proxies (Cloudflare etc.): threat levels, the code-delivery and key-anchoring problems, existing standards (OHTTP/HPKE, DPoP, client-side payment encryption), pieces we have and a possible first slice. Not built.
+- `docs/10-password-unlocking.md` — design proposal (2026-09-27): password unlocking and vault persistence: key layers (password -> Argon2id -> master key -> entries), the vault file as a suite, lock/unlock, nacljc wrap-secret/unwrap-secret as a prerequisite; decisions open.
 
 ## Current state (2026-09-25)
 
