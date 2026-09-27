@@ -1,7 +1,5 @@
 # Changelog
 
-## 0.10.0 (unreleased)
-
 ## 0.9.4 (2026-09-26)
 
 Fixes from a review of signet (`docs/review-devin-20260926.md`), at the
