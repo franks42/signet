@@ -127,6 +127,10 @@ cacophony and snow test vectors).
   nothing secret. Under the `:sodium` provider they live in guarded memory.
 - **Each state is single-use.** Continue with the state each call returns;
   keys a state no longer needs are destroyed as it is consumed.
+- **Handshake message 1 can be replayed** to the responder, and its
+  payload lacks forward secrecy against a later compromise of the
+  responder's static key: keep non-idempotent commands and long-lived
+  secrets for transport messages (docs/05).
 - **Sessions must be closed.** `with-conclave` closes when the block exits.
   `close!` closes from *any* state of the session, even the first one.
   Afterwards any state of it throws `::session-closed`. A session never
@@ -194,6 +198,25 @@ clojure -M:test:sodium      # the :sodium alias adds nacljc and selects the back
 SIGNET_BACKEND=sodium bb …  # on babashka, with com.github.franks42/nacljc 0.3.2 added (see bb test:bb-sodium)
 ```
 
+
+## Deployment hardening (opt-in)
+
+signet keeps secrets out of application code, but a crashing or inspected
+process can still leak memory. Hardening it is a deployment choice, since
+each measure also removes a debugging tool, so nothing happens by default.
+nacljc 0.4.0+ has it as `nacljc.process`:
+
+```clojure
+(require '[nacljc.process :as p])
+(p/harden-process! {:core-dumps false :dumpable false :heap-dump-on-oom false})
+```
+
+See nacljc's README ("Deployment hardening") for what each option costs,
+and for the JVM flags and machine settings a process cannot set itself.
+
+**The libsodium backend loads the library that `NACLJC_LIBSODIUM` or
+`-Dnacljc.libsodium` names.** Whoever controls those controls the crypto:
+set them only from deployment configuration you trust.
 ## Compatibility
 
 **Upgrading from 0.6.0:** see [CHANGELOG.md](CHANGELOG.md). In short:

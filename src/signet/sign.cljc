@@ -200,13 +200,19 @@
    :message :signer :request-id :timestamp :age-ms :expires :expired?
    :digest (SHA-256 of canonical envelope, unique per signer+time)
    :message-digest (SHA-256 of canonical message, same across signers)
-   :error (when not valid)."
+   :error (when not valid): :not-signed (0.10.0: :type is not
+   :signet/signed; the tag is outside the signed bytes, so it is checked,
+   not authenticated), :malformed-envelope, :missing-signature,
+   :bad-request-id, :bad-expires, :unknown-signer, :not-canonicalizable,
+   :bad-signature, :expired, :unexpected-signer."
   ([signed-envelope] (verify-edn signed-envelope nil))
   ([signed-envelope {expected :signer now :now}]
    (let [invalid (fn [reason & [extra]] (merge {:valid? false :error reason} extra))
          {:keys [envelope signature]} (when (map? signed-envelope) signed-envelope)
          {:keys [message signer request-id expires]} (when (map? envelope) envelope)]
      (cond
+       ;; the :type tag is outside the signed bytes: checked, not authenticated
+       (not= :signet/signed (:type signed-envelope)) (invalid :not-signed)
        (not (map? envelope))            (invalid :malformed-envelope)
        (not (bytes? signature))         (invalid :missing-signature)
        (not (uuidv7/uuidv7? request-id)) (invalid :bad-request-id)

@@ -190,3 +190,12 @@
       (is (not (sign/signed? {})))
       (is (not (sign/signed? {:type :other})))
       (is (not (sign/signed? nil))))))
+
+;; === 0.10.0: verify-edn checks :type (review finding 12) ===
+
+(deftest verify-edn-rejects-a-wrong-type
+  (let [kp  (key/signing-keypair)
+        env (sign/sign-edn kp {:a 1})]
+    (is (:valid? (sign/verify-edn env)))
+    (is (= :not-signed (:error (sign/verify-edn (assoc env :type :signet/box)))))
+    (is (= :not-signed (:error (sign/verify-edn (dissoc env :type)))))))

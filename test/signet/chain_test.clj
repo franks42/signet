@@ -428,3 +428,53 @@
         swapped (assoc token :proof (vault/generate-signing-key!))]
     (is (:valid? (chain/verify token)))
     (is (false? (:valid? (chain/verify swapped))) "a handle for another key is not the proof")))
+
+;; === 0.10.0: keyword errors and a uniform :blocks (review finding 11) ===
+
+(deftest verify-errors-are-keywords-with-details
+  (let [_root  (vault/ensure-default-signing-key!)
+        sealed (-> (chain/extend {:facts ["block 0"]})
+                   (chain/extend {:checks ["block 1"]})
+                   (chain/extend {:checks ["block 2"]})
+                   (chain/close))]
+    (testing "a tampered block"
+      (let [r (chain/verify (assoc-in sealed [:blocks 1 :envelope :message :data] {:checks ["forged"]}))]
+        (is (= :invalid-block (:error r)))
+        (is (= 1 (:block r)))
+        (is (= :bad-signature (:cause r)))
+        (is (string? (:message r)) "a readable message for logs")
+        (is (= [{:facts ["block 0"]}] (mapv :data (:blocks r)))
+            ":blocks holds the messages verified before the failure, the same shape as on success")))
+    (testing "reordered blocks"
+      (let [r (chain/verify (assoc sealed :blocks [(get-in sealed [:blocks 0])
+                                                   (get-in sealed [:blocks 2])
+                                                   (get-in sealed [:blocks 1])]))]
+        (is (= :signer-mismatch (:error r)))
+        (is (= 1 (:block r)))
+        (is (every? string? [(:expected r) (:got r)]))))
+    (testing "a removed last block"
+      (is (= :invalid-proof (:error (chain/verify (update sealed :blocks #(vec (take 2 %))))))))
+    (testing "the expected root"
+      (let [r (chain/verify sealed {:root (key/kid (key/signing-keypair))})]
+        (is (= :unexpected-root (:error r)))
+        (is (false? (:verified? r)))))
+    (testing "a malformed token"
+      (doseq [bad [{:type :signet/chain :blocks "garbage"} {:type :signet/chain :blocks []} "garbage" nil]]
+        (is (= :malformed (:error (chain/verify bad))) (pr-str bad))))
+    (testing "success: no :error, every block's message"
+      (let [r (chain/verify sealed)]
+        (is (:valid? r))
+        (is (nil? (:error r)))
+        (is (= 3 (count (:blocks r))))))))
+
+(deftest verify-reports-a-bad-third-party-signature
+  (let [_root    (vault/ensure-default-signing-key!)
+        token    (chain/extend {:facts ["authority"]})
+        idp-kp   (key/signing-keypair)
+        tp-block (chain/create-third-party-block (chain/third-party-request token)
+                                                 {:email "alice@idp.com"} idp-kp)
+        ;; the outer block is signed correctly; only the third party's signature is wrong
+        forged   (update tp-block :external-sig (fn [^bytes s] (let [c (aclone s)] (aset-byte c 0 (unchecked-byte (bit-xor (aget c 0) 1))) c)))
+        r        (chain/verify (chain/extend-third-party token forged))]
+    (is (= :external-signature-invalid (:error r)))
+    (is (= 1 (:block r)))))

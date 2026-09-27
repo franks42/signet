@@ -307,3 +307,36 @@ fail before it (13 tests: 38 failures and 1 error before).
 | 11 | Deferred to 0.10.0 (breaking for consumers that read the strings). |
 | 12 | Deferred to 0.10.0. |
 | 13 | Done: stale `extend-chain` comment, `close` wipes the sendable seed, `adopt-session-entry!` order, `create-third-party-block` docstring, `:from` accepts records and handles, CLI missing values, `release-check`, uuidv7 0.7.3. Not done: catching `Throwable` in cleanup, 64-byte DER signatures, the `export-token` acknowledgement for sealed tokens, the Noise-vector harness's ephemerals on the public side, the seed check in the deprecated SSH path (its JCA derivation fails on bb), the `::no-default-signing-keypair` name (a stable contract). |
+
+## Re-verification (Devin, 0.10.0-SNAPSHOT @ 6fb9728)
+
+Each claim above was re-checked empirically, not just read. All fixes
+hold:
+
+- **1:** 20/20 `unbox :default` calls succeed with a shared key in the
+  vault (was ~50 % failing). Shared handle as `box` sender and
+  `vault/public-key` on it → `:signet.vault/wrong-algorithm` ex-info.
+- **2:** `(close sealed {:x 1})` → ex-data `{:type ::sealed}`, same as
+  the 1-arity (was `ArrayStoreException`).
+- **3:** `export-token` + `close`: seed array zeroed, vault copy gone
+  (`vault/handle` → nil), extending the stale local token →
+  `:signet.vault/destroyed-key` (was: key still signing).
+- **4:** y=1 and random non-point inputs → `:signet.impl/invalid-public-key`
+  on JCA (was `ArithmeticException`/garbage); low-order X25519 DH →
+  `:signet.impl/low-order-point`. Parity run: 57 checks, 0 failed —
+  455 inputs, 380 refused identically by both backends.
+- **5:** `kid->public-key` on a 5-byte payload → `::malformed-kid`.
+- **6:** `sign/verify` with a handle → true.
+- **7:** secp256k1 kid and record as session peer → `::bad-key-type`;
+  same for `shared-key!` and `register-public-key!` with non-keys.
+- **8:** `register!` of a secp256k1 private-only key → `::no-kid`.
+- **9:** `hkdf-sha-256` at 8160 ok, 8161 → `:signet.impl/bad-length`.
+- **10/13:** verified in source/diff: vault errors pass through
+  `open-aead`, `-adopt!` precedes the `:session` swap, CLI value checks,
+  dated release-check heading, uuidv7 0.7.3, docstring fixes.
+
+Suites: JCA 196 tests / 1055 assertions, sodium 196 / 1069 — 0 failures
+(was 183/986, 183/1000; +13 seams tests). Deferred to 0.10.0 as stated:
+11 (`chain/verify` string errors) and 12 (`verify-edn` `:type` check);
+the remaining finding-13 minors are documented as intentionally not
+done, with reasons. |

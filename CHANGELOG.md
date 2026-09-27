@@ -2,6 +2,32 @@
 
 ## 0.10.0 (unreleased)
 
+### Changed (breaking)
+
+- **`chain/verify`'s `:error` is a keyword** (review finding 11), with
+  details beside it: `:invalid-block` (`:block`, `:cause` from
+  `verify-edn`), `:signer-mismatch` (`:block`, `:expected`, `:got`),
+  `:prev-sig-mismatch` (`:block`), `:external-signature-invalid`
+  (`:block`), `:invalid-proof`, `:unexpected-root`, `:malformed`; plus a
+  readable `:message`. Before, `:error` was an English string. Code that
+  read the string must switch to the keyword.
+- **`chain/verify`'s `:blocks` has one shape:** the messages of the blocks
+  verified, on success (as before) and on failure (before, full
+  `verify-edn` results).
+- **A malformed token** (not a `:signet/chain` map with a non-empty vector
+  of blocks) is `:malformed` up front.
+- **`verify-edn` checks `:type`** (review finding 12): anything but
+  `:signet/signed` is `{:valid? false :error :not-signed}`. `sign-edn` has
+  always set it. The tag is outside the signed bytes: checked, not
+  authenticated.
+
+### Documentation
+
+- Noise KK: handshake message 1 can be replayed and has weaker forward
+  secrecy (docs/05, the `write-message!` docstring, README).
+- README: "Deployment hardening", pointing to nacljc's opt-in
+  `nacljc.process`, and a note on `NACLJC_LIBSODIUM`.
+
 ## 0.9.4 (2026-09-26)
 
 Fixes from a review of signet (`docs/review-devin-20260926.md`), at the

@@ -794,7 +794,13 @@
       `plaintext` — application payload bytes. Empty (or nil) is fine.
       During the handshake the message carries the local ephemeral public
       key plus an AEAD-tagged payload; after Split, transport messages are
-      pure AEAD ciphertext."
+      pure AEAD ciphertext.
+
+      Handshake message 1 (the initiator's first write) can be replayed to
+      the responder, and its payload lacks forward secrecy against a later
+      compromise of the responder's static key: keep non-idempotent
+      commands and long-lived secrets out of it (docs/05, \"What KK
+      authenticates and what it doesn't\")."
      [state plaintext]
      (consume! state #(write-message* state plaintext))))
 

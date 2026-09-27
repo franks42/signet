@@ -132,8 +132,11 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   (valid boxes were rejected at random), JCA point validation matching
   libsodium with shared error types, chain close fixes, typed errors at
   the seams. Regression tests: `test/signet/seams_test.clj`.
-- **main is 0.10.0-SNAPSHOT** (nothing started; review findings 11 and 12
-  are queued for it). Audience (docs/07,
+- **main is 0.10.0-SNAPSHOT:** review findings 11 and 12 done (keyword
+  errors in `chain/verify`, uniform `:blocks`, `verify-edn` checks `:type`:
+  breaking), doc notes done (message-1 replay, `NACLJC_LIBSODIUM`,
+  README "Deployment hardening" → `nacljc.process`). Next: password
+  unlocking (Argon2id is in nacljc 0.4.0). Audience (docs/07,
   2026-09-25): signet protects developers from mistakes and ordinary
   exposure; determined adversaries with code execution are documented, not
   targeted. Candidates, in order: the cheap fixes in docs/07's "Remaining
@@ -229,9 +232,9 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 ## Testing, lint, format
 
 ```bash
-bb test:jvm          # full suite, JCA backend (clojure -M:test): 196 tests / 1055 assertions
+bb test:jvm          # full suite, JCA backend (clojure -M:test): 199 tests / 1078 assertions
 bb test:jvm-sodium   # full suite, libsodium backend + JCA-vs-libsodium parity (57 checks)
-bb test:bb-sodium    # full suite on babashka, libsodium backend: 186 / 1040 (all but secp256k1)
+bb test:bb-sodium    # full suite on babashka, libsodium backend: 189 / 1063 (all but secp256k1)
 bb smoke             # bb smoke suite (JCA): 9 tests
 bb test:no-sodium    # lint + fmt + JCA suite + bb smoke (no native libsodium needed)
 bb test:all          # test:no-sodium + test:jvm-sodium + test:bb-sodium

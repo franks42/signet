@@ -455,16 +455,24 @@
                                   (nil? block-prev))]
                (cond
                  (not sig-valid?)
-                 (assoc acc :error (str "Invalid block " (count results) ": "
-                                        (name (or (:error result) :bad-signature))))
+                 (assoc acc :error {:error   :invalid-block
+                                    :block   (count results)
+                                    :cause   (or (:error result) :bad-signature)
+                                    :message (str "Invalid block " (count results) ": "
+                                                  (name (or (:error result) :bad-signature)))})
 
                  (not signer-ok?)
-                 (assoc acc :error (str "Signer mismatch on block " (count results)
-                                        ": expected " expected-signer
-                                        ", got " signer))
+                 (assoc acc :error {:error    :signer-mismatch
+                                    :block    (count results)
+                                    :expected expected-signer
+                                    :got      signer
+                                    :message  (str "Signer mismatch on block " (count results)
+                                                   ": expected " expected-signer ", got " signer)})
 
                  (not prev-sig-ok?)
-                 (assoc acc :error (str "prev-sig mismatch on block " (count results)))
+                 (assoc acc :error {:error   :prev-sig-mismatch
+                                    :block   (count results)
+                                    :message (str "prev-sig mismatch on block " (count results))})
 
                  :else
                   ;; Check external signature if this is a third-party block
@@ -479,7 +487,9 @@
                                     :cljs false)
                                  true)]
                    (if-not ext-ok?
-                     (assoc acc :error (str "External signature invalid on block " (count results)))
+                     (assoc acc :error {:error   :external-signature-invalid
+                                        :block   (count results)
+                                        :message (str "External signature invalid on block " (count results))})
                      {:results       (conj results result)
                       :prev-sig      (:signature block)
                       :prev-next-key block-next
@@ -510,19 +520,21 @@
                       ^bytes (impl/ed25519-seed->public-key p))
                      :cljs false))))))]
 
+    ;; :blocks is the messages of the blocks verified so far, the same shape
+    ;; on success and on failure
     (if-let [error (:error block-results)]
       ;; Chain verification failed at some block
-      {:valid?  false
-       :sealed? (sealed? token)
-       :root    root
-       :blocks  (:results block-results)
-       :error   error}
+      (merge {:valid?  false
+              :sealed? (sealed? token)
+              :root    root
+              :blocks  (mapv :message (:results block-results))}
+             error)
       ;; All blocks verified — check proof
-      {:valid?  (boolean proof-valid?)
-       :sealed? (sealed? token)
-       :root    root
-       :blocks  (mapv :message (:results block-results))
-       :error   (when-not proof-valid? "Invalid proof")})))
+      (cond-> {:valid?  (boolean proof-valid?)
+               :sealed? (sealed? token)
+               :root    root
+               :blocks  (mapv :message (:results block-results))}
+        (not proof-valid?) (assoc :error :invalid-proof :message "Invalid proof")))))
 
 (defn verify
   "Verify a chain's integrity and all signatures.
@@ -555,14 +567,28 @@
       :verified? boolean (only with :root)
       :sealed?   boolean
       :root      kid URN of root authority
-      :blocks    vector of each block's verification result (from sign/verify-edn)
-      :error     error message if invalid (optional)}"
+      :blocks    the messages of the blocks verified (all of them when valid;
+                 those before the failure when not), the same shape either way
+      :error     a keyword when invalid (0.10.0; before, an English string):
+                   :invalid-block             with :block and :cause (verify-edn's :error)
+                   :signer-mismatch           with :block, :expected and :got
+                   :prev-sig-mismatch         with :block
+                   :external-signature-invalid with :block
+                   :invalid-proof             the seal or open proof does not match
+                   :unexpected-root           with :root given and not matched
+                   :malformed                 not a chain token
+      :message   a readable description of :error, for logs}"
   ([token] (verify token nil))
   ([token {expected-root :root :as opts}]
-   (let [result (try (verify* token (select-keys opts [:now]))
-                     (catch #?(:clj Exception :cljs :default) e
-                       {:valid? false :sealed? false :root (when (map? token) (:root token))
-                        :error (str "Malformed token: " (ex-message e))}))]
+   (let [result (if-not (and (chain? token) (vector? (:blocks token)) (seq (:blocks token)))
+                  {:valid? false :sealed? false :root (when (map? token) (:root token))
+                   :blocks [] :error :malformed
+                   :message "Not a chain token (a :signet/chain map with a non-empty vector of blocks)"}
+                  (try (verify* token (select-keys opts [:now]))
+                       (catch #?(:clj Exception :cljs :default) e
+                         {:valid? false :sealed? false :root (when (map? token) (:root token))
+                          :blocks [] :error :malformed
+                          :message (str "Malformed token: " (ex-message e))})))]
      (if (some? expected-root)
        (let [verified? (boolean (and (:valid? result)
                                      (if (set? expected-root)
@@ -570,7 +596,8 @@
                                        (= expected-root (:root result)))))]
          (cond-> (assoc result :verified? verified? :valid? verified?)
            (and (:valid? result) (not verified?))
-           (assoc :error (str "Root " (:root result) " is not the expected root"))))
+           (assoc :error :unexpected-root
+                  :message (str "Root " (:root result) " is not the expected root"))))
        result))))
 
 ;; ============================================================

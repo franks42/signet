@@ -154,6 +154,24 @@ What KK does **not** give you:
   the same ephemeral twice, which is already a worse problem than
   replay. Within a session, the counter monotonically increments,
   so in-session replay is rejected.
+- **Replay protection for message 1** (noted 2026-09-26/27, from a
+  review). The first handshake message can be replayed: an attacker who
+  records it can send it to the responder again, and the responder,
+  holding no state from the first time, accepts it, decrypts the same
+  payload, and starts a fresh session (the attacker cannot complete that
+  session without the initiator's keys, but the payload has already been
+  delivered twice). Its payload also has weaker forward secrecy than
+  later messages: it is encrypted under `es` and `ss` only (no `ee` yet),
+  so a later compromise of the responder's static key reveals it. So:
+  - **do not put non-idempotent commands in the message-1 payload**
+    (a transfer, a state change): send them after the handshake, in
+    transport messages, which are bound to this session and its nonce
+    counter;
+  - **do not put long-lived secrets in it** (forward secrecy begins with
+    message 2);
+  - or, if message 1 must carry a command, have the responder reject
+    duplicates, e.g. a UUIDv7 request id in the payload and a window of
+    seen ids.
 
 ## API shape
 
