@@ -374,19 +374,26 @@
          (fn [d] (into {} (remove (fn [[_ v]] (= v h)) d))))
   nil)
 
-(defn ^:no-doc adopt-shared!
-  "INTERNAL to signet.shared: store derived symmetric material (bytes or a
-   nacljc secret; the vault takes ownership) under kid in vault-id, with
-   its public metadata. If the vault already holds kid, the new material is
-   released instead (the same relationship derives the same key). Returns
-   the handle. Impure: writes the vault."
-  [vault-id kid material meta]
+(defn ^:no-doc adopt-symmetric!
+  "INTERNAL to signet.shared and signet.password: store derived symmetric
+   material (bytes or a nacljc secret; the vault takes ownership) under kid
+   in vault-id as a key of kind (:shared or :password), with its public
+   metadata (which records the kind). If the vault already holds kid, the
+   new material is released instead (the same inputs derive the same key).
+   Returns the handle. Impure: writes the vault."
+  [vault-id kid kind material meta]
   (let [v (vault vault-id)]
     (if (-has? (:provider v) kid)
       #?(:clj (impl/destroy-material! material) :cljs nil)
-      (-adopt! (:provider v) kid :shared material))
-    (swap! (:shared v) assoc kid meta)
+      (-adopt! (:provider v) kid kind material))
+    (swap! (:shared v) assoc kid (assoc meta :kind kind))
     (->handle vault-id kid)))
+
+(defn ^:no-doc adopt-shared!
+  "INTERNAL to signet.shared: adopt-symmetric! as a :shared key.
+   Impure: writes the vault."
+  [vault-id kid material meta]
+  (adopt-symmetric! vault-id kid :shared material meta))
 
 (defn ^:no-doc shared-meta
   "INTERNAL to signet.shared: the public metadata of shared key h, or nil.
@@ -505,6 +512,25 @@
   []
   #?(:clj  (str "urn:signet:session:" (enc/bytes->base64url (impl/random-bytes 16)))
      :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
+
+(defn ^:no-doc argon2id-material
+  "INTERNAL to signet.password: Argon2id of password (a byte array) with
+   salt and limits, run inside vault-id's provider. The password becomes a
+   temporary provider entry (under :sodium it moves into guarded memory,
+   and the array is wiped at once) and is destroyed afterwards, which also
+   wipes the caller's array under :memory. Returns 32 bytes of material
+   (bytes, or a nacljc secret under :sodium) that the caller must adopt or
+   destroy. Impure: writes and reads the vault's provider, wipes password.
+   Throws what impl/argon2id throws (:signet.impl/unsupported on the JCA
+   backend); the password is wiped either way."
+  [vault-id ^bytes password salt limits]
+  (let [p   (:provider (vault vault-id))
+        tmp (new-entry-id)]
+    (-adopt! p tmp :password-input password)
+    (try
+      #?(:clj  (-with-material p tmp #(impl/argon2id % salt 32 limits))
+         :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))
+      (finally (-destroy! p tmp)))))
 
 (defn- adopt-session-entry!
   "Store material (the vault takes ownership) as a new session entry of

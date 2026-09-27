@@ -180,6 +180,23 @@
   [m lengths]
   (if (na/secret? m) (na/secret-split m lengths) (split-bytes m lengths)))
 
+(defn argon2id
+  "Argon2id (libsodium's crypto_pwhash, v1.3): len bytes from password (a
+   byte array or a nacljc secret) and a 16-byte salt at the cost in limits
+   {:opslimit n :memlimit bytes}. A secret password gives a secret result.
+   Pure for a byte-array password; with a nacljc secret, impure: reads it
+   and allocates guarded memory for the result.
+   Throws nacljc's errors (::bad-input, ::bad-length, ::call-failed)."
+  [password salt len limits]
+  (na/argon2id password salt len limits))
+
+(defn argon2id-limits
+  "libsodium's Argon2id cost preset (:interactive, :moderate, :sensitive)
+   as {:opslimit n :memlimit bytes}. Pure.
+   Throws nacljc's ::bad-input for another preset."
+  [preset]
+  (na/argon2id-limits preset))
+
 (defn destroy-material!
   "Release secret material whose purpose has ended: overwrite a byte array
    with zeros, or destroy a nacljc secret (zeroes and frees its guarded

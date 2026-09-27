@@ -108,7 +108,7 @@
   "The metadata of shared key h, or throws. Impure: reads the vault.
    Throws ex-info {:type ::not-a-shared-key} unless h is a shared key."
   [h]
-  (or (vault/shared-meta h)
+  (or (let [m (vault/shared-meta h)] (when (= :shared (:kind m)) m))
       (throw (ex-info "Not a shared key handle" {:type ::not-a-shared-key :kid (:kid h)}))))
 
 (defn- message-key

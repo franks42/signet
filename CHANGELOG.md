@@ -2,6 +2,25 @@
 
 ## 0.10.0 (unreleased)
 
+### Added
+
+- **`signet.password`: password-derived keys as vault handles** (docs/10,
+  slice 1). `password-key!` runs Argon2id (presets `:interactive`,
+  `:moderate` (default), `:sensitive`, or `{:opslimit :memlimit}`) on a
+  password given as bytes, which is wiped; the key stays in the vault
+  (under `:sodium`, in guarded memory, the password too). `seal` / `open`
+  as in `signet.shared` (per-message HKDF key, key commitment, cedn header
+  as AAD, optional `:aad`); the sealed value carries the salt and cost, so
+  `open` also takes the password itself. `open` never throws
+  (`:wrong-password`, `:wrong-key`, `:authentication-failed`,
+  `:aad-mismatch`, …). The libsodium backend only: on JCA it throws
+  `:signet.impl/unsupported` (after wiping the password).
+- `signet.impl`: `argon2id` and `argon2id-limits` (20 functions).
+
+### Changed
+
+- nacljc 0.5.0 for the `:sodium` backend (Argon2id, key wrapping).
+
 ### Changed (breaking)
 
 - **`chain/verify`'s `:error` is a keyword** (review finding 11), with

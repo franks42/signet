@@ -94,6 +94,14 @@ not a credential: the vault decides what it can do.
 - **Shared keys** (`signet.shared`): both parties derive the same key and
   kid with no exchange. `seal` is directional and key-committing; a MAC is
   not a signature, and a static-static shared key has no forward secrecy.
+- **Password keys** (`signet.password`, libsodium backend only): a key
+  derived from a password with Argon2id, kept in the vault.
+  `(password-key! pw-bytes {:limits :moderate})` gives a handle (the
+  password array is wiped; a String is refused, since it cannot be wiped);
+  `seal` / `open` work like `signet.shared`, and the sealed value carries
+  the salt and cost, so `(open pw-bytes sealed)` also works from the
+  password alone. A stolen sealed value can be attacked offline: only
+  Argon2id's cost stands between a weak password and the plaintext.
 
 Key records that carry a secret (`:d`) still work everywhere but are
 **deprecated since 0.9.0**: the functions that create them carry
@@ -191,11 +199,11 @@ keys and ciphertexts.
 | Backend | Namespace | Needs | Notes |
 |---|---|---|---|
 | `jca` (default) | `signet.impl.jvm` | a JDK | No native dependency. Deriving a public key from a seed does not work on babashka. |
-| `sodium` | `signet.impl.sodium` | libsodium >= 1.0.19 (`brew install libsodium`), [nacljc](https://github.com/franks42/nacljc) 0.3.2 from Clojars (added by the `:sodium` alias), JDK 25+ with `--enable-native-access=ALL-UNNAMED`, or bb >= 1.13.220 | The full test suite also passes on babashka. |
+| `sodium` | `signet.impl.sodium` | libsodium >= 1.0.19 (`brew install libsodium`), [nacljc](https://github.com/franks42/nacljc) 0.5.0 from Clojars (added by the `:sodium` alias), JDK 25+ with `--enable-native-access=ALL-UNNAMED`, or bb >= 1.13.220 | The full test suite also passes on babashka. |
 
 ```bash
 clojure -M:test:sodium      # the :sodium alias adds nacljc and selects the backend
-SIGNET_BACKEND=sodium bb …  # on babashka, with com.github.franks42/nacljc 0.3.2 added (see bb test:bb-sodium)
+SIGNET_BACKEND=sodium bb …  # on babashka, with com.github.franks42/nacljc 0.5.0 added (see bb test:bb-sodium)
 ```
 
 

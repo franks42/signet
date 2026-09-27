@@ -11,7 +11,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - **Name**: signet (like a signet ring — personal key for signing/sealing)
 - **Crypto backends** (`signet.impl` facade, selected once at load: `-Dsignet.backend` / `SIGNET_BACKEND`, default `jca`):
   - `:jca` — `signet.impl.jvm`, Java JCA. No native dependency. Its seed→public-key path (a `proxy [SecureRandom]` trick) does not work on babashka.
-  - `:sodium` — `signet.impl.sodium`, libsodium via `nacljc.core` (the backend keeps the name `:sodium`: it names libsodium, the native engine, not the wrapper) (github.com/franks42/nacljc, `com.github.franks42/nacljc 0.3.2` from Clojars via the `:sodium` alias; the version in bb.edn's test:bb-sodium and test/signet/consumer_check.clj (test:jar) must match; babashka.ffi). To test an unreleased nacljc, swap in `{:local/root "../nacljc"}`. Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
+  - `:sodium` — `signet.impl.sodium`, libsodium via `nacljc.core` (the backend keeps the name `:sodium`: it names libsodium, the native engine, not the wrapper) (github.com/franks42/nacljc, `com.github.franks42/nacljc 0.5.0` from Clojars via the `:sodium` alias; the version in bb.edn's test:bb-sodium and test/signet/consumer_check.clj (test:jar) must match; babashka.ffi). To test an unreleased nacljc, swap in `{:local/root "../nacljc"}`. Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
   - ClojureScript: not implemented (every `:cljs` branch throws). The browser plan is libsodium.js (see `../nacljc/docs/feasibility.md`).
 - **Dependencies**: canonical-edn (cedn) 1.6.1 for deterministic serialization, uuidv7 0.7.2 for request IDs (bumped from 1.2.0 / 0.5.0 in 0.7.0; see README "Compatibility"). Bouncy Castle for secp256k1 only (JVM). nacljc for the `:sodium` backend (alias `:sodium`: local snapshot jar, not published).
 - **Key fields**: JWK-inspired — `:x` (public), `:d` (private), `:crv` (:Ed25519/:X25519), `:type` (dispatch tag)
@@ -70,13 +70,17 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 ### signet.encoding — Base64url
 - `bytes->base64url` / `base64url->bytes`
 
+### signet.password — password-derived keys (0.10.0, slice 1 of docs/10)
+- `password-key!` (Argon2id; password bytes wiped; key kept in the vault), `seal`, `open` (with the handle or the password)
+- libsodium backend only; JCA throws `:signet.impl/unsupported`
+
 ### signet.impl — backend facade
-- The 18 crypto functions every other namespace calls (`impl/…`), forwarded to the selected backend
+- The 20 crypto functions every other namespace calls (`impl/…`), forwarded to the selected backend
 - `impl/backend` — `:jca` or `:sodium`
 - Unknown backend, or `:sodium` without libsodium/nacljc → loud error at load (no silent fallback)
 
 ### signet.impl.sodium — libsodium backend
-- Same 18 functions and contracts as `signet.impl.jvm`, on `nacljc.core`
+- Same 20 functions and contracts as `signet.impl.jvm`, on `nacljc.core`
 - Fixed-size inputs length-checked (libsodium reads them blindly)
 
 ### signet.impl.jvm — JCA backend
@@ -136,8 +140,11 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - **main is 0.10.0-SNAPSHOT:** review findings 11 and 12 done (keyword
   errors in `chain/verify`, uniform `:blocks`, `verify-edn` checks `:type`:
   breaking), doc notes done (message-1 replay, `NACLJC_LIBSODIUM`,
-  README "Deployment hardening" → `nacljc.process`). Next: password
-  unlocking (Argon2id is in nacljc 0.4.0). Audience (docs/07,
+  README "Deployment hardening" → `nacljc.process`). nacljc 0.5.0.
+  Password unlocking (docs/10): slice 1 done (`signet.password`,
+  password-derived key handles, seal/open); next is slice 2, the vault
+  file (create-file!/open-file!/unlock!/lock!/save! + :auto-save,
+  change-password!, optional recovery key), on nacljc wrap-secret. Audience (docs/07,
   2026-09-25): signet protects developers from mistakes and ordinary
   exposure; determined adversaries with code execution are documented, not
   targeted. Candidates, in order: the cheap fixes in docs/07's "Remaining

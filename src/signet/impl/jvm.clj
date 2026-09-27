@@ -447,6 +447,22 @@
   [m lengths]
   (split-bytes m lengths))
 
+(defn argon2id
+  "Argon2id is not in the JDK: password features need the libsodium
+   backend. Never returns.
+   Throws ex-info {:type :signet.impl/unsupported}."
+  [_password _salt _len _limits]
+  (throw (ex-info "Argon2id (password keys) needs signet's libsodium backend (-Dsignet.backend=sodium)"
+                  {:type :signet.impl/unsupported :feature :argon2id})))
+
+(defn argon2id-limits
+  "Argon2id is not in the JDK: password features need the libsodium
+   backend. Never returns.
+   Throws ex-info {:type :signet.impl/unsupported}."
+  [_preset]
+  (throw (ex-info "Argon2id (password keys) needs signet's libsodium backend (-Dsignet.backend=sodium)"
+                  {:type :signet.impl/unsupported :feature :argon2id})))
+
 (defn destroy-material!
   "Release secret material whose purpose has ended: overwrite a byte array
    with zeros. (The JCA backend only ever handles byte arrays.) Impure:

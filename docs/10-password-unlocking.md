@@ -1,10 +1,11 @@
 # Password unlocking and vault persistence
 
-Status: **design, decisions taken 2026-09-27** (see the end); not built. Builds on docs/07 ("Future:
-persistence and password unlocking"), docs/08 (password-derived keys as
-handles; getting the password in) and nacljc 0.4.0 (`argon2id`, secret
-password in, secret key out). Nothing is built yet; the decisions at the
-end are open.
+Status: **decisions taken 2026-09-27** (see the end). Slice 1, the
+password-derived key handle, is built (`signet.password`, 0.10.0); the
+vault file (slice 2) is not. Builds on docs/07 ("Future: persistence and
+password unlocking"), docs/08 (password-derived keys as handles; getting
+the password in) and nacljc 0.4.0/0.5.0 (`argon2id`, `wrap-secret`,
+`unwrap-secret`).
 
 ## Goal
 
@@ -101,8 +102,9 @@ works with byte arrays.
 (vault/save! :default)                           ; writes the file (atomic, 0600)
 (vault/lock! :default)
 (vault/change-password! :default old new)        ; rewraps MK only
-(vault/password-key! :default password salt limits) ; a password-derived key handle
-                                                    ; for seal/open, like signet.shared
+(signet.password/password-key! password {:limits :moderate}) ; built (slice 1):
+(signet.password/seal h plaintext)                           ; a key handle for
+(signet.password/open h-or-password sealed)                  ; seal/open
 ```
 
 Names follow the convention: `!` for functions that write the vault, the
