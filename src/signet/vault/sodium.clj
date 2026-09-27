@@ -43,6 +43,9 @@
       (-import! [_ alg secret-bytes]
         ;; secret-import! copies into guarded memory and wipes secret-bytes
         (store! alg (na/secret-import! secret-bytes)))
+      (-generate-secret! [_ kid alg n]
+        (swap! secrets assoc kid {:alg alg :secret (na/secret-random n)})
+        nil)
       (-adopt! [_ kid alg material]
         ;; Derived material from a secret input is already a nacljc secret.
         ;; Bytes (derived from public inputs only) are moved into guarded

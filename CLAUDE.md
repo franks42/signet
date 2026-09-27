@@ -74,13 +74,19 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `password-key!` (Argon2id; password bytes wiped; key kept in the vault), `seal`, `open` (with the handle or the password)
 - libsodium backend only; JCA throws `:signet.impl/unsupported`
 
+### signet.vault.file — vault files (0.10.0, slice 2 of docs/10)
+- `create!`, `open!` (locked), `unlock!`, `lock!`, `save!` (or `:auto-save`), `change-password!`, `status`
+- Optional recovery key: `add-recovery-key!` (ack; returns `SIGNET-RK1-…` bytes once), `unlock-with-recovery-key!`, `reset-password!` (only after a recovery unlock), `remove-recovery-key!`
+- password → Argon2id → wraps the random master key (an internal vault entry) → per-save HKDF key encrypts the body and wraps each identity key (`impl/wrap-material`, nacljc `wrap-secret`); header is the body's AAD
+- Saves identity keys, public side, default signing key; not shared/password keys or sessions. Locked vault: `:signet.vault/vault-locked` for key use and for writes
+
 ### signet.impl — backend facade
-- The 20 crypto functions every other namespace calls (`impl/…`), forwarded to the selected backend
+- The 22 crypto functions every other namespace calls (`impl/…`), forwarded to the selected backend
 - `impl/backend` — `:jca` or `:sodium`
 - Unknown backend, or `:sodium` without libsodium/nacljc → loud error at load (no silent fallback)
 
 ### signet.impl.sodium — libsodium backend
-- Same 20 functions and contracts as `signet.impl.jvm`, on `nacljc.core`
+- Same 22 functions and contracts as `signet.impl.jvm`, on `nacljc.core`
 - Fixed-size inputs length-checked (libsodium reads them blindly)
 
 ### signet.impl.jvm — JCA backend
@@ -112,7 +118,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `docs/07-secret-handles-design.md` — DRAFT: secrets by reference (handles + vault + providers: memory, sodium secure memory, WebCrypto, agent); code never sees secret bytes; also records the 2026-09-23 naming/twin-rule decisions for 0.7.0
 - `docs/08-sessions-on-handles-plan.md` — 0.9.0 implementation plan: session secrets as vault session entries, `close!` by session, `with-conclave`; phase 0 (Noise known-answer vectors) done
 - `docs/09-e2e-through-proxies.md` — design note (2026-09-27): application-layer E2E through TLS-terminating proxies (Cloudflare etc.): threat levels, the code-delivery and key-anchoring problems, existing standards (OHTTP/HPKE, DPoP, client-side payment encryption), pieces we have and a possible first slice. Not built.
-- `docs/10-password-unlocking.md` — design proposal (2026-09-27): password unlocking and vault persistence: key layers (password -> Argon2id -> master key -> entries), the vault file as a suite, lock/unlock, nacljc wrap-secret/unwrap-secret as a prerequisite; decisions open.
+- `docs/10-password-unlocking.md` — password unlocking and vault persistence (2026-09-27): key layers (password -> Argon2id -> master key -> entries), the vault file as a suite, lock/unlock, the optional recovery key; decisions taken; built in 0.10.0 (`signet.password`, `signet.vault.file`), with "As built" notes.
 
 ## Current state (2026-09-25)
 
@@ -142,9 +148,10 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   breaking), doc notes done (message-1 replay, `NACLJC_LIBSODIUM`,
   README "Deployment hardening" → `nacljc.process`). nacljc 0.5.0.
   Password unlocking (docs/10): slice 1 done (`signet.password`,
-  password-derived key handles, seal/open); next is slice 2, the vault
-  file (create-file!/open-file!/unlock!/lock!/save! + :auto-save,
-  change-password!, optional recovery key), on nacljc wrap-secret. Audience (docs/07,
+  password-derived key handles, seal/open); slice 2 done
+  (`signet.vault.file`: vault files, lock/unlock, save!/:auto-save,
+  change-password!, the optional recovery key). Candidates next: an
+  unlock timeout, a TTY password reader in nacljc, the `:agent`. Audience (docs/07,
   2026-09-25): signet protects developers from mistakes and ordinary
   exposure; determined adversaries with code execution are documented, not
   targeted. Candidates, in order: the cheap fixes in docs/07's "Remaining

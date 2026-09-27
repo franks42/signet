@@ -38,9 +38,11 @@
 
 (def ^:private zero-nonce (byte-array 12))
 
-(defn- limits-of
-  "limits as {:opslimit :memlimit}: a preset keyword or such a map. Pure.
-   Throws ex-info {:type ::bad-option} otherwise."
+(defn ^:no-doc limits-of
+  "INTERNAL to signet.password and signet.vault.file: limits as
+   {:opslimit :memlimit}, from a preset keyword or such a map. Pure.
+   Throws ex-info {:type ::bad-option} otherwise, and
+   :signet.impl/unsupported for a preset on the JCA backend."
   [limits]
   (cond
     (#{:interactive :moderate :sensitive} limits) (impl/argon2id-limits limits)

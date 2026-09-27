@@ -102,6 +102,23 @@ not a credential: the vault decides what it can do.
   the salt and cost, so `(open pw-bytes sealed)` also works from the
   password alone. A stolen sealed value can be attacked offline: only
   Argon2id's cost stands between a weak password and the plaintext.
+- **Vault files** (`signet.vault.file`, libsodium backend only): save a
+  vault to disk and reopen it with a password. Only ciphertext is on disk.
+
+  ```clojure
+  (require '[signet.vault.file :as vf])
+  (vf/create! :default "vault.edn" pw-bytes {:limits :moderate}) ; the vault as it is, saved
+  (vf/save! :default)                      ; or {:auto-save true} on create!/open!
+  (vf/lock! :default)                      ; destroys every secret in the vault
+  (vf/open! :default "vault.edn")          ; in a new process: the vault, locked
+  (vf/unlock! :default pw-bytes)           ; wrong password: ::bad-password, nothing loaded
+  (vf/change-password! :default old-bytes new-bytes)
+  (vf/add-recovery-key! :default {:i-understand :exposes-secret}) ; optional: SIGNET-RK1-… bytes, shown once
+  ```
+
+  Saved: identity keys, the public side, the default signing key; shared
+  and password keys are derived again, sessions end. Without the password
+  and without a recovery key, the keys are gone.
 
 Key records that carry a secret (`:d`) still work everywhere but are
 **deprecated since 0.9.0**: the functions that create them carry

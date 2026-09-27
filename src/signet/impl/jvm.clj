@@ -447,6 +447,21 @@
   [m lengths]
   (split-bytes m lengths))
 
+(defn wrap-material
+  "ChaCha20-Poly1305 of secret material m (bytes) under key k with a
+   12-byte nonce and aad (nil for none). Returns ciphertext || tag. Pure."
+  [k nonce m aad]
+  (chacha20-poly1305-encrypt k nonce m aad))
+
+(defn unwrap-material
+  "Inverse of wrap-material: the material, as bytes. Pure.
+   Throws ex-info {:type :signet.impl/auth-failed} when authentication
+   fails."
+  [k nonce ct aad]
+  (try (chacha20-poly1305-decrypt k nonce ct aad)
+       (catch Exception _
+         (throw (ex-info "Authentication failed" {:type :signet.impl/auth-failed})))))
+
 (defn argon2id
   "Argon2id is not in the JDK: password features need the libsodium
    backend. Never returns.

@@ -1,8 +1,9 @@
 # Password unlocking and vault persistence
 
-Status: **decisions taken 2026-09-27** (see the end). Slice 1, the
-password-derived key handle, is built (`signet.password`, 0.10.0); the
-vault file (slice 2) is not. Builds on docs/07 ("Future: persistence and
+Status: **built in 0.10.0** (decisions 2026-09-27, see the end). Slice 1,
+the password-derived key handle: `signet.password`. Slice 2, the vault
+file: `signet.vault.file`. Where the build differs from the proposal
+below, "As built" says so. Builds on docs/07 ("Future: persistence and
 password unlocking"), docs/08 (password-derived keys as handles; getting
 the password in) and nacljc 0.4.0/0.5.0 (`argon2id`, `wrap-secret`,
 `unwrap-secret`).
@@ -57,6 +58,27 @@ nothing in it can be changed without failing decryption:
   worth hiding.
 - **Writing:** to a temporary file, then an atomic rename; mode 0600.
 
+**As built:** the file is
+
+```clojure
+{:type   :signet/vault-file
+ :v      1
+ :unlock [{:method :password :salt :opslimit :memlimit :nonce :wrapped}
+          {:method :recovery-key :nonce :wrapped}]    ; optional
+ :salt   #bytes "…24 bytes, new on every save…"
+ :body   #bytes "…ChaCha20-Poly1305 of the snapshot…"}
+```
+
+- No `:id`: a file can be opened under any vault id.
+- Each save derives k = HKDF(MK, `:salt`, "signet/vault-file/v1/save").
+  The body (nonce 0) is the canonical EDN of `{:public [kid …] :secrets
+  [{:kid :alg :wrapped} …] :default-signing kid}`, with the header (the
+  file without `:body`) as associated data, so removing an unlock entry
+  is noticed too. Each identity key is wrapped separately under k (nonce
+  i+1, associated data its kid and algorithm) with `wrap-secret`, so it
+  never leaves guarded memory; loading checks that it derives its kid.
+- Each unlock entry wraps MK with its other slots as associated data.
+
 ## Secrets stay off the heap: a nacljc prerequisite
 
 Saving means encrypting each secret under MK; loading means decrypting
@@ -93,15 +115,27 @@ works with byte arrays.
 - **Unlock lifetime** (later): lock after a timeout of inactivity, like
   ssh-agent.
 
+**As built:** a locked vault holds nothing, its public side included
+(that side is encrypted in the file); `lookup` still parses a kid.
+Generating, importing and registering keys throw `::vault-locked` too.
+`lock!` refuses to drop unsaved changes unless `{:discard-changes?
+true}`. `open!` takes a new or empty vault (`:default` at start is
+empty).
+
 ## API sketch
 
+As built, in `signet.vault.file` (alias `vf`):
+
 ```clojure
-(vault/create-file! :default "vault.edn" password {:limits :moderate}) ; new, empty, saved
-(vault/open-file! :default "vault.edn")          ; registers the vault, locked
-(vault/unlock! :default password)                ; password: bytes, wiped
-(vault/save! :default)                           ; writes the file (atomic, 0600)
-(vault/lock! :default)
-(vault/change-password! :default old new)        ; rewraps MK only
+(vf/create! :default "vault.edn" password {:limits :moderate}) ; the vault as it is, saved
+(vf/open! :default "vault.edn")                ; registers the vault, locked
+(vf/unlock! :default password)                 ; password: bytes, wiped
+(vf/save! :default)                            ; writes the file (atomic, 0600)
+(vf/lock! :default)
+(vf/change-password! :default old new)         ; rewraps MK, saves at once
+(vf/add-recovery-key! :default {:i-understand :exposes-secret})
+(vf/unlock-with-recovery-key! :default rk)  (vf/reset-password! :default new)
+(vf/remove-recovery-key! :default)          (vf/status :default)
 (signet.password/password-key! password {:limits :moderate}) ; built (slice 1):
 (signet.password/seal h plaintext)                           ; a key handle for
 (signet.password/open h-or-password sealed)                  ; seal/open
@@ -149,9 +183,15 @@ Decided 2026-09-27: **optional, off by default.**
   with a checksum, so a typo is caught before any decryption, e.g.
   `SIGNET-RK1-7K3M-QX9P-2ABF-…-C4` (the prefix names the format, like age's
   `AGE-SECRET-KEY-1…`).
+- **As built:** `create!` has no recovery option; call
+  `add-recovery-key!` after it. The format is `SIGNET-RK1-` and 56
+  Crockford base32 symbols in groups of 4: the 32 key bytes and a 3-byte
+  checksum (SHA-256 of "signet-rk1" and the key). Reading accepts lower
+  case, missing dashes, O for 0 and I/L for 1.
 - **Using it:** `unlock-with-recovery-key!` (bytes, wiped), then
   `reset-password!`, which rewraps the master key under a new password
-  without the old one. `remove-recovery-key!` revokes it (its only wrapped
+  without the old one (only after a recovery unlock: otherwise
+  `change-password!`'s check of the old password would be pointless). `remove-recovery-key!` revokes it (its only wrapped
   copy is gone); `add-recovery-key!` replaces it.
 - **Security:** the recovery key is full access, with no Argon2id cost: it
   must be kept offline. There is no backdoor: without the password and

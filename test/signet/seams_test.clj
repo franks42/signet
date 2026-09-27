@@ -154,6 +154,7 @@
         bad (reify vault/Provider
               (-generate! [_ alg] (vault/-generate! mem alg))
               (-import! [_ alg bs] (vault/-import! mem alg bs))
+              (-generate-secret! [_ kid alg n] (vault/-generate-secret! mem kid alg n))
               (-adopt! [_ _ _ _] (throw (ex-info "refused" {:type ::refused})))
               (-has? [_ kid] (vault/-has? mem kid))
               (-kids [_] (vault/-kids mem))

@@ -58,6 +58,7 @@
    through -export."
   (-generate! [p alg] "Create a new key of alg (:ed25519 or :x25519) inside the provider. Returns its public key record.")
   (-import! [p alg secret-bytes] "Take a copy of secret-bytes as a key of alg. Returns its public key record.")
+  (-generate-secret! [p kid alg n] "Create n random secret bytes inside the provider under kid, as alg (for symmetric keys).")
   (-adopt! [p kid alg material] "Take ownership of derived material (what the backend produced: bytes, or a nacljc secret) under kid.")
   (-has? [p kid] "Does this provider hold kid?")
   (-kids [p] "The kids this provider holds.")
@@ -113,6 +114,10 @@
                         (finally (wipe! m))))
            :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
       (-import! [_ alg secret-bytes] (store! alg secret-bytes))
+      (-generate-secret! [_ kid alg n]
+        #?(:clj  (swap! secrets assoc kid {:alg alg :material (impl/random-bytes n)})
+           :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))
+        nil)
       (-adopt! [_ kid alg material] (swap! secrets assoc kid {:alg alg :material material}) nil)
       (-has? [_ kid] (contains? @secrets kid))
       (-kids [_] (set (keys @secrets)))
@@ -152,7 +157,11 @@
   ([id provider]
    (let [v {:id id :provider provider :public (atom {}) :defaults (atom {}) :shared (atom {})
             ;; session entries (signet.session's secrets): entry id -> session id
-            :session (atom {})}
+            :session (atom {})
+            ;; the vault's own secrets (a vault file's master key): entry ids
+            :internal (atom #{})
+            ;; a vault file's state (signet.vault.file), or nil
+            :file (atom nil)}
          [old _] (swap-vals! vaults (fn [m] (if (contains? m id) m (assoc m id v))))]
      (when (contains? old id)
        (throw (ex-info (str "Vault " id " is already registered") {:type ::vault-exists :vault id})))
@@ -180,6 +189,45 @@
   (or (get @vaults id)
       (throw (ex-info (str "Unknown vault " (pr-str id)) {:type ::unknown-vault :vault id}))))
 
+(defn- session-entry?
+  "Is kid a session entry of vault v? Impure: reads the vault."
+  [v kid] (contains? @(:session v) kid))
+
+(defn- hidden?
+  "Is kid a session entry or one of the vault's own secrets? Such entries
+   never get a handle. Impure: reads the vault."
+  [v kid] (or (session-entry? v kid) (contains? @(:internal v) kid)))
+
+(defn- locked?*
+  "Is vault v a locked vault file? Impure: reads the vault."
+  [v] (boolean (:locked? @(:file v))))
+
+(defn- throw-locked
+  "Never returns. Throws ex-info {:type ::vault-locked}."
+  [v]
+  (throw (ex-info (str "Vault " (pr-str (:id v)) " is locked: unlock it first")
+                  {:type ::vault-locked :vault (:id v)})))
+
+(defn- unlocked
+  "The vault named id, for a write: throws when it is a locked vault file.
+   Impure: reads the vault registry.
+   Throws ex-info {:type ::unknown-vault} or {:type ::vault-locked}."
+  [id]
+  (let [v (vault id)]
+    (when (locked?* v) (throw-locked v))
+    v))
+
+(defn- changed!
+  "Note a change to what a vault file saves (identity keys, the public
+   side, the default): marks the file dirty and runs its :on-change (the
+   auto-save). Impure: writes the vault's file state, and whatever
+   :on-change writes."
+  [vault-id]
+  (let [f (:file (vault vault-id))]
+    (when @f
+      (swap! f assoc :dirty? true)
+      (when-let [on-change (:on-change @f)] (on-change)))))
+
 (when-not (contains? @vaults :default)
   (register-vault! :default))
 
@@ -202,12 +250,14 @@
    Throws ex-info {:type ::bad-key-type} unless pub is a key record."
   ([pub] (register-public-key! :default pub))
   ([vault-id pub]
+   (unlocked vault-id)
    (let [pub (try (key/public-key pub)
                   (catch IllegalArgumentException _
                     (throw (ex-info "register-public-key! needs a key record"
                                     {:type ::bad-key-type :got (str (type pub))}))))
          kid (key/kid pub)]
      (swap! (:public (vault vault-id)) assoc kid pub)
+     (changed! vault-id)
      kid)))
 
 (defn lookup
@@ -219,10 +269,6 @@
    (or (get @(:public (vault vault-id)) kid)
        (key/lookup kid))))
 
-(defn- session-entry?
-  "Is kid a session entry of vault v? Impure: reads the vault."
-  [v kid] (contains? @(:session v) kid))
-
 (defn handle
   "A handle for kid if vault's secret side (default :default) holds its
    private key, else nil. Never a session's internal secret.
@@ -230,7 +276,7 @@
   ([kid] (handle :default kid))
   ([vault-id kid]
    (let [v (vault vault-id)]
-     (when (and (-has? (:provider v) kid) (not (session-entry? v kid)))
+     (when (and (-has? (:provider v) kid) (not (hidden? v kid)))
        (->handle vault-id kid)))))
 
 (defn handles
@@ -240,7 +286,7 @@
   ([vault-id]
    (let [v (vault vault-id)]
      (set (map #(->handle vault-id %)
-               (remove #(session-entry? v %) (-kids (:provider v))))))))
+               (remove #(hidden? v %) (-kids (:provider v))))))))
 
 (defn- check-handle
   "h, if it is a KeyHandle; throws otherwise. Pure.
@@ -257,7 +303,10 @@
    destroyed).
    Impure: reads the vault."
   [h]
-  (let [p (:provider (vault (:vault h)))]
+  (let [v (vault (:vault h))
+        p (:provider v)]
+    (when (and (not (-has? p (:kid h))) (locked?* v))
+      (throw-locked v))
     (when-not (-has? p (:kid h))
       (throw (ex-info "The vault does not hold this key (destroyed, or never held)"
                       {:type ::destroyed-key :kid (:kid h) :vault (:vault h)})))
@@ -282,6 +331,7 @@
   [vault-id pub]
   (let [kid (key/kid pub)]
     (swap! (:public (vault vault-id)) assoc kid pub)
+    (changed! vault-id)
     (->handle vault-id kid)))
 
 (defn generate-signing-key!
@@ -291,14 +341,14 @@
    Impure: draws from the CSPRNG and writes the vault."
   ([] (generate-signing-key! :default))
   ([vault-id]
-   (add-key! vault-id (-generate! (:provider (vault vault-id)) :ed25519))))
+   (add-key! vault-id (-generate! (:provider (unlocked vault-id)) :ed25519))))
 
 (defn generate-encryption-key!
   "Create a new X25519 encryption key inside vault (default :default) and
    return its handle. Impure: draws from the CSPRNG and writes the vault."
   ([] (generate-encryption-key! :default))
   ([vault-id]
-   (add-key! vault-id (-generate! (:provider (vault vault-id)) :x25519))))
+   (add-key! vault-id (-generate! (:provider (unlocked vault-id)) :x25519))))
 
 (defn- check-secret-bytes
   "Throws unless x is a 32-byte array. Pure.
@@ -314,7 +364,7 @@
    Throws what the provider and the vault throw."
   [vault-id alg secret-bytes]
   (try
-    (add-key! vault-id (-import! (:provider (vault vault-id)) alg secret-bytes))
+    (add-key! vault-id (-import! (:provider (unlocked vault-id)) alg secret-bytes))
     (finally #?(:clj (wipe! secret-bytes)))))
 
 (defn import-signing-key!
@@ -357,8 +407,8 @@
   (when-not (= export-acknowledgement ack)
     (throw (ex-info "export-secret needs {:i-understand :exposes-secret}"
                     {:type ::export-not-acknowledged})))
-  (when (session-entry? (vault (:vault h)) (:kid h))
-    (throw (ex-info "A session's internal secret cannot be exported"
+  (when (hidden? (vault (:vault h)) (:kid h))
+    (throw (ex-info "A session's or the vault's internal secret cannot be exported"
                     {:type ::not-exportable :kid (:kid h)})))
   (-export (provider-of h) (:kid h)))
 
@@ -368,10 +418,13 @@
    a no-op. Impure: writes the vault. Returns nil."
   [h]
   (check-handle h "destroy!")
-  (-destroy! (:provider (vault (:vault h))) (:kid h))
-  (swap! (:session (vault (:vault h))) dissoc (:kid h))
-  (swap! (:defaults (vault (:vault h)))
-         (fn [d] (into {} (remove (fn [[_ v]] (= v h)) d))))
+  (let [v        (vault (:vault h))
+        saved?   (and (not (hidden? v (:kid h)))
+                      (#{:ed25519 :x25519} (-alg (:provider v) (:kid h))))
+        existed? (-destroy! (:provider v) (:kid h))]
+    (swap! (:session v) dissoc (:kid h))
+    (swap! (:defaults v) (fn [d] (into {} (remove (fn [[_ x]] (= x h)) d))))
+    (when (and existed? saved?) (changed! (:vault h))))
   nil)
 
 (defn ^:no-doc adopt-symmetric!
@@ -382,7 +435,9 @@
    new material is released instead (the same inputs derive the same key).
    Returns the handle. Impure: writes the vault."
   [vault-id kid kind material meta]
-  (let [v (vault vault-id)]
+  (let [v (try (unlocked vault-id)
+               (catch #?(:clj Throwable :cljs :default) t
+                 #?(:clj (impl/destroy-material! material)) (throw t)))]
     (if (-has? (:provider v) kid)
       #?(:clj (impl/destroy-material! material) :cljs nil)
       (-adopt! (:provider v) kid kind material))
@@ -513,6 +568,24 @@
   #?(:clj  (str "urn:signet:session:" (enc/bytes->base64url (impl/random-bytes 16)))
      :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
 
+(defn ^:no-doc with-temp-material
+  "INTERNAL to signet.password and signet.vault.file: adopt bs (a byte
+   array) into vault-id's provider as a temporary entry (under :sodium it
+   moves into guarded memory and bs is wiped at once), call (f material)
+   and return its result, then destroy the entry (which also wipes bs
+   under :memory). bs is wiped even when the vault is unknown. Works on a
+   locked vault too (unlocking needs it); nothing lasting is written.
+   Impure: writes and reads the vault's provider, wipes bs.
+   Throws ex-info {:type ::unknown-vault}, and what f throws."
+  [vault-id ^bytes bs f]
+  (let [p   (try (:provider (vault vault-id))
+                 (catch #?(:clj Throwable :cljs :default) t
+                   #?(:clj (wipe! bs)) (throw t)))
+        tmp (new-entry-id)]
+    (-adopt! p tmp :temporary bs)
+    (try (-with-material p tmp f)
+         (finally (-destroy! p tmp)))))
+
 (defn ^:no-doc argon2id-material
   "INTERNAL to signet.password: Argon2id of password (a byte array) with
    salt and limits, run inside vault-id's provider. The password becomes a
@@ -524,20 +597,16 @@
    Throws what impl/argon2id throws (:signet.impl/unsupported on the JCA
    backend); the password is wiped either way."
   [vault-id ^bytes password salt limits]
-  (let [p   (:provider (vault vault-id))
-        tmp (new-entry-id)]
-    (-adopt! p tmp :password-input password)
-    (try
-      #?(:clj  (-with-material p tmp #(impl/argon2id % salt 32 limits))
-         :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))
-      (finally (-destroy! p tmp)))))
+  (with-temp-material vault-id password
+    #?(:clj  #(impl/argon2id % salt 32 limits)
+       :cljs (fn [_] (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))))
 
 (defn- adopt-session-entry!
   "Store material (the vault takes ownership) as a new session entry of
    session-id. Returns its handle.
    Impure: writes the vault."
   [vault-id session-id alg material]
-  (let [v  (vault vault-id)
+  (let [v  (unlocked vault-id)
         id (new-entry-id)]
     ;; the provider first: a refused adoption leaves no orphan tag
     (-adopt! (:provider v) id alg material)
@@ -551,7 +620,7 @@
    public key is sent in the clear anyway. Impure: draws from the CSPRNG
    and writes the vault."
   [vault-id session-id]
-  (let [v   (vault vault-id)
+  (let [v   (unlocked vault-id)
         pub (-generate! (:provider v) :x25519)
         kid (key/kid pub)]
     (swap! (:session v) assoc kid session-id)
@@ -632,6 +701,7 @@
     (throw (ex-info "The default signing key must be an Ed25519 key"
                     {:type ::wrong-algorithm :kid (:kid h)})))
   (swap! (:defaults (vault (:vault h))) assoc :signing h)
+  (changed! (:vault h))
   h)
 
 (defn ensure-default-signing-key!
@@ -647,4 +717,136 @@
              [old _]  (swap-vals! defaults (fn [d] (if (:signing d) d (assoc d :signing h))))]
          (if-let [winner (:signing old)]
            (do (destroy! h) winner)
-           h)))))
+           (do (changed! vault-id) h))))))
+
+;; ============================================================
+;; Vault files: INTERNAL to signet.vault.file
+;;
+;; A vault file saves the identity keys (each wrapped under a key derived
+;; from the vault's master key), the public side and the default signing
+;; key. The master key is one of the vault's own secrets: an internal
+;; entry, never a handle, never exported. Shared keys, password keys and
+;; session entries are not saved.
+;; ============================================================
+
+(defn ^:no-doc file-state
+  "INTERNAL: the atom holding vault-id's file state (nil: no file).
+   Impure: reads the vault registry.
+   Throws ex-info {:type ::unknown-vault}."
+  [vault-id]
+  (:file (vault vault-id)))
+
+(defn ^:no-doc blank?
+  "INTERNAL: does vault-id hold nothing (no secrets, no public keys, no
+   file)? Impure: reads the vault.
+   Throws ex-info {:type ::unknown-vault}."
+  [vault-id]
+  (let [v (vault vault-id)]
+    (and (empty? (-kids (:provider v))) (empty? @(:public v)) (nil? @(:file v)))))
+
+(defn ^:no-doc generate-internal!
+  "INTERNAL: n random secret bytes born in vault-id's provider (under
+   :sodium, in guarded memory) as one of the vault's own secrets. Returns
+   its entry id. Impure: draws from the CSPRNG and writes the vault."
+  [vault-id n]
+  (let [v  (vault vault-id)
+        id (new-entry-id)]
+    (-generate-secret! (:provider v) id :internal n)
+    (swap! (:internal v) conj id)
+    id))
+
+(defn ^:no-doc adopt-internal!
+  "INTERNAL: store material (the vault takes ownership) as one of
+   vault-id's own secrets. Returns its entry id. Impure: writes the vault."
+  [vault-id material]
+  (let [v  (vault vault-id)
+        id (new-entry-id)]
+    (-adopt! (:provider v) id :internal material)
+    (swap! (:internal v) conj id)
+    id))
+
+(defn ^:no-doc with-internal
+  "INTERNAL: (f material) with the vault's own secret id. Impure: reads
+   the vault.
+   Throws ex-info {:type ::vault-locked} when the vault does not hold it."
+  [vault-id id f]
+  (let [v (vault vault-id)]
+    (when-not (and id (-has? (:provider v) id)) (throw-locked v))
+    (-with-material (:provider v) id f)))
+
+(defn ^:no-doc destroy-internal!
+  "INTERNAL: destroy the vault's own secret id. Impure: writes the vault."
+  [vault-id id]
+  (let [v (vault vault-id)]
+    (-destroy! (:provider v) id)
+    (swap! (:internal v) disj id)
+    nil))
+
+(defn ^:no-doc snapshot
+  "INTERNAL: what a vault file saves, as
+     {:public [kid …] :secrets [{:kid :alg :wrapped} …] :default-signing kid}
+   Each identity key's material is lent to (wrap i kid alg material),
+   whose result is stored as :wrapped. Impure: reads the vault."
+  [vault-id wrap]
+  (let [v    (vault vault-id)
+        p    (:provider v)
+        kids (sort (filter #(and (not (hidden? v %)) (#{:ed25519 :x25519} (-alg p %))) (-kids p)))]
+    {:public          (vec (sort (keys @(:public v))))
+     :secrets         (vec (map-indexed (fn [i kid]
+                                          (let [alg (-alg p kid)]
+                                            {:kid kid :alg alg
+                                             :wrapped (-with-material p kid #(wrap i kid alg %))}))
+                                        kids))
+     :default-signing (:kid (:signing @(:defaults v)))}))
+
+(defn ^:no-doc clear!
+  "INTERNAL: destroy every secret vault-id holds (identity keys, shared
+   and password keys, session entries, its own secrets) and empty its
+   public side, defaults and metadata. The file state stays.
+   Impure: writes the vault."
+  [vault-id]
+  (let [v (vault vault-id)]
+    (doseq [kid (-kids (:provider v))] (-destroy! (:provider v) kid))
+    (reset! (:public v) {})
+    (reset! (:defaults v) {})
+    (reset! (:shared v) {})
+    (reset! (:session v) {})
+    (reset! (:internal v) #{})
+    nil))
+
+(defn ^:no-doc restore!
+  "INTERNAL: load a snapshot into vault-id: the public side, each secret
+   ((unwrap i entry) gives its material, which must derive its kid), and
+   the default signing key. All or nothing: on any failure the vault is
+   cleared (clear!). Does not mark the file changed.
+   Impure: writes the vault.
+   Throws ex-info {:type ::corrupt-entry} when a secret does not belong
+   to its kid or a kid is malformed, and what unwrap throws."
+  [vault-id {:keys [public secrets default-signing]} unwrap]
+  (let [v (vault vault-id)
+        p (:provider v)]
+    (try
+      (doseq [kid public]
+        (swap! (:public v) assoc kid
+               (try (key/kid->public-key kid)
+                    (catch #?(:clj Throwable :cljs :default) _
+                      (throw (ex-info "Vault file: a malformed kid" {:type ::corrupt-entry}))))))
+      (doseq [[i {:keys [kid alg] :as entry}] (map-indexed vector secrets)]
+        (let [m (unwrap i entry)]
+          (when-not (and (#{:ed25519 :x25519} alg)
+                         (= kid (try (key/kid (public-key-record alg m))
+                                     (catch #?(:clj Throwable :cljs :default) _ nil))))
+            #?(:clj (impl/destroy-material! m))
+            (throw (ex-info "Vault file: a secret does not belong to its kid"
+                            {:type ::corrupt-entry :kid kid})))
+          (-adopt! p kid alg m)
+          (swap! (:public v) assoc kid (public-key-record alg m))))
+      (when default-signing
+        (when-not (= :ed25519 (-alg p default-signing))
+          (throw (ex-info "Vault file: the default signing key is not an Ed25519 key it holds"
+                          {:type ::corrupt-entry :kid default-signing})))
+        (swap! (:defaults v) assoc :signing (->handle vault-id default-signing)))
+      nil
+      (catch #?(:clj Throwable :cljs :default) t
+        (clear! vault-id)
+        (throw t)))))

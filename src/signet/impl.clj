@@ -6,7 +6,7 @@
    nonces and ephemeral keys internally. Public only because signet's own
    namespaces call them.
 
-   Crypto backend facade. signet's namespaces call these 20 functions; they
+   Crypto backend facade. signet's namespaces call these 22 functions; they
    forward to the backend selected once, when this namespace loads:
 
      :jca     signet.impl.jvm    — Java JCA (default; no native dependency)
@@ -71,6 +71,8 @@
 (def hkdf-sha-256 (f 'hkdf-sha-256))
 (def destroy-material! (f 'destroy-material!))
 (def split-material (f 'split-material))
+(def wrap-material (f 'wrap-material))
+(def unwrap-material (f 'unwrap-material))
 (def argon2id (f 'argon2id))
 (def argon2id-limits (f 'argon2id-limits))
 (def random-bytes (f 'random-bytes))

@@ -7,7 +7,7 @@
    namespaces call them.
 
    libsodium backend for signet, via nacljc.core (babashka.ffi): the same
-   18 functions and contracts as signet.impl.jvm (JCA). Selected through
+   22 functions and contracts as signet.impl.jvm (JCA). Selected through
    signet.impl; do not require directly.
 
    Requirements: libsodium >= 1.0.19 installed (e.g. brew install
@@ -179,6 +179,35 @@
    allocates guarded memory for the parts."
   [m lengths]
   (if (na/secret? m) (na/secret-split m lengths) (split-bytes m lengths)))
+
+(defn wrap-material
+  "ChaCha20-Poly1305 of secret material m under key k (bytes or a nacljc
+   secret) with a 12-byte nonce and aad (nil for none). A nacljc secret m
+   is read in place (wrap-secret): its bytes never reach the heap. Returns
+   ciphertext || tag, safe to store.
+   Impure: reads m and k when they are secrets. Pure for byte arrays."
+  [k nonce m aad]
+  (if (na/secret? m)
+    (na/wrap-secret k nonce m aad)
+    (na/chacha20-poly1305-encrypt k nonce m aad)))
+
+(defn unwrap-material
+  "Inverse of wrap-material. The result follows the key: with a nacljc
+   secret k it is a new nacljc secret (unwrap-secret: the plaintext never
+   exists as a byte array), with a byte-array k a byte array.
+   Impure: reads k when it is a secret and allocates guarded memory for the
+   result. Pure for byte arrays.
+   Throws ex-info {:type :signet.impl/auth-failed} when authentication
+   fails, and nacljc's errors for malformed inputs."
+  [k nonce ct aad]
+  (try
+    (if (na/secret? k)
+      (na/unwrap-secret k nonce ct aad)
+      (na/chacha20-poly1305-decrypt k nonce ct aad))
+    (catch clojure.lang.ExceptionInfo e
+      (if (= :nacljc.core/auth-failed (:type (ex-data e)))
+        (throw (ex-info "Authentication failed" {:type :signet.impl/auth-failed}))
+        (throw e)))))
 
 (defn argon2id
   "Argon2id (libsodium's crypto_pwhash, v1.3): len bytes from password (a

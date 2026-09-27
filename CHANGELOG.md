@@ -15,7 +15,27 @@
   (`:wrong-password`, `:wrong-key`, `:authentication-failed`,
   `:aad-mismatch`, …). The libsodium backend only: on JCA it throws
   `:signet.impl/unsupported` (after wiping the password).
-- `signet.impl`: `argon2id` and `argon2id-limits` (20 functions).
+- **`signet.vault.file`: vault files and password unlocking** (docs/10,
+  slice 2). `create!` gives a vault a file protected by a password and
+  saves it; `open!` registers a vault from its file, locked; `unlock!`
+  loads it, `lock!` destroys every secret in it (refusing to drop unsaved
+  changes unless `{:discard-changes? true}`), `save!` writes it
+  (atomically, mode 0600), or `{:auto-save true}` saves after every
+  change. `change-password!` rewraps the master key. The recovery key is
+  optional and off by default: `add-recovery-key!` returns it once as
+  `SIGNET-RK1-…` bytes (Crockford base32 with a checksum that catches
+  typos), `unlock-with-recovery-key!`, then `reset-password!`;
+  `remove-recovery-key!` revokes it. `status` reports the file's state.
+  Only ciphertext is on disk, including which keys the vault holds; under
+  `:sodium` every secret on the way stays in guarded memory (nacljc
+  `wrap-secret` / `unwrap-secret`). Saved: identity keys, the public side,
+  the default signing key. Not saved: shared and password keys, sessions.
+- `signet.vault`: a locked vault file throws `:signet.vault/vault-locked`
+  for using its keys and for generating, importing or registering keys.
+  The `Provider` protocol gains `-generate-secret!` (breaking for custom
+  providers).
+- `signet.impl`: `argon2id`, `argon2id-limits`, `wrap-material`,
+  `unwrap-material` (22 functions).
 
 ### Changed
 
