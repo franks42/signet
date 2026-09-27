@@ -137,6 +137,43 @@ For the first slice: keep a cookie where routing or load balancers need
 one, but grant authority only through a signature over the request, made
 with a key the proxy never sees.
 
+### Signed URLs and redirects (added 2026-09-27)
+
+**Signing a URL** is common (S3 presigned URLs, CloudFront signed URLs,
+HMAC-signed image URLs), and **HTTP Message Signatures (RFC 9421)**
+[source] standardise signing whole requests: chosen components (method,
+target URI, selected headers), Ed25519 among the algorithms. signet's
+`sign-edn` could sign the same content as EDN (method, path, query,
+expiry, nonce).
+
+Against the proxy, a signed URL gives **integrity** (the path and query
+cannot be changed, nor a URL for another resource forged), **not
+confidentiality** (the proxy still reads it; sensitive data does not
+belong in URLs, which end up in logs and `Referer`), and replay stays
+possible unless the signature covers a short expiry and, for sensitive
+actions, a one-time nonce. Who signs matters:
+- **the browser signs its requests** (its client key): the server knows
+  the proxy did not alter what the user's code sent;
+- **the server signs URLs it hands out** (capability or magic links):
+  the server knows a returning URL is one it issued, unaltered.
+
+**A signed redirect is not checked by the browser.** A redirect is a
+`Location:` header; the proxy can replace it with any URL, and the browser
+follows it. The signature helps only where something checks it:
+1. **the destination server** verifies the parameters it receives, as
+   signed OAuth/OIDC request objects (JAR, RFC 9101) and signed SAML
+   requests do. That protects the destination from tampered parameters,
+   not the user from being sent elsewhere;
+2. **the client code** verifies a signed "go to X" response against a
+   pinned server key before navigating. That protects the user, but only
+   as far as the client code is itself authentic (problem 1).
+
+An actively malicious proxy controls the whole domain as the browser sees
+it: it does not need to tamper with redirects, it can serve any page.
+Signed URLs and redirects help against passive, breached and buggy
+proxies; against a malicious one only code anchored outside the proxy
+helps.
+
 ## Existing solutions
 
 The idea is established; there is no single general toolkit for it.
