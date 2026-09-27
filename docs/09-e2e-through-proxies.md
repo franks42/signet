@@ -96,6 +96,47 @@ its own. The key has to be anchored somewhere the proxy does not control:
   DPoP, RFC 9449 [source], or signet's `sign-edn`), or the session token
   itself carried inside the encrypted payload.
 
+### Cookies through the proxy (added 2026-09-27)
+
+How it works: the application server sends `Set-Cookie` in its response;
+the proxy forwards the header; the browser stores the cookie for the
+domain in the address bar. With a CDN, DNS for that domain points at the
+proxy, so to the browser the proxy *is* the site. Cookies are scoped by
+domain and path, not by server or IP. On every later request the browser
+sends `Cookie:` to the proxy, which forwards it.
+
+So the proxy:
+- **reads every cookie** in both directions, in plaintext (session ids,
+  auth tokens, CSRF tokens);
+- **can strip, rewrite or add** cookies (CDNs set their own, e.g.
+  Cloudflare's `__cf_bm` and `cf_clearance` [source]);
+- **can plant a cookie** in the site's name (session fixation);
+- **can replay a session cookie** from anywhere, indistinguishable from
+  the user.
+
+`Secure`, `HttpOnly` and `SameSite` do not help: the browser enforces them
+against page scripts, other sites and plain HTTP, and the proxy sits
+inside the TLS channel the browser trusts.
+
+Ways out, so that a cookie never carries authority on its own:
+- **Bind the session to a client key.** The browser keeps a
+  non-extractable key (WebCrypto, in IndexedDB) and signs each request;
+  the cookie only *names* the session. The proxy sees the cookie but
+  cannot sign. This is DPoP's idea, and what signet's `sign-edn` does.
+- **Carry the session token inside the encrypted payload,** so no bearer
+  credential travels in a visible header.
+- **Device Bound Session Credentials** (DBSC, Chrome) [source]:
+  short-lived cookies, renewed by signing a challenge with a
+  hardware-backed key. Aimed at cookie-stealing malware; against a proxy
+  it only shortens the window, since the proxy sees each short-lived
+  cookie while it is valid.
+- **Encrypting the cookie value alone does not help:** the proxy replays
+  the encrypted blob.
+
+For the first slice: keep a cookie where routing or load balancers need
+one, but grant authority only through a signature over the request, made
+with a key the proxy never sees.
+
 ## Existing solutions
 
 The idea is established; there is no single general toolkit for it.
