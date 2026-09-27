@@ -101,12 +101,10 @@ vault lists the agent's Ed25519 keys as handles.
 - **Peer check:** the connecting process's uid must match
   (`SO_PEERCRED` on Linux, `getpeereid` on macOS, through FFI in nacljc);
   the pid is logged.
-- **Protocol:** length-prefixed canonical EDN frames,
-  `{:v 1 :id n :op :sign :entry "…" :msg #bytes "…"}` →
-  `{:id n :ok {:sig #bytes "…"}}` or `{:id n :error {:type … :message …}}`.
-  Typed errors travel as data and are rethrown as `ex-info` on the
-  client. Nothing secret is ever sent back; `:export` is refused unless
-  the agent's policy allows it (default: never).
+- **Protocol:** nREPL's message model without `eval` (see "Wire
+  protocol" below). Typed errors travel as data and are rethrown as
+  `ex-info` on the client. Nothing secret is ever sent back; `:export` is
+  refused unless the agent's policy allows it (default: never).
 - **Handles:** unchanged for the caller. A handle names a kid and a
   vault; the vault's provider is the agent. Session entries and derived
   keys are entries in the agent, referenced by id.
@@ -116,6 +114,77 @@ vault lists the agent's Ed25519 keys as handles.
 - **Lifecycle:** `signet agent start` / `stop` / `status`; the client
   reconnects; a dead agent gives `::agent-unavailable`; entries of a
   disconnected client (its sessions) are destroyed.
+
+### Wire protocol: nREPL's message model, without eval
+
+Discussed 2026-09-27. Three existing shapes are the same pattern, a map
+with an operation and an id on a stream, with replies matched by id:
+
+```clojure
+;; nREPL
+{:op "eval" :code "(+ 1 2)" :id "7" :session "…"}  →  {:id "7" :value "3" :status ["done"]}
+;; babashka pod
+{:op "invoke" :var "signet.vault/sign" :args "[…]" :id "7"}  →  {:id "7" :value "…" :status ["done"]}
+;; the signet agent
+{:op "signet/sign" :entry "urn:…" :msg #bytes "…" :id "7" :session "…"}
+  →  {:id "7" :sig #bytes "…" :status ["done"]}
+```
+
+So the question is not the protocol but **which operations the server
+offers.** nREPL with `eval` runs any code: exactly the REPL that docs/07
+names as the runtime attack vector, and a request would be a program
+(`(dotimes [_ 1e6] (sign …))`), which per-operation policy, confirmation
+and audit cannot handle. nREPL whose only operations are signet's is
+simply our operation protocol, with one request being one operation of
+bounded cost.
+
+**Decision (proposed): the agent speaks nREPL's message model, with only
+signet operations.** What that gives:
+
+- framing, message matching by id, and `:status` conventions already
+  defined;
+- `describe`: clients discover the operations and versions;
+- nREPL sessions map to agent clients: when a client's session closes or
+  its connection drops, its entries (Noise sessions, derived keys) are
+  destroyed;
+- existing client libraries on the JVM, bb and nbb, and familiarity for
+  Clojure developers.
+
+**Transport: EDN rather than bencode.** Bencode has no keywords, sets or
+tagged values, so handles, typed errors and `#bytes` would need an extra
+encoding layer. nREPL itself has an EDN transport, and another of our
+projects runs an nREPL server in Scittle that speaks EDN directly instead
+of bencode, which worked well and is simpler. The plan: the same message
+maps, as canonical EDN (cedn), one length-prefixed frame per message. A
+bencode transport stays possible (it is a small layer where a library
+provides it) if existing tools need it.
+
+**Implementation:** either the nREPL library with an explicit handler
+(`nrepl.server/start-server :handler …`, never the default handler), or,
+like the Scittle server, a small server loop of our own: read a frame,
+look the op up in a map of allowed operations, run the policy, reply.
+The second is little code and has no default handler that could bring
+`eval` back. Open: whether bb's built-in nREPL server
+(`babashka.nrepl`) can run without eval at all; if not, the agent uses
+its own loop on bb.
+
+**The guard (a requirement):** a misconfigured nREPL server is remote
+code execution for anyone who reaches the socket, the worst failure
+available. So:
+
+- the handler, or the dispatch map, is built explicitly from signet's
+  operations, never from a default;
+- at startup the agent checks itself: `describe` lists exactly the
+  expected operations, and `eval`, `load-file`, `interrupt` and any
+  unknown op answer `unknown-op`; it refuses to start otherwise;
+- the test suite and `bb release-check` run the same check.
+
+**Alternative kept open: the pod message format** (`invoke` with `:var`
+and `:args`), which bb and `babashka/pods` clients call natively. Pods
+fit a helper process that each client starts; nREPL fits one
+long-running server shared by many clients, which is what an agent is.
+A pod's describe message can also ship code for the client to evaluate,
+which a client must never accept from the agent.
 
 ### Phase 3: policy (where the agent earns its keep)
 
