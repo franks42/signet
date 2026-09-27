@@ -119,6 +119,8 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `docs/08-sessions-on-handles-plan.md` — 0.9.0 implementation plan: session secrets as vault session entries, `close!` by session, `with-conclave`; phase 0 (Noise known-answer vectors) done
 - `docs/09-e2e-through-proxies.md` — design note (2026-09-27): application-layer E2E through TLS-terminating proxies (Cloudflare etc.): threat levels, the code-delivery and key-anchoring problems, existing standards (OHTTP/HPKE, DPoP, client-side payment encryption), pieces we have and a possible first slice. Not built.
 - `docs/10-password-unlocking.md` — password unlocking and vault persistence (2026-09-27): key layers (password -> Argon2id -> master key -> entries), the vault file as a suite, lock/unlock, the optional recovery key; decisions taken; built in 0.10.0 (`signet.password`, `signet.vault.file`), with "As built" notes.
+- `docs/11-auto-lock-and-password-input.md` — design (2026-09-27): the vault destroy race (a bug to fix first), auto-lock (activity clock, lazy check + timer, :on-dirty), nacljc.tty password reader into guarded memory, passwords as secrets and as handles. Not built.
+- `docs/12-agent-design.md` — design (2026-09-27): secrets in a separate process; operation-level providers (phase 0), an ssh-agent client provider (sign-only), the signet agent (Unix socket, peer check, CEDN protocol), policy and the PDP seam. Not built.
 
 ## Current state (2026-09-25)
 
