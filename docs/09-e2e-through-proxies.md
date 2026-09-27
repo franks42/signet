@@ -70,6 +70,45 @@ through the proxy too. Ways to anchor code outside the proxy:
 Without one of these, the design defends against the first three rows
 of the table, not the fourth.
 
+#### Where the code comes from: public CDNs, SRI, signatures (added 2026-09-27)
+
+**JavaScript from a public CDN is not signed by default.** TLS proves the
+browser reached the CDN, not that the file is what the author published;
+the CDN can serve anything at that URL (a bug, a compromise, a change of
+owner). This has happened: **polyfill.io (2024)** [source], whose domain
+was sold and then served malware to more than 100,000 sites, and
+**British Airways / Magecart (2018)** [source], card skimming injected
+through a third-party script.
+
+**Subresource Integrity** pins the exact hash in the page
+(`<script src=… integrity="sha384-…">`): the browser refuses anything
+else, so the library CDN can only deny service. **That is the difference
+from the site's own proxy:** a public CDN serves a separate resource
+whose hash the page can pin; the proxy serves **the page itself**, the
+HTML that carries the hashes, and nothing earlier in the chain can pin
+that. The trust chain is:
+1. TLS authenticates whoever answers for the domain: the proxy;
+2. the HTML, served by that proxy, pins third-party scripts with SRI;
+3. those scripts are safe from their CDN, but only as safe as the HTML.
+
+**Signatures exist but browsers mostly do not check them.** npm registry
+signatures and Sigstore provenance (2023) [source] are verified by `npm`
+at install, not by a browser loading from a CDN. **Signed HTTP Exchanges
+(SXG)** [source] let an origin sign responses that an intermediary serves
+and the browser verifies: the closest browser mechanism, but
+Chromium-only, with signatures valid for at most 7 days and little
+adoption. **Isolated Web Apps** sign the whole app.
+
+**Our own projects:** canonical-edn's README loads its Scittle bundle
+from jsDelivr at a pinned tag without an integrity hash. An `integrity`
+attribute would not help as it stands: a `<script
+type="application/x-scittle">` is fetched by Scittle, not by the
+browser's script loader, which ignores the attribute [inference]. Scittle
+would have to check hashes itself, or the README could document another
+way to verify the bundle. The same likely applies to libsodium.js as
+loaded in nacljc's browser tests. A small follow-up: check whether
+Scittle supports integrity checks.
+
 ### 2. The server's key must be authentic
 
 For the browser to encrypt to the application server, it needs the
