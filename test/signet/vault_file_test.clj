@@ -337,3 +337,45 @@
       (let [o (pwd "correct horse") n (pwd "n")]
         (error-type #(vf/change-password! :v o n {:limits :fastest}))
         (is (and (every? zero? o) (every? zero? n)) "bad limits")))))
+
+(defn- secret-of [s] (@(requiring-resolve 'nacljc.core/secret-import!) (pwd s)))
+
+(defn- destroyed? [s] (@(requiring-resolve 'nacljc.core/secret-destroyed?) s))
+
+(deftest nacljc-secrets-as-passwords
+  (when sodium?
+    (let [path (tmp-path)
+          s1   (secret-of "correct horse")]
+      (vault/register-vault! :v)
+      (let [h (vault/generate-signing-key! :v)]
+        (vf/create! :v path s1 {:limits fast})
+        (is (destroyed? s1) "create! consumed it")
+        (let [rk (vf/add-recovery-key! :v {:i-understand :exposes-secret})]
+          (vf/lock! :v)
+          (let [s2 (secret-of "correct horse")]
+            (vf/unlock! :v s2)
+            (is (destroyed? s2)))
+          (is (contains? (vault/handles :v) h))
+          (let [o (secret-of "correct horse") n (secret-of "battery staple")]
+            (vf/change-password! :v o n {:limits fast})
+            (is (and (destroyed? o) (destroyed? n))))
+          (vf/lock! :v)
+          (vf/unlock! :v (pwd "battery staple"))
+          (vf/lock! :v)
+          (testing "a recovery key typed into guarded memory"
+            (let [r (@(requiring-resolve 'nacljc.core/secret-import!) rk)]
+              (vf/unlock-with-recovery-key! :v r)
+              (is (destroyed? r))
+              (is (contains? (vault/handles :v) h)))))))))
+
+(deftest a-secret-password-with-the-memory-provider
+  (when sodium?
+    (let [path (tmp-path)]
+      (vault/register-vault! :m (vault/memory-provider))
+      (vault/generate-signing-key! :m)
+      (let [s (secret-of "pw")]
+        (vf/create! :m path s {:limits fast})
+        (is (destroyed? s) "exported to the heap for :memory, then destroyed"))
+      (vf/lock! :m)
+      (vf/unlock! :m (secret-of "pw"))
+      (is (= 1 (count (vault/handles :m)))))))

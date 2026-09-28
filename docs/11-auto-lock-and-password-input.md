@@ -1,7 +1,9 @@
 # Auto-lock and password input
 
-Status: design 2026-09-27. **Part 1 built** (0.10.0): the destroy race
-fix and auto-lock; part 2 (password input) not yet. Two follow-ups to docs/10
+Status: design 2026-09-27. **Part 1 built** (signet 0.10.0): the
+destroy race fix and auto-lock. **Part 2:** `nacljc.tty` built (nacljc
+0.6.0), signet accepts secrets as passwords (step 1); password handles
+(step 2) next. Two follow-ups to docs/10
 (vault files, built in 0.10.0): locking an unlocked vault after a period
 of inactivity, and getting a typed password into guarded memory without
 it ever being a `String` or a byte array on the Clojure heap. Both feed

@@ -59,7 +59,7 @@
 
 (defn- derive!
   "Adopt the password key for password, salt and limits into vault-id;
-   returns its handle. Impure: writes the vault, wipes password."
+   returns its handle. Impure: writes the vault, consumes password."
   [vault-id ^bytes password ^bytes salt {:keys [opslimit memlimit] :as limits}]
   (let [root (vault/argon2id-material vault-id password salt limits)]
     (try
@@ -80,15 +80,16 @@
      :vault   the vault id (default :default)
 
    Impure: draws a salt from the CSPRNG when none is given, writes the
-   vault, and wipes password.
-   Throws ex-info {:type ::bad-password} unless password is a byte array (a
+   vault, and consumes password (wipes the array, or destroys the secret).
+   Throws ex-info {:type ::bad-password} unless password is a byte array or
+   a nacljc secret (a
    String cannot be wiped), {:type ::bad-option} for a bad salt or limits,
    and :signet.impl/unsupported on the JCA backend (after wiping the
    password)."
   ([password] (password-key! password nil))
   ([password {:keys [salt limits vault] :or {limits :moderate vault :default}}]
-   (when-not (bytes? password)
-     (throw (ex-info "password-key!: the password must be a byte array (a String cannot be wiped)"
+   (when-not (vault/password-input? password)
+     (throw (ex-info "password-key!: the password must be a byte array or a nacljc secret (a String cannot be wiped)"
                      {:type ::bad-password :got (str (type password))})))
    (try
      (let [limits (limits-of limits)
@@ -96,7 +97,7 @@
        (when-not (and (bytes? salt) (= 16 (alength ^bytes salt)))
          (throw (ex-info "password-key!: :salt must be 16 bytes" {:type ::bad-option})))
        (derive! vault password salt limits))
-     (finally (java.util.Arrays/fill ^bytes password (byte 0))))))
+     (finally (impl/destroy-material! password)))))
 
 (defn- meta! [h]
   (let [m (vault/shared-meta h)]
@@ -180,7 +181,7 @@
 
 (defn open
   "Open a value made by seal. key-or-password is the password key's handle,
-   or the password itself (a byte array, wiped): then the key is derived
+   or the password itself (a byte array or a nacljc secret, consumed): then the key is derived
    again from the salt and cost in the header (in the :default vault, or
    opts :vault), used, and destroyed.
    Never throws: {:valid? false :error <reason>} for anything wrong, with
@@ -194,14 +195,14 @@
   ([key-or-password sealed opts]
    (try
      (if-let [err (shape-error sealed)]
-       (do (when (bytes? key-or-password) (java.util.Arrays/fill ^bytes key-or-password (byte 0)))
+       (do (when (vault/password-input? key-or-password) (impl/destroy-material! key-or-password))
            {:valid? false :error err})
-       (if (bytes? key-or-password)
+       (if (vault/password-input? key-or-password)
          ;; derive the root, use it and destroy it: nothing is adopted into
          ;; the vault (an existing handle with the same kid stays untouched)
          (let [root (try (vault/argon2id-material (:vault opts :default) key-or-password (:salt sealed)
                                                   (select-keys sealed [:opslimit :memlimit]))
-                         (finally (java.util.Arrays/fill ^bytes key-or-password (byte 0))))]
+                         (finally (impl/destroy-material! key-or-password)))]
            (try
              (let [r (open-with-root (fn [f] (f root)) (kid-of root) sealed opts)]
                (if (= :wrong-key (:error r)) {:valid? false :error :wrong-password} r))

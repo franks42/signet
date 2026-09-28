@@ -103,3 +103,27 @@
             sealed (pw/seal (pw/password-key! (pwd "pw") {:limits fast}) (utf8 "x"))]
         (is (false? (:valid? (pw/open p sealed {:vault :no-such-vault}))))
         (is (every? zero? p) "open with an unknown vault")))))
+
+(defn- secret-of
+  "A nacljc secret holding s's UTF-8 bytes (as nacljc.tty would give)."
+  [s]
+  (@(requiring-resolve 'nacljc.core/secret-import!) (pwd s)))
+
+(defn- destroyed? [s] (@(requiring-resolve 'nacljc.core/secret-destroyed?) s))
+
+(deftest a-nacljc-secret-is-a-password-too
+  (when sodium?
+    (let [salt (impl/random-bytes 16)
+          s    (secret-of "correct horse")
+          h    (pw/password-key! s {:salt (aclone salt) :limits fast})]
+      (is (destroyed? s) "consumed: destroyed after use")
+      (is (= (:kid h) (:kid (pw/password-key! (pwd "correct horse") {:salt (aclone salt) :limits fast})))
+          "the same key as the same bytes")
+      (let [sealed (pw/seal h (utf8 "note"))
+            s2     (secret-of "correct horse")]
+        (is (:valid? (pw/open s2 sealed)) "open with a secret password")
+        (is (destroyed? s2)))
+      (testing "destroyed when refused, too"
+        (let [s3 (secret-of "x")]
+          (error-type #(pw/password-key! s3 {:limits :fastest}))
+          (is (destroyed? s3)))))))

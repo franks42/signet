@@ -38,6 +38,14 @@
   happens to unsaved changes: `:save` (default), `:discard`,
   `:stay-unlocked`; `:on-lock` is called with the reason. `status`
   reports `:locks-in`.
+- **Passwords as nacljc secrets** (docs/11, part 2): every function that
+  takes a password (`password-key!`, `open`, `create!`, `unlock!`,
+  `change-password!`, `reset-password!`, `unlock-with-recovery-key!`) also
+  takes a nacljc secret, such as `nacljc.tty/read-password` returns, so
+  a typed password never touches the heap. Passwords are consumed: an
+  array is wiped, a secret destroyed, also when refused. The `:memory`
+  provider exports a secret it is given (it keeps keys on the heap by
+  design) and destroys it.
 - `signet.vault`: a locked vault file throws `:signet.vault/vault-locked`
   for using its keys and for generating, importing or registering keys.
   The `Provider` protocol gains `-generate-secret!` (breaking for custom

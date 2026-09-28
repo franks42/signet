@@ -15,8 +15,10 @@
      (remove-recovery-key! :default)        (status :default)
 
    Passwords and recovery keys are byte arrays (the UTF-8 of what was
-   typed), wiped by every function that takes one; a String cannot be
-   wiped, so it is refused.
+   typed) or nacljc secrets (nacljc.tty/read-password reads the terminal
+   straight into one). Every function that takes one consumes it: wipes
+   the array, or destroys the secret. A String cannot be wiped, so it is
+   refused.
 
    What is saved: identity keys (Ed25519, X25519), the public side (which
    peers the vault knows: encrypted too) and the default signing key. Not
@@ -69,7 +71,7 @@
 
 (defn- wipe!
   "Overwrite bs with zeros. Impure: writes bs."
-  [bs] (when (bytes? bs) (java.util.Arrays/fill ^bytes bs (byte 0))))
+  [bs] (impl/destroy-material! bs))
 
 (defn- nonce
   "The 12-byte big-endian AEAD nonce for counter i. Pure."
@@ -80,16 +82,16 @@
     n))
 
 (defn- check-password
-  "pw, if it is a byte array. Pure.
+  "pw, if it is a byte array or a nacljc secret. Pure.
    Throws ex-info {:type ::bad-password} otherwise."
   [pw what]
-  (when-not (bytes? pw)
-    (throw (ex-info (str what " must be a byte array (a String cannot be wiped)")
+  (when-not (vault/password-input? pw)
+    (throw (ex-info (str what " must be a byte array or a nacljc secret (a String cannot be wiped)")
                     {:type ::bad-password :got (str (type pw))})))
   pw)
 
 (defn- wiping
-  "Call (f) and wipe every byte array in arrays afterwards, whatever
+  "Call (f) and consume (wipe or destroy) every password in arrays afterwards, whatever
    happens. Impure: wipes arrays."
   [arrays f]
   (try (f) (finally (run! wipe! arrays))))
@@ -203,7 +205,7 @@
 (defn- password-entry
   "A new password unlock entry wrapping vault-id's master key under
    password (wiped). Impure: draws a salt and nonce, runs Argon2id in the
-   vault's provider, reads the master key, wipes password."
+   vault's provider, reads the master key, consumes password."
   [vault-id mk ^bytes pw limits]
   (let [{:keys [opslimit memlimit] :as limits} (password/limits-of limits)
         salt (impl/random-bytes 16)
@@ -553,7 +555,7 @@
 
 (defn create!
   "Give vault vault-id (registered if it is not; default provider) a new
-   vault file at path, protected by password (a byte array, wiped), and
+   vault file at path, protected by password (bytes or a nacljc secret, consumed), and
    save it: the vault's current keys go into the file. The vault stays
    unlocked. Returns vault-id.
 
@@ -575,8 +577,8 @@
      :clock      (fn [] ms), monotonic; for tests
 
    Impure: may register the vault, draws from the CSPRNG, runs Argon2id,
-   writes the vault and the file, wipes password.
-   Throws ex-info {:type ::bad-password} unless password is a byte array,
+   writes the vault and the file, consumes password.
+   Throws ex-info {:type ::bad-password} unless password is a byte array or a nacljc secret,
    {:type ::file-exists} when path exists (never overwritten),
    {:type ::has-file} when the vault already has a file,
    {:type ::bad-option} for a bad auto-lock option,
@@ -642,12 +644,12 @@
      vault-id)))
 
 (defn unlock!
-  "Unlock vault-id with password (a byte array, wiped): derive the
+  "Unlock vault-id with password (bytes or a nacljc secret, consumed): derive the
    password key, unwrap the master key, load the keys. Nothing is loaded
    when the password is wrong. Returns vault-id.
-   Impure: runs Argon2id, writes the vault, wipes password.
-   Throws ex-info {:type ::bad-password} for a wrong password (or not a
-   byte array), {:type ::already-unlocked}, {:type ::no-file},
+   Impure: runs Argon2id, writes the vault, consumes password.
+   Throws ex-info {:type ::bad-password} for a wrong password (or neither
+   bytes nor a secret), {:type ::already-unlocked}, {:type ::no-file},
    {:type ::no-password} when the file has no password entry,
    {:type ::corrupt-file} when the body fails authentication, and
    :signet.impl/unsupported on the JCA backend."
@@ -674,9 +676,10 @@
 
 (defn unlock-with-recovery-key!
   "Unlock vault-id with its recovery key: the bytes add-recovery-key!
-   returned (or the UTF-8 of what was typed from them), wiped. Then set a
+   returned (or the UTF-8 of what was typed from them, as bytes or a nacljc
+   secret), consumed. Then set a
    new password with reset-password!. Returns vault-id.
-   Impure: writes the vault, wipes rk.
+   Impure: writes the vault, consumes rk.
    Throws ex-info {:type ::bad-recovery-key} for a malformed key (a typo is
    caught by its checksum), {:type ::wrong-recovery-key} for a well-formed
    key that does not open this vault, {:type ::no-recovery-key} when the
@@ -693,7 +696,12 @@
                                   {:type ::already-unlocked :vault vault-id})))
                 (let [e   (or (entry (:unlock @a) :recovery-key)
                               (throw (ex-info "This vault file has no recovery key" {:type ::no-recovery-key})))
-                      key (parse-recovery-key rk)
+                      key (if (bytes? rk)
+                            (parse-recovery-key rk)
+                      ;; a secret (typed into guarded memory): parsing needs
+                      ;; its characters, so export them for the parse only
+                            (let [txt ((requiring-resolve 'nacljc.core/secret-export) rk {:i-understand :exposes-secret})]
+                              (try (parse-recovery-key txt) (finally (wipe! txt)))))
                       m   (vault/with-temp-material vault-id key
                             (fn [rk-m]
                               (let [k (recovery-unlock-key rk-m)]
@@ -728,11 +736,11 @@
 (defn change-password!
   "Replace vault-id's password: old must be the current one. The master
    key is rewrapped (the keys are untouched), and the file is saved at
-   once. Both passwords are byte arrays, wiped.
+   once. Both passwords are bytes or nacljc secrets, consumed.
    opts: :limits (default :moderate), as in create!.
-   Impure: runs Argon2id twice, writes the file, wipes both passwords.
-   Throws ex-info {:type ::bad-password} for a wrong old password (or not
-   byte arrays), :signet.vault/vault-locked, {:type ::no-file}, and
+   Impure: runs Argon2id twice, writes the file, consumes both passwords.
+   Throws ex-info {:type ::bad-password} for a wrong old password (or
+   neither bytes nor secrets), :signet.vault/vault-locked, {:type ::no-file}, and
    :signet.password/bad-option."
   ([vault-id old new] (change-password! vault-id old new nil))
   ([vault-id old new {:keys [limits] :or {limits :moderate}}]
@@ -757,11 +765,11 @@
 (defn reset-password!
   "Set a new password for vault-id without the old one: only after
    unlock-with-recovery-key!. The file is saved at once. new is a byte
-   array, wiped. opts: :limits, as in create!.
-   Impure: runs Argon2id, writes the file, wipes new.
+   array or a nacljc secret, consumed. opts: :limits, as in create!.
+   Impure: runs Argon2id, writes the file, consumes new.
    Throws ex-info {:type ::recovery-unlock-required} unless the vault was
    unlocked with its recovery key, :signet.vault/vault-locked,
-   {:type ::bad-password} unless new is a byte array, and {:type ::no-file}."
+   {:type ::bad-password} unless new is a byte array or a nacljc secret, and {:type ::no-file}."
   ([vault-id new] (reset-password! vault-id new nil))
   ([vault-id new {:keys [limits] :or {limits :moderate}}]
    (wiping [new]

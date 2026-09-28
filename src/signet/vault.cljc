@@ -72,6 +72,31 @@
      "Overwrite bs with zeros. Impure: writes bs."
      [^bytes bs] (when bs (java.util.Arrays/fill bs (byte 0)))))
 
+(defn ^:no-doc nacljc-secret?
+  "INTERNAL: is x a nacljc secret? Only possible on the libsodium backend.
+   Pure."
+  [x]
+  #?(:clj  (and (= :sodium impl/backend) (boolean ((requiring-resolve 'nacljc.core/secret?) x)))
+     :cljs false))
+
+(defn ^:no-doc password-input?
+  "INTERNAL to signet.password and signet.vault.file: can x be given as a
+   password: a byte array (the UTF-8 of what was typed) or a nacljc secret
+   (for example from nacljc.tty/read-password)? Pure."
+  [x]
+  (or #?(:clj (bytes? x) :cljs false) (nacljc-secret? x)))
+
+(defn- as-bytes
+  "Material as a byte array, for the :memory provider (which keeps keys on
+   the heap by design): bytes as they are; a nacljc secret exported, then
+   destroyed. Impure: reads and destroys a secret."
+  [m]
+  #?(:clj  (if (nacljc-secret? m)
+             (try ((requiring-resolve 'nacljc.core/secret-export) m {:i-understand :exposes-secret})
+                  (finally (impl/destroy-material! m)))
+             m)
+     :cljs m))
+
 (defn- copy-bytes
   "A copy of bs (on JS the array itself). Pure."
   [^bytes bs] #?(:clj (java.util.Arrays/copyOf bs (alength bs)) :cljs bs))
@@ -118,7 +143,7 @@
         #?(:clj  (swap! secrets assoc kid {:alg alg :material (impl/random-bytes n)})
            :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))
         nil)
-      (-adopt! [_ kid alg material] (swap! secrets assoc kid {:alg alg :material material}) nil)
+      (-adopt! [_ kid alg material] (swap! secrets assoc kid {:alg alg :material (as-bytes material)}) nil)
       (-has? [_ kid] (contains? @secrets kid))
       (-kids [_] (set (keys @secrets)))
       (-alg [_ kid] (:alg (get @secrets kid)))
@@ -637,17 +662,18 @@
 
 (defn ^:no-doc with-temp-material
   "INTERNAL to signet.password and signet.vault.file: adopt bs (a byte
-   array) into vault-id's provider as a temporary entry (under :sodium it
-   moves into guarded memory and bs is wiped at once), call (f material)
-   and return its result, then destroy the entry (which also wipes bs
-   under :memory). bs is wiped even when the vault is unknown. Works on a
-   locked vault too (unlocking needs it); nothing lasting is written.
-   Impure: writes and reads the vault's provider, wipes bs.
+   array, or a nacljc secret) into vault-id's provider as a temporary
+   entry (under :sodium an array moves into guarded memory and is wiped at
+   once; a secret is taken as it is), call (f material) and return its
+   result, then destroy the entry. So bs is consumed: wiped, or destroyed,
+   also when the vault is unknown. Works on a locked vault too (unlocking
+   needs it); nothing lasting is written.
+   Impure: writes and reads the vault's provider, consumes bs.
    Throws ex-info {:type ::unknown-vault}, and what f throws."
-  [vault-id ^bytes bs f]
+  [vault-id bs f]
   (let [p   (try (:provider (vault vault-id))
                  (catch #?(:clj Throwable :cljs :default) t
-                   #?(:clj (wipe! bs)) (throw t)))
+                   #?(:clj (impl/destroy-material! bs)) (throw t)))
         tmp (new-entry-id)]
     (-adopt! p tmp :temporary bs)
     ;; the gate covers the lending; the destroy needs none: no other
@@ -665,7 +691,7 @@
    destroy. Impure: writes and reads the vault's provider, wipes password.
    Throws what impl/argon2id throws (:signet.impl/unsupported on the JCA
    backend); the password is wiped either way."
-  [vault-id ^bytes password salt limits]
+  [vault-id password salt limits]
   (with-temp-material vault-id password
     #?(:clj  #(impl/argon2id % salt 32 limits)
        :cljs (fn [_] (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))))
