@@ -13,7 +13,7 @@
   '[signet.key-test signet.sign-test signet.chain-test signet.encryption-test
     signet.session-test signet.ssh-test signet.bb-smoke-test signet.trust-test
     signet.vault-test signet.shared-test signet.noise-vectors-test signet.seams-test signet.password-test
-    signet.vault-file-test])
+    signet.vault-file-test signet.concurrency-test])
 
 (defn -main [& [expected]]
   (let [bb? (System/getProperty "babashka.version")

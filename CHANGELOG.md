@@ -41,6 +41,21 @@
 
 - nacljc 0.5.0 for the `:sodium` backend (Argon2id, key wrapping).
 
+### Fixed
+
+- **Destroying a key while another thread used it** (docs/11, part 1).
+  Under `:sodium`, `destroy!`, `unregister-vault!`, session cleanup or a
+  vault lock racing an operation on the same key could free the key under
+  the operation (which then failed), or, when nacljc refused to free a
+  secret in use, forget it without freeing it: a live key left in guarded
+  memory until the process ended. Each vault now has a gate (a
+  read/write lock): operations run in parallel, and a destroy waits for
+  the ones in flight. A destroy from inside an operation on the same
+  vault throws `:signet.vault/destroy-inside-operation` instead of
+  deadlocking. The `:sodium` provider also frees a secret before
+  forgetting it. Tests: `test/signet/concurrency_test.clj`, failing
+  before the fix, each guard injection-checked.
+
 ### Changed (breaking)
 
 - **`chain/verify`'s `:error` is a keyword** (review finding 11), with

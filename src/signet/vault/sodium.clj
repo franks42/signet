@@ -60,7 +60,11 @@
       (-with-material [_ kid f] (f (:secret (get @secrets kid))))
       (-export [_ kid] (na/secret-export (:secret (get @secrets kid)) ack))
       (-destroy! [_ kid]
-        (let [[old _] (swap-vals! secrets dissoc kid)]
-          (when-let [s (get-in old [kid :secret])]
-            (na/secret-destroy! s)
-            true))))))
+        ;; Free first, forget after: secret-destroy! throws ::secret-in-use
+        ;; while a call reads the secret, and the entry must then stay, so
+        ;; that it can still be destroyed (the vault's gate makes destroys
+        ;; wait for operations in flight, so this is a last line).
+        (when-let [s (:secret (get @secrets kid))]
+          (na/secret-destroy! s)
+          (swap! secrets dissoc kid)
+          true)))))

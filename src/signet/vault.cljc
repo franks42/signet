@@ -149,6 +149,54 @@
 
 (defonce ^:private vaults (atom {}))
 
+;; The gate: a read/write lock per vault (docs/11). Operations that lend
+;; material hold the read side, so they run in parallel; destroying an
+;; entry takes the write side, so it waits for the operations in flight
+;; and no new one starts meanwhile. Without it, a destroy racing an
+;; operation freed a key under the operation's feet, or (under :sodium,
+;; where nacljc refuses to free a secret in use) failed. A fair Semaphore
+;; (bb has no ReadWriteLock): a read takes one permit, a write all of
+;; them. *held* (thread-local) makes both reentrant, and turns a destroy
+;; from inside an operation, which would wait for itself, into an error.
+
+(def ^:private gate-permits 65536)
+
+(def ^:private ^:dynamic *held*
+  "The gates this thread holds: gate -> :read or :write."
+  {})
+
+(defn- new-gate
+  "A new gate. Impure: returns a new lock."
+  []
+  #?(:clj (java.util.concurrent.Semaphore. gate-permits true) :cljs nil))
+
+(defn- with-read
+  "Call (f) holding vault v's gate for reading. Impure: takes the lock."
+  [v f]
+  #?(:clj  (let [^java.util.concurrent.Semaphore g (:gate v)]
+             (if (get *held* g)
+               (f)
+               (do (.acquire g)
+                   (try (binding [*held* (assoc *held* g :read)] (f))
+                        (finally (.release g))))))
+     :cljs (f)))
+
+(defn- with-write
+  "Call (f) holding vault v's gate for writing: after every operation in
+   flight has returned. Impure: takes the lock.
+   Throws ex-info {:type ::destroy-inside-operation} when this thread is
+   inside an operation on v (waiting would deadlock)."
+  [v f]
+  #?(:clj  (let [^java.util.concurrent.Semaphore g (:gate v)]
+             (case (get *held* g)
+               :write (f)
+               :read  (throw (ex-info "Cannot destroy a vault entry from inside an operation on the same vault"
+                                      {:type ::destroy-inside-operation :vault (:id v)}))
+               (do (.acquire g (int gate-permits))
+                   (try (binding [*held* (assoc *held* g :write)] (f))
+                        (finally (.release g (int gate-permits)))))))
+     :cljs (f)))
+
 (defn register-vault!
   "Register vault id with provider (default: default-provider). Returns id.
    Impure: writes the vault registry. Throws ex-info {:type ::vault-exists}
@@ -161,7 +209,8 @@
             ;; the vault's own secrets (a vault file's master key): entry ids
             :internal (atom #{})
             ;; a vault file's state (signet.vault.file), or nil
-            :file (atom nil)}
+            :file (atom nil)
+            :gate (new-gate)}
          [old _] (swap-vals! vaults (fn [m] (if (contains? m id) m (assoc m id v))))]
      (when (contains? old id)
        (throw (ex-info (str "Vault " id " is already registered") {:type ::vault-exists :vault id})))
@@ -172,8 +221,8 @@
    Impure: writes the registry and the provider. Returns nil."
   [id]
   (when-let [v (get @vaults id)]
-    (doseq [kid (-kids (:provider v))]
-      (-destroy! (:provider v) kid))
+    (with-write v #(doseq [kid (-kids (:provider v))]
+                     (-destroy! (:provider v) kid)))
     (swap! vaults dissoc id))
   nil)
 
@@ -318,7 +367,7 @@
    must not be kept, returned or logged. Impure: reads the vault."
   [h f]
   (check-handle h "with-material")
-  (-with-material (provider-of h) (:kid h) f))
+  (with-read (vault (:vault h)) #(-with-material (provider-of h) (:kid h) f)))
 
 ;; ============================================================
 ;; Keys are born in the vault
@@ -410,7 +459,7 @@
   (when (hidden? (vault (:vault h)) (:kid h))
     (throw (ex-info "A session's or the vault's internal secret cannot be exported"
                     {:type ::not-exportable :kid (:kid h)})))
-  (-export (provider-of h) (:kid h)))
+  (with-read (vault (:vault h)) #(-export (provider-of h) (:kid h))))
 
 (defn destroy!
   "Wipe and remove h's secret from its vault. The public key stays on the
@@ -421,7 +470,7 @@
   (let [v        (vault (:vault h))
         saved?   (and (not (hidden? v (:kid h)))
                       (#{:ed25519 :x25519} (-alg (:provider v) (:kid h))))
-        existed? (-destroy! (:provider v) (:kid h))]
+        existed? (with-write v #(-destroy! (:provider v) (:kid h)))]
     (swap! (:session v) dissoc (:kid h))
     (swap! (:defaults v) (fn [d] (into {} (remove (fn [[_ x]] (= x h)) d))))
     (when (and existed? saved?) (changed! (:vault h))))
@@ -525,16 +574,18 @@
   (when-not (session-entry? (vault (:vault h)) (:kid h)) ; ephemerals are X25519 session entries
     (check-identity h "x25519-dh"))
   (let [p (provider-of h) kid (:kid h)]
-    #?(:clj  (-with-material
-              p kid
-              (fn [m]
-                (case (-alg p kid)
-                  :x25519  (impl/x25519-dh m their-x25519-pub)
-                  :ed25519 (let [xsk (impl/ed25519-seed->x25519-private m)]
-                             (try (impl/x25519-dh xsk their-x25519-pub)
-                                  (finally (impl/destroy-material! xsk))))
-                  (throw (ex-info "x25519-dh needs an X25519 or Ed25519 key"
-                                  {:type ::wrong-algorithm :kid kid :algorithm (-alg p kid)})))))
+    #?(:clj  (with-read
+               (vault (:vault h))
+               #(-with-material
+                 p kid
+                 (fn [m]
+                   (case (-alg p kid)
+                     :x25519  (impl/x25519-dh m their-x25519-pub)
+                     :ed25519 (let [xsk (impl/ed25519-seed->x25519-private m)]
+                                (try (impl/x25519-dh xsk their-x25519-pub)
+                                     (finally (impl/destroy-material! xsk))))
+                     (throw (ex-info "x25519-dh needs an X25519 or Ed25519 key"
+                                     {:type ::wrong-algorithm :kid kid :algorithm (-alg p kid)}))))))
        :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))))
 
 (defn sign
@@ -547,7 +598,7 @@
   (let [p (provider-of h)]
     (when-not (= :ed25519 (-alg p (:kid h)))
       (throw (ex-info "sign needs an Ed25519 signing key" {:type ::wrong-algorithm :kid (:kid h)})))
-    #?(:clj  (-with-material p (:kid h) #(impl/ed25519-sign % message-bytes))
+    #?(:clj  (with-read (vault (:vault h)) (fn [] (-with-material p (:kid h) #(impl/ed25519-sign % message-bytes))))
        :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))))
 
 ;; ============================================================
@@ -583,7 +634,9 @@
                    #?(:clj (wipe! bs)) (throw t)))
         tmp (new-entry-id)]
     (-adopt! p tmp :temporary bs)
-    (try (-with-material p tmp f)
+    ;; the gate covers the lending; the destroy needs none: no other
+    ;; thread knows this entry (and clear! waits for the lending)
+    (try (with-read (vault vault-id) #(-with-material p tmp f))
          (finally (-destroy! p tmp)))))
 
 (defn ^:no-doc argon2id-material
@@ -670,9 +723,9 @@
    Returns nil."
   [vault-id session-id]
   (let [v (vault vault-id)]
-    (doseq [[id sid] @(:session v) :when (= sid session-id)]
-      (-destroy! (:provider v) id)
-      (swap! (:session v) dissoc id)))
+    (with-write v #(doseq [[id sid] @(:session v) :when (= sid session-id)]
+                     (-destroy! (:provider v) id)
+                     (swap! (:session v) dissoc id))))
   nil)
 
 (defn session-entry-count
@@ -771,14 +824,15 @@
    Throws ex-info {:type ::vault-locked} when the vault does not hold it."
   [vault-id id f]
   (let [v (vault vault-id)]
-    (when-not (and id (-has? (:provider v) id)) (throw-locked v))
-    (-with-material (:provider v) id f)))
+    (with-read v (fn []
+                   (when-not (and id (-has? (:provider v) id)) (throw-locked v))
+                   (-with-material (:provider v) id f)))))
 
 (defn ^:no-doc destroy-internal!
   "INTERNAL: destroy the vault's own secret id. Impure: writes the vault."
   [vault-id id]
   (let [v (vault vault-id)]
-    (-destroy! (:provider v) id)
+    (with-write v #(-destroy! (:provider v) id))
     (swap! (:internal v) disj id)
     nil))
 
@@ -791,13 +845,13 @@
   (let [v    (vault vault-id)
         p    (:provider v)
         kids (sort (filter #(and (not (hidden? v %)) (#{:ed25519 :x25519} (-alg p %))) (-kids p)))]
-    {:public          (vec (sort (keys @(:public v))))
-     :secrets         (vec (map-indexed (fn [i kid]
-                                          (let [alg (-alg p kid)]
-                                            {:kid kid :alg alg
-                                             :wrapped (-with-material p kid #(wrap i kid alg %))}))
-                                        kids))
-     :default-signing (:kid (:signing @(:defaults v)))}))
+    (with-read v (fn [] {:public          (vec (sort (keys @(:public v))))
+                         :secrets         (vec (map-indexed (fn [i kid]
+                                                              (let [alg (-alg p kid)]
+                                                                {:kid kid :alg alg
+                                                                 :wrapped (-with-material p kid #(wrap i kid alg %))}))
+                                                            kids))
+                         :default-signing (:kid (:signing @(:defaults v)))}))))
 
 (defn ^:no-doc clear!
   "INTERNAL: destroy every secret vault-id holds (identity keys, shared
@@ -806,7 +860,7 @@
    Impure: writes the vault."
   [vault-id]
   (let [v (vault vault-id)]
-    (doseq [kid (-kids (:provider v))] (-destroy! (:provider v) kid))
+    (with-write v #(doseq [kid (-kids (:provider v))] (-destroy! (:provider v) kid)))
     (reset! (:public v) {})
     (reset! (:defaults v) {})
     (reset! (:shared v) {})
