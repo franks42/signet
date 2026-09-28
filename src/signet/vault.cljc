@@ -23,6 +23,7 @@
      (destroy! h)                       → wipes and removes the secret
      (public-key h)  (sign h msg)       (lookup kid)  (handle kid)  (handles)
      (register-public-key! pub)         → adds a peer's key to the public side
+     (import-password! pw {:uses n})    → a password handle (one use by default)
      (default-signing-key) (set-default-signing-key! h) (ensure-default-signing-key!)
 
    Providers hold the secret material and lend it to one operation at a
@@ -79,10 +80,10 @@
   #?(:clj  (and (= :sodium impl/backend) (boolean ((requiring-resolve 'nacljc.core/secret?) x)))
      :cljs false))
 
-(defn ^:no-doc password-input?
-  "INTERNAL to signet.password and signet.vault.file: can x be given as a
-   password: a byte array (the UTF-8 of what was typed) or a nacljc secret
-   (for example from nacljc.tty/read-password)? Pure."
+(defn ^:no-doc password-material?
+  "INTERNAL: is x password material: a byte array (the UTF-8 of what was
+   typed) or a nacljc secret (for example from nacljc.tty/read-password)?
+   Pure."
   [x]
   (or #?(:clj (bytes? x) :cljs false) (nacljc-secret? x)))
 
@@ -681,20 +682,98 @@
     (try (with-read (vault vault-id) #(-with-material p tmp f))
          (finally (-destroy! p tmp)))))
 
+(defn- claim-password-use!
+  "Take one use of password handle h: :last when it was the last (the
+   caller destroys the entry after using it), :more, or :keep (unlimited).
+   Atomic, so concurrent callers never share the last use.
+   Impure: writes the vault's metadata.
+   Throws ex-info {:type ::destroyed-key} when no use is left."
+  [h]
+  (let [v   (vault (:vault h))
+        kid (:kid h)
+        [old _] (swap-vals! (:shared v)
+                            (fn [m] (let [u (get-in m [kid :uses])]
+                                      (if (and u (pos? u)) (assoc-in m [kid :uses] (dec u)) m))))
+        u   (get-in old [kid :uses] ::none)]
+    (cond
+      (nil? u)                   :keep
+      (and (number? u) (> u 1))  :more
+      (= 1 u)                    :last
+      :else (throw (ex-info "This password handle has no use left (destroyed, or used up)"
+                            {:type ::destroyed-key :kid kid :vault (:vault h)})))))
+
+(defn ^:no-doc password-handle?
+  "INTERNAL: is x a handle made by import-password!? Impure: reads the
+   vault. Never throws (an unknown vault gives false)."
+  [x]
+  (boolean (and (handle? x)
+                (try (= :password-input (:kind (get @(:shared (vault (:vault x))) (:kid x))))
+                     (catch #?(:clj Throwable :cljs :default) _ false)))))
+
+(defn ^:no-doc password-input?
+  "INTERNAL to signet.password and signet.vault.file: can x be given as a
+   password: a byte array, a nacljc secret, or a password handle
+   (import-password!)? Impure: reads the vault for a handle."
+  [x]
+  (or (password-material? x) (password-handle? x)))
+
+(defn import-password!
+  "Move a password into vault (default :default) and return a handle to
+   it: every function that takes a password also takes this handle, so
+   code can pass the password on without holding its bytes (ask once,
+   unlock several vaults). password is a byte array (the UTF-8 of what was
+   typed) or a nacljc secret (nacljc.tty/read-password); it is consumed.
+
+   One use by default: the entry is destroyed after its first use.
+     {:uses n}     n uses
+     {:keep true}  until destroy! or the vault locks
+   A kept password can unlock a vault again without the user, which undoes
+   auto-lock: keep it only as long as needed. lock! destroys it.
+
+   Impure: writes the vault, consumes password.
+   Throws ex-info {:type ::bad-password} unless password is bytes or a
+   secret, {:type ::bad-option} for bad options, ::unknown-vault and
+   ::vault-locked (the password is consumed either way)."
+  ([password] (import-password! :default password nil))
+  ([vault-id password] (import-password! vault-id password nil))
+  ([vault-id password {:keys [uses keep] :as opts}]
+   (try
+     (when-not (password-material? password)
+       (throw (ex-info "import-password!: the password must be a byte array or a nacljc secret"
+                       {:type ::bad-password :got (str (type password))})))
+     (when (or (and (contains? opts :uses) (not (pos-int? uses)))
+               (and keep (contains? opts :uses))
+               (not (contains? #{nil true false} keep)))
+       (throw (ex-info "import-password!: {:uses n} (n > 0) or {:keep true}" {:type ::bad-option})))
+     (let [v   (unlocked vault-id)
+           kid #?(:clj  (str "urn:signet:password-input:" (enc/bytes->base64url (impl/random-bytes 16)))
+                  :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))]
+       (-adopt! (:provider v) kid :password-input password)
+       (swap! (:shared v) assoc kid {:kind :password-input :uses (when-not keep (or uses 1))})
+       (->handle vault-id kid))
+     (catch #?(:clj Throwable :cljs :default) t
+       #?(:clj (impl/destroy-material! password))
+       (throw t)))))
+
 (defn ^:no-doc argon2id-material
-  "INTERNAL to signet.password: Argon2id of password (a byte array) with
-   salt and limits, run inside vault-id's provider. The password becomes a
-   temporary provider entry (under :sodium it moves into guarded memory,
-   and the array is wiped at once) and is destroyed afterwards, which also
-   wipes the caller's array under :memory. Returns 32 bytes of material
-   (bytes, or a nacljc secret under :sodium) that the caller must adopt or
-   destroy. Impure: writes and reads the vault's provider, wipes password.
+  "INTERNAL to signet.password and signet.vault.file: Argon2id of password
+   with salt and limits, run inside a vault's provider. password is a byte
+   array or a nacljc secret, which becomes a temporary entry of vault-id
+   (under :sodium in guarded memory) and is consumed; or a password handle
+   (import-password!), used inside its own vault, one use taken (the entry
+   is destroyed after its last). Returns 32 bytes of material (bytes, or a
+   nacljc secret under :sodium) that the caller must adopt or destroy.
+   Impure: writes and reads the providers, consumes password.
    Throws what impl/argon2id throws (:signet.impl/unsupported on the JCA
-   backend); the password is wiped either way."
+   backend), and ::destroyed-key for a used-up handle."
   [vault-id password salt limits]
-  (with-temp-material vault-id password
-    #?(:clj  #(impl/argon2id % salt 32 limits)
-       :cljs (fn [_] (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))))
+  (let [f #?(:clj  #(impl/argon2id % salt 32 limits)
+             :cljs (fn [_] (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))]
+    (if (handle? password)
+      (let [claim (claim-password-use! password)]
+        (try (with-material password f)
+             (finally (when (= :last claim) (destroy! password)))))
+      (with-temp-material vault-id password f))))
 
 (defn- adopt-session-entry!
   "Store material (the vault takes ownership) as a new session entry of

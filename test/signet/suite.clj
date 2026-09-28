@@ -14,7 +14,7 @@
     signet.session-test signet.ssh-test signet.bb-smoke-test signet.trust-test
     signet.vault-test signet.shared-test signet.noise-vectors-test signet.seams-test signet.password-test
     signet.vault-file-test signet.concurrency-test
-    signet.auto-lock-test])
+    signet.auto-lock-test signet.password-handle-test])
 
 (defn -main [& [expected]]
   (let [bb? (System/getProperty "babashka.version")

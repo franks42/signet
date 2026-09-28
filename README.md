@@ -116,6 +116,11 @@ not a credential: the vault decides what it can do.
   (vf/add-recovery-key! :default {:i-understand :exposes-secret}) ; optional: SIGNET-RK1-… bytes, shown once
   ```
 
+  Passwords: bytes, or a nacljc secret straight from the terminal
+  (`nacljc.tty/read-password`, nacljc 0.6.0), or a password handle
+  (`vault/import-password!`, one use by default) to ask once and unlock
+  several vaults.
+
   Auto-lock: `{:idle-timeout ms :max-unlocked ms}` on `create!`/`open!`
   locks the vault by itself (unsaved changes are saved first, by
   default; `:on-lock` tells the application).

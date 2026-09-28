@@ -80,6 +80,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - password → Argon2id → wraps the random master key (an internal vault entry) → per-save HKDF key encrypts the body and wraps each identity key (`impl/wrap-material`, nacljc `wrap-secret`); header is the body's AAD
 - Saves identity keys, public side, default signing key; not shared/password keys or sessions. Locked vault: `:signet.vault/vault-locked` for key use and for writes
 - Auto-lock (docs/11): `:idle-timeout`/`:max-unlocked`, `:on-dirty` (:save default), `:on-lock`; lazy check on each key use (`vault/note-use!` → file state `:on-use`) + a daemon timer thread
+- Passwords: bytes, a nacljc secret, or a password handle (`vault/import-password!`, `:uses` default 1 / `:keep`); all consumed; `vault/password-input?`
 - Each vault has a gate (read/write lock, fair Semaphore + thread-local `*held*`): lending material = read, destroying = write; destroy inside an operation throws `::destroy-inside-operation`
 
 ### signet.impl — backend facade

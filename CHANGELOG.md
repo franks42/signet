@@ -46,6 +46,14 @@
   array is wiped, a secret destroyed, also when refused. The `:memory`
   provider exports a secret it is given (it keeps keys on the heap by
   design) and destroys it.
+- **Password handles** (docs/11, part 2): `vault/import-password!`
+  moves a password (bytes or a nacljc secret, consumed) into the vault
+  and returns a handle that every password-taking function accepts, so
+  code passes the password on without holding it (ask once, unlock
+  several vaults). One use by default (destroyed after it); `{:uses n}`
+  or `{:keep true}` are explicit choices, since a kept password can
+  unlock again without the user. Uses are claimed atomically; `lock!`
+  destroys password handles with everything else.
 - `signet.vault`: a locked vault file throws `:signet.vault/vault-locked`
   for using its keys and for generating, importing or registering keys.
   The `Provider` protocol gains `-generate-secret!` (breaking for custom

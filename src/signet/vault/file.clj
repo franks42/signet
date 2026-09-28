@@ -688,7 +688,9 @@
   [vault-id rk]
   (wiping [rk]
           (fn []
-            (check-password rk "unlock-with-recovery-key!: the recovery key")
+            (when-not (vault/password-material? rk)
+              (throw (ex-info "unlock-with-recovery-key!: the recovery key must be a byte array or a nacljc secret"
+                              {:type ::bad-password})))
             (let [a (state vault-id)]
               (locking a
                 (when-not (:locked? @a)
