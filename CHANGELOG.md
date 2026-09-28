@@ -30,6 +30,14 @@
   `:sodium` every secret on the way stays in guarded memory (nacljc
   `wrap-secret` / `unwrap-secret`). Saved: identity keys, the public side,
   the default signing key. Not saved: shared and password keys, sessions.
+- **Auto-lock for vault files** (docs/11, part 1): `:idle-timeout` (ms
+  without a key use; session messages and writes count as use) and
+  `:max-unlocked` (ms after unlocking) on `create!` and `open!`. Every
+  key use checks first, and a daemon timer thread locks a vault nobody
+  uses, so its keys do not stay in memory. `:on-dirty` decides what
+  happens to unsaved changes: `:save` (default), `:discard`,
+  `:stay-unlocked`; `:on-lock` is called with the reason. `status`
+  reports `:locks-in`.
 - `signet.vault`: a locked vault file throws `:signet.vault/vault-locked`
   for using its keys and for generating, importing or registering keys.
   The `Provider` protocol gains `-generate-secret!` (breaking for custom

@@ -1,6 +1,7 @@
 # Auto-lock and password input
 
-Status: **design, 2026-09-27; not built.** Two follow-ups to docs/10
+Status: design 2026-09-27. **Part 1 built** (0.10.0): the destroy race
+fix and auto-lock; part 2 (password input) not yet. Two follow-ups to docs/10
 (vault files, built in 0.10.0): locking an unlocked vault after a period
 of inactivity, and getting a typed password into guarded memory without
 it ever being a `String` or a byte array on the Clojure heap. Both feed
@@ -91,6 +92,17 @@ scheduler and never sleep.
 - **`:on-lock`** lets the application react ("vault locked: enter the
   password"). It runs on the timer thread; documented.
 - **`status`** gains `:locks-in` (milliseconds, or nil).
+
+**As built:** `:on-lock` is called only when the vault acts on its own:
+reasons `:idle` and `:max-unlocked` (it locked), `:dirty` (stayed
+unlocked under `:stay-unlocked`) and `:save-failed` (the save before
+locking failed, so it stayed unlocked rather than lose keys); an
+explicit `lock!` does not call it. Staying unlocked restarts both
+periods. Writes count as use. `touch!` was not added (any key use is
+activity). The gate is a fair `Semaphore` with a thread-local record of
+held gates (bb has no `ReadWriteLock`); a destroy from inside an
+operation throws `::destroy-inside-operation`. A `:clock` option injects
+the clock for tests.
 
 ### Not planned
 

@@ -257,12 +257,22 @@
   (throw (ex-info (str "Vault " (pr-str (:id v)) " is locked: unlock it first")
                   {:type ::vault-locked :vault (:id v)})))
 
+(defn- note-use!
+  "A key use or a write on vault v: runs its file's :on-use (auto-lock:
+   lock when due, else record the activity). Skipped inside an operation
+   on v, which noted the use already (and must not lock under itself).
+   Impure: whatever :on-use does (it may lock the vault)."
+  [v]
+  (when-not (get *held* (:gate v))
+    (when-let [on-use (:on-use @(:file v))] (on-use))))
+
 (defn- unlocked
   "The vault named id, for a write: throws when it is a locked vault file.
-   Impure: reads the vault registry.
-   Throws ex-info {:type ::unknown-vault} or {:type ::vault-locked}."
+   Notes the use (auto-lock). Impure: reads the vault registry, notes a
+   use. Throws ex-info {:type ::unknown-vault} or {:type ::vault-locked}."
   [id]
   (let [v (vault id)]
+    (note-use! v)
     (when (locked?* v) (throw-locked v))
     v))
 
@@ -367,7 +377,9 @@
    must not be kept, returned or logged. Impure: reads the vault."
   [h f]
   (check-handle h "with-material")
-  (with-read (vault (:vault h)) #(-with-material (provider-of h) (:kid h) f)))
+  (let [v (vault (:vault h))]
+    (note-use! v)
+    (with-read v #(-with-material (provider-of h) (:kid h) f))))
 
 ;; ============================================================
 ;; Keys are born in the vault
@@ -459,7 +471,9 @@
   (when (hidden? (vault (:vault h)) (:kid h))
     (throw (ex-info "A session's or the vault's internal secret cannot be exported"
                     {:type ::not-exportable :kid (:kid h)})))
-  (with-read (vault (:vault h)) #(-export (provider-of h) (:kid h))))
+  (let [v (vault (:vault h))]
+    (note-use! v)
+    (with-read v #(-export (provider-of h) (:kid h)))))
 
 (defn destroy!
   "Wipe and remove h's secret from its vault. The public key stays on the
@@ -571,6 +585,7 @@
    ::wrong-algorithm for a shared key or a session secret."
   [h their-x25519-pub]
   (check-handle h "x25519-dh")
+  (note-use! (vault (:vault h)))
   (when-not (session-entry? (vault (:vault h)) (:kid h)) ; ephemerals are X25519 session entries
     (check-identity h "x25519-dh"))
   (let [p (provider-of h) kid (:kid h)]
@@ -595,6 +610,7 @@
    ::wrong-algorithm for a non-signing key."
   [h message-bytes]
   (check-handle h "sign")
+  (note-use! (vault (:vault h)))
   (let [p (provider-of h)]
     (when-not (= :ed25519 (-alg p (:kid h)))
       (throw (ex-info "sign needs an Ed25519 signing key" {:type ::wrong-algorithm :kid (:kid h)})))

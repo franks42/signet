@@ -116,6 +116,10 @@ not a credential: the vault decides what it can do.
   (vf/add-recovery-key! :default {:i-understand :exposes-secret}) ; optional: SIGNET-RK1-… bytes, shown once
   ```
 
+  Auto-lock: `{:idle-timeout ms :max-unlocked ms}` on `create!`/`open!`
+  locks the vault by itself (unsaved changes are saved first, by
+  default; `:on-lock` tells the application).
+
   Saved: identity keys, the public side, the default signing key; shared
   and password keys are derived again, sessions end. Without the password
   and without a recovery key, the keys are gone.

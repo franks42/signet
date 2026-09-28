@@ -72,7 +72,7 @@
     (let [{:keys [path s e peer]} (setup!)
           signed (sign/sign-edn s {:hello 1})]
       (is (= {:path path :locked? false :dirty? false :auto-save? false
-              :unlocked-by :password :recovery-key? false}
+              :unlocked-by :password :recovery-key? false :locks-in nil}
              (vf/status :v)))
       (testing "locked: no secrets, no public side, no writes"
         (vf/lock! :v)

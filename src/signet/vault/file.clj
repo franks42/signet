@@ -375,6 +375,18 @@
                                                  {:type ::corrupt-file :kid kid})))))))
       (finally (impl/destroy-material! k)))))
 
+(declare start-timer!)
+
+(defn- default-clock
+  "Milliseconds on a monotonic clock. Impure: reads the clock."
+  []
+  (quot (System/nanoTime) 1000000))
+
+(defn- now-ms
+  "Now, on file state s's clock (:clock, for tests). Impure: reads it."
+  [s]
+  ((or (:clock s) default-clock)))
+
 (defn- finish-unlock!
   "Adopt master-key material mk-m into vault-id, load the body, and mark
    the vault unlocked by method. On failure the vault is cleared and stays
@@ -383,7 +395,10 @@
   (let [mk (vault/adopt-internal! vault-id mk-m)]
     (try
       (load-body! vault-id mk (:file @a))
-      (swap! a assoc :locked? false :dirty? false :mk mk :unlocked-by method)
+      (swap! a (fn [s] (let [t (now-ms s)]
+                         (assoc s :locked? false :dirty? false :mk mk :unlocked-by method
+                                :unlocked-at t :last-used t))))
+      (start-timer! vault-id a)
       vault-id
       (catch Throwable t
         (vault/clear! vault-id)
@@ -395,6 +410,130 @@
   "The :on-change of a vault file with :auto-save. Impure: writes the file."
   [vault-id]
   (fn [] (save! vault-id)))
+
+;; ============================================================
+;; Auto-lock (docs/11): lock after :idle-timeout ms without key use, or
+;; :max-unlocked ms after unlocking. Two mechanisms: every key use checks
+;; first (exact, even when the timer is late), and a daemon timer thread
+;; locks a vault nobody uses (so the keys do not sit in memory).
+;; ============================================================
+
+(defn- lock-due
+  "Why file state s should lock at time now: :idle, :max-unlocked, or nil.
+   Pure."
+  [{:keys [locked? last-used unlocked-at idle-timeout max-unlocked]} now]
+  (when-not locked?
+    (cond
+      (and max-unlocked unlocked-at (>= (- now unlocked-at) max-unlocked)) :max-unlocked
+      (and idle-timeout last-used (>= (- now last-used) idle-timeout))      :idle)))
+
+(defn- ms-until-due
+  "Milliseconds until s is due to lock (0 when due), or nil when it never
+   is. Pure."
+  [{:keys [locked? last-used unlocked-at idle-timeout max-unlocked]} now]
+  (when-not locked?
+    (let [ds (remove nil? [(when (and idle-timeout last-used) (- (+ last-used idle-timeout) now))
+                           (when (and max-unlocked unlocked-at) (- (+ unlocked-at max-unlocked) now))])]
+      (when (seq ds) (max 0 (apply min ds))))))
+
+(defn- lock-now!
+  "Clear vault-id and mark its file state locked. Call inside (locking a).
+   Impure: destroys the vault's secrets, writes the file state, stops the
+   timer."
+  [vault-id a]
+  (vault/clear! vault-id)
+  (let [t (:timer @a)]
+    (swap! a assoc :locked? true :dirty? false :mk nil :unlocked-by nil :timer nil
+           :unlocked-at nil :last-used nil :unlock (:unlock (:file @a)))
+    (when (and t (not= t (Thread/currentThread))) (.interrupt ^Thread t))))
+
+(defn- auto-lock!
+  "Lock vault-id if it is (still) due, following :on-dirty for unsaved
+   changes. Returns the event for :on-lock ([reason], e.g. [:idle]), or
+   nil. Postponing (dirty and :stay-unlocked, or a failed save) restarts
+   both periods. Impure: may write the file and destroy the vault's
+   secrets."
+  [vault-id a]
+  (locking a
+    (let [s @a]
+      (when-let [reason (lock-due s (now-ms s))]
+        (let [postpone! (fn [why]
+                          (let [t (now-ms s)] (swap! a assoc :last-used t :unlocked-at t))
+                          [why])]
+          (if (and (:dirty? s) (not= :discard (:on-dirty s)))
+            (if (= :stay-unlocked (:on-dirty s))
+              (postpone! :dirty)
+              (if (try (write-file! vault-id a) true (catch Throwable _ false))
+                (do (lock-now! vault-id a) [reason])
+                (postpone! :save-failed)))
+            (do (lock-now! vault-id a) [reason])))))))
+
+(defn- notify!
+  "Call :on-lock with vault-id and the event's reason, ignoring its
+   errors (it runs on the timer thread, or inside a key use).
+   Impure: whatever :on-lock does."
+  [a vault-id event]
+  (when-let [f (and event (:on-lock @a))]
+    (try (f vault-id (first event)) (catch Throwable _ nil))))
+
+(defn- on-use
+  "The :on-use hook of a vault file with timeouts: lock when due, else
+   record the activity. Impure: may lock the vault; writes the file state."
+  [vault-id a]
+  (fn []
+    (let [s @a]
+      (when-not (:locked? s)
+        (if (lock-due s (now-ms s))
+          (notify! a vault-id (auto-lock! vault-id a))
+          (swap! a (fn [s] (if (:locked? s) s (assoc s :last-used (now-ms s))))))))))
+
+(defn- start-timer!
+  "Start the daemon thread that locks vault-id when due, if it has a
+   timeout. It ends when the vault locks, or when its file state is no
+   longer a (the vault was unregistered). Impure: starts a thread."
+  [vault-id a]
+  (when (or (:idle-timeout @a) (:max-unlocked @a))
+    (let [current? #(and (identical? a (try (vault/file-state vault-id) (catch Throwable _ nil)))
+                         (not (:locked? @a)))
+          t (Thread.
+             ^Runnable
+             (fn []
+               (loop []
+                 (when (current?)
+                   (let [wait (ms-until-due @a (now-ms @a))]
+                     (when wait
+                       (if (pos? wait)
+                         (try (Thread/sleep (long wait)) (catch InterruptedException _ nil))
+                         (notify! a vault-id (auto-lock! vault-id a)))
+                       (recur))))))
+             (str "signet-vault-auto-lock-" vault-id))]
+      (.setDaemon t true)
+      (swap! a assoc :timer t)
+      (.start t))))
+
+(defn- lock-options
+  "The auto-lock options of opts, checked. Pure.
+   Throws ex-info {:type ::bad-option} for a bad value."
+  [{:keys [idle-timeout max-unlocked on-lock on-dirty clock] :as opts}]
+  (let [bad #(throw (ex-info (str "Vault file option " % " " (pr-str (get opts %)))
+                             {:type ::bad-option :option %}))]
+    (when-not (or (nil? idle-timeout) (pos-int? idle-timeout)) (bad :idle-timeout))
+    (when-not (or (nil? max-unlocked) (pos-int? max-unlocked)) (bad :max-unlocked))
+    (when-not (or (nil? on-lock) (fn? on-lock)) (bad :on-lock))
+    (when-not (contains? #{nil :save :discard :stay-unlocked} on-dirty) (bad :on-dirty))
+    (when-not (or (nil? clock) (fn? clock)) (bad :clock))
+    {:idle-timeout idle-timeout :max-unlocked max-unlocked :on-lock on-lock
+     :on-dirty (or on-dirty :save) :clock clock}))
+
+(defn- initial-state
+  "The initial file state of vault-id: path, auto-save and auto-lock
+   options, plus more. Pure but for the hooks it closes over."
+  [vault-id path opts more]
+  (let [lo (lock-options opts)]
+    (merge {:path (str path) :dirty? false :auto-save? (boolean (:auto-save opts))
+            :on-change (when (:auto-save opts) (auto-saver vault-id))}
+           lo
+           more)))
 
 ;; ============================================================
 ;; Public API
@@ -424,20 +563,32 @@
      :auto-save  true: save after every change (a key generated, imported
                  or destroyed; a public key registered; the default set).
                  Default false: call save!.
+     :idle-timeout  lock after this many ms without a key use (session
+                 messages count as use); default none
+     :max-unlocked  lock this many ms after unlocking, used or not
+     :on-lock    (fn [vault-id reason]) called after the vault locked
+                 itself (:idle, :max-unlocked), or stayed unlocked
+                 (:dirty, :save-failed); on the timer thread; errors ignored
+     :on-dirty   unsaved changes when a timeout fires: :save (default:
+                 save, then lock), :discard, or :stay-unlocked (for
+                 another period)
+     :clock      (fn [] ms), monotonic; for tests
 
    Impure: may register the vault, draws from the CSPRNG, runs Argon2id,
    writes the vault and the file, wipes password.
    Throws ex-info {:type ::bad-password} unless password is a byte array,
    {:type ::file-exists} when path exists (never overwritten),
    {:type ::has-file} when the vault already has a file,
+   {:type ::bad-option} for a bad auto-lock option,
    :signet.password/bad-option for bad limits,
    :signet.vault/vault-locked, and :signet.impl/unsupported on the JCA
    backend."
   ([vault-id path password] (create! vault-id path password nil))
-  ([vault-id path password {:keys [limits auto-save] :or {limits :moderate}}]
+  ([vault-id path password {:keys [limits] :or {limits :moderate} :as opts}]
    (wiping [password]
            (fn []
              (check-password password "create!: the password")
+             (lock-options opts)
              (when (.exists (io/file path))
                (throw (ex-info (str "create!: " path " exists; it is never overwritten")
                                {:type ::file-exists :path (str path)})))
@@ -451,11 +602,15 @@
                    (let [mk (vault/generate-internal! vault-id 32)]
                      (try
                        (let [e (password-entry vault-id mk password limits)]
-                         (reset! a {:path (str path) :locked? false :dirty? true :auto-save? (boolean auto-save)
-                                    :unlock [e] :mk mk :unlocked-by :password
-                                    :on-change (when auto-save (auto-saver vault-id))})
+                         (reset! a (initial-state vault-id path opts
+                                                  {:locked? false :dirty? true :unlock [e] :mk mk
+                                                   :unlocked-by :password}))
+                         (when (or (:idle-timeout @a) (:max-unlocked @a))
+                           (swap! a #(assoc % :on-use (on-use vault-id a))))
+                         (swap! a (fn [s] (let [t (now-ms s)] (assoc s :unlocked-at t :last-used t))))
                          (try (save! vault-id)
-                              (catch Throwable t (reset! a nil) (throw t))))
+                              (catch Throwable t (reset! a nil) (throw t)))
+                         (start-timer! vault-id a))
                        (catch Throwable t (vault/destroy-internal! vault-id mk) (throw t))))
                    vault-id)
                  (catch Throwable t
@@ -466,22 +621,24 @@
   "Open the vault file at path as vault vault-id, locked: registered if it
    is not (default provider), else it must be empty (the :default vault at
    start is). Unlock it with unlock!. Returns vault-id.
-   opts: :auto-save, as in create!.
+   opts: :auto-save and the auto-lock options, as in create!.
    Impure: reads the file, writes the vault registry and the vault.
-   Throws ex-info {:type ::bad-file} for a missing or malformed file, and
-   {:type ::vault-not-empty} when vault-id holds keys or has a file."
+   Throws ex-info {:type ::bad-file} for a missing or malformed file,
+   {:type ::vault-not-empty} when vault-id holds keys or has a file, and
+   {:type ::bad-option}."
   ([vault-id path] (open! vault-id path nil))
-  ([vault-id path {:keys [auto-save]}]
+  ([vault-id path opts]
    (let [f    (read-file path)
+         _    (lock-options opts)
          new? (not (contains? (vault/vault-ids) vault-id))]
      (when new? (vault/register-vault! vault-id))
      (when-not (vault/blank? vault-id)
        (throw (ex-info (str "Vault " (pr-str vault-id) " is not empty: open a file into a new or empty vault")
                        {:type ::vault-not-empty :vault vault-id})))
-     (reset! (vault/file-state vault-id)
-             {:path (str path) :locked? true :dirty? false :auto-save? (boolean auto-save)
-              :file f :unlock (:unlock f)
-              :on-change (when auto-save (auto-saver vault-id))})
+     (let [a (vault/file-state vault-id)]
+       (reset! a (initial-state vault-id path opts {:locked? true :file f :unlock (:unlock f)}))
+       (when (or (:idle-timeout @a) (:max-unlocked @a))
+         (swap! a assoc :on-use (on-use vault-id a))))
      vault-id)))
 
 (defn unlock!
@@ -565,8 +722,7 @@
          (when (and (:dirty? @a) (not discard-changes?))
            (throw (ex-info (str "Vault " (pr-str vault-id) " has unsaved changes: save! first, or lock! with {:discard-changes? true}")
                            {:type ::unsaved-changes :vault vault-id})))
-         (vault/clear! vault-id)
-         (swap! a assoc :locked? true :dirty? false :mk nil :unlocked-by nil :unlock (:unlock (:file @a)))))
+         (lock-now! vault-id a)))
      vault-id)))
 
 (defn change-password!
@@ -672,10 +828,12 @@
 (defn status
   "vault-id's file status, or nil when it has no file:
      {:path … :locked? … :dirty? … :auto-save? … :recovery-key? …
-      :unlocked-by :password | :recovery-key | nil}
+      :unlocked-by :password | :recovery-key | nil
+      :locks-in    ms until auto-lock, or nil}
    Impure: reads the vault.
    Throws :signet.vault/unknown-vault."
   [vault-id]
   (when-let [s @(vault/file-state vault-id)]
     (-> (select-keys s [:path :locked? :dirty? :auto-save? :unlocked-by])
-        (assoc :recovery-key? (boolean (entry (:unlock s) :recovery-key))))))
+        (assoc :recovery-key? (boolean (entry (:unlock s) :recovery-key))
+               :locks-in (ms-until-due s (now-ms s))))))
