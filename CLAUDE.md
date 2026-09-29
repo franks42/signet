@@ -13,7 +13,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
   - `:jca` — `signet.impl.jvm`, Java JCA. No native dependency. Its seed→public-key path (a `proxy [SecureRandom]` trick) does not work on babashka.
   - `:sodium` — `signet.impl.sodium`, libsodium via `nacljc.core` (the backend keeps the name `:sodium`: it names libsodium, the native engine, not the wrapper) (github.com/franks42/nacljc, `com.github.franks42/nacljc 0.6.0` from Clojars via the `:sodium` alias; the version in bb.edn's test:bb-sodium and test/signet/consumer_check.clj (test:jar) must match; babashka.ffi). To test an unreleased nacljc, swap in `{:local/root "../nacljc"}`. Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
   - ClojureScript: not implemented (every `:cljs` branch throws). The browser plan is libsodium.js (see `../nacljc/docs/feasibility.md`).
-- **Dependencies**: canonical-edn (cedn) 1.6.1 for deterministic serialization, uuidv7 0.7.2 for request IDs (bumped from 1.2.0 / 0.5.0 in 0.7.0; see README "Compatibility"). Bouncy Castle for secp256k1 only (JVM). nacljc for the `:sodium` backend (alias `:sodium`: local snapshot jar, not published).
+- **Dependencies**: canonical-edn (cedn) 1.6.1 for deterministic serialization, uuidv7 0.7.3 for request IDs (see README "Compatibility"). Bouncy Castle for secp256k1 only (JVM). nacljc 0.6.0 from Clojars for the `:sodium` backend (alias `:sodium`).
 - **Key fields**: JWK-inspired — `:x` (public), `:d` (private), `:crv` (:Ed25519/:X25519), `:type` (dispatch tag)
 - **kid format**: URN — `urn:signet:pk:<algorithm>:<base64url-public-key>` — self-describing, receiver can extract pk directly
 - **Key store**: Auto-registering, kid-based lookup, most-info-wins (keypair > private > public)
@@ -70,6 +70,17 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 ### signet.encoding — Base64url
 - `bytes->base64url` / `base64url->bytes`
 
+### signet.vault — secrets by reference (0.8.0; docs/07)
+- Handles (`KeyHandle`: kid + vault id); providers `:memory` and `:sodium` (`signet.vault.sodium`, nacljc guarded memory)
+- `generate-signing-key!`, `generate-encryption-key!`, `import-*-key!`, `export-secret` (ack), `destroy!`, `public-key`, `lookup`, `handle(s)`, defaults, `import-password!`
+- Session entries (Noise secrets), internal entries (a vault file's master key), the gate (read/write lock), `note-use!` (auto-lock hook); `^:no-doc` internals for signet.password / signet.vault.file
+
+### signet.shared — shared (DH-derived) symmetric keys as handles (0.8.0)
+- `shared-key!`, `seal`/`open` (directional, key-committing), `mac`
+
+### signet.encryption — box v2 (docs/06)
+- `box`/`unbox` with vault handles; optional `:from`/`:to` kids, `:aad`, 24-byte nonce, HKDF-bound directional key
+
 ### signet.password — password-derived keys (0.10.0, slice 1 of docs/10)
 - `password-key!` (Argon2id; password bytes wiped; key kept in the vault), `seal`, `open` (with the handle or the password)
 - libsodium backend only; JCA throws `:signet.impl/unsupported`
@@ -102,8 +113,9 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 ## Implementation Phases
 1. **Phase 1 (MVP)**: Key management + Ed25519 signing ✅
 2. **Phase 1b**: Capability chains (signet.chain) ✅
-3. **Phase 2**: X25519 encryption (signet.box — DH + symmetric encryption)
-4. **Phase 3**: SSH import, key discovery, filesystem-based key publishing
+3. **Phase 2**: X25519 encryption (`signet.encryption`, box v2) ✅
+4. **Phase 3**: SSH import ✅ (`signet.ssh`); key discovery and filesystem-based key publishing not done
+5. Since then: the vault and handles (0.8.0), sessions on handles (0.9.0), password unlocking and vault files (0.10.0) ✅
 
 ## Related Local Projects
 - `../stroopwafel` — First consumer (capability-based auth tokens). Adds Datalog on top of signet.chain.
@@ -122,77 +134,95 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `docs/08-sessions-on-handles-plan.md` — 0.9.0 implementation plan: session secrets as vault session entries, `close!` by session, `with-conclave`; phase 0 (Noise known-answer vectors) done
 - `docs/09-e2e-through-proxies.md` — design note (2026-09-27): application-layer E2E through TLS-terminating proxies (Cloudflare etc.): threat levels, the code-delivery and key-anchoring problems, existing standards (OHTTP/HPKE, DPoP, client-side payment encryption), pieces we have and a possible first slice. Not built.
 - `docs/10-password-unlocking.md` — password unlocking and vault persistence (2026-09-27): key layers (password -> Argon2id -> master key -> entries), the vault file as a suite, lock/unlock, the optional recovery key; decisions taken; built in 0.10.0 (`signet.password`, `signet.vault.file`), with "As built" notes.
-- `docs/11-auto-lock-and-password-input.md` — design (2026-09-27): the vault destroy race (a bug to fix first), auto-lock (activity clock, lazy check + timer, :on-dirty), nacljc.tty password reader into guarded memory, passwords as secrets and as handles. Not built.
+- `docs/11-auto-lock-and-password-input.md` — design (2026-09-27): the vault destroy race (a bug to fix first), auto-lock (activity clock, lazy check + timer, :on-dirty), nacljc.tty password reader into guarded memory, passwords as secrets and as handles. Built in 0.10.0 (nacljc.tty in nacljc 0.6.0), with "As built" notes.
 - `docs/12-agent-design.md` — design (2026-09-27): secrets in a separate process; operation-level providers (phase 0), an ssh-agent client provider (sign-only), the signet agent (Unix socket, peer check, CEDN protocol), policy and the PDP seam. Not built.
 
-## Current state (2026-09-25)
+## Current state (2026-09-28)
 
-- **0.7.0** (first Clojars release) added PR #1 (libsodium backend, trust
-  and key-store fixes, dh/edh enforcement, single-use sessions, box v2)
-  and the naming/purity batch. See CHANGELOG.md.
-- **Release:** a `vX.Y.Z` tag runs `.github/workflows/release.yml`. It
-  runs `bb release-check` and both backends' tests, deploys, then runs
-  `bb test:clojars X.Y.Z` (signet's tests against the jar from Clojars,
-  empty local repo) before the GitHub release.
-- **0.8.0 (released 2026-09-24):** the vault
-  (`signet.vault`, providers `:memory` and `:sodium`), handles in
-  sign/box/chain, `signet.shared`. Phases 1–5 done (see CHANGELOG). Sessions
-  move onto handles in the release after. Key records remain the raw layer;
-  they are deprecated in that release (decision 17), not removed.
-- **0.9.2 (released 2026-09-26):** cedn 1.6.1 (Devin review fixes: `#inst`
-  locale independence, JS large numbers, java.sql dates). No signet code change.
-- **0.9.3 (released 2026-09-26):** nacljc 0.3.2; every function (255)
-  states Pure/Impure and its Throws :types; `bad-key!` and `meta!` renamed.
-- **0.9.4 (released 2026-09-26):** fixes from Devin's signet review
-  (docs/review-devin-20260926.md): shared keys excluded from box/unbox
-  (valid boxes were rejected at random), JCA point validation matching
-  libsodium with shared error types, chain close fixes, typed errors at
-  the seams. Regression tests: `test/signet/seams_test.clj`.
-- **0.10.0 (released 2026-09-28):** review findings 11 and 12 done (keyword
-  errors in `chain/verify`, uniform `:blocks`, `verify-edn` checks `:type`:
-  breaking), doc notes done (message-1 replay, `NACLJC_LIBSODIUM`,
-  README "Deployment hardening" → `nacljc.process`). nacljc 0.6.0.
-  Password unlocking (docs/10): slice 1 done (`signet.password`,
-  password-derived key handles, seal/open); slice 2 done
-  (`signet.vault.file`: vault files, lock/unlock, save!/:auto-save,
-  change-password!, the optional recovery key). Candidates next: an
-  unlock timeout, a TTY password reader in nacljc, the `:agent`. Audience (docs/07,
-  2026-09-25): signet protects developers from mistakes and ordinary
-  exposure; determined adversaries with code execution are documented, not
-  targeted. Candidates, in order: the cheap fixes in docs/07's "Remaining
-  attack surface" (an opt-in hardening helper: never automatic, core
-  dumps stay on by default, a deployment choice documented in the README;
-  the `NACLJC_LIBSODIUM` note; the message-1 replay note); persistence and password unlocking; an
-  ssh-agent-style `:agent`; then chain attenuation, agent policy and
-  hardware tiers. A policy-gated dynamic runtime is sketched and parked
-  (docs/07).
-- **0.9.1 (released 2026-09-25):** nacljc 0.3.1 (`sodium_stackzero` after
-  every secret operation). No signet code change.
-- **0.9.0 (released 2026-09-25):** implemented and merged
-  (docs/08-sessions-on-handles-plan.md, phases 0–6): Noise vectors and the
-  prologue-order fix (breaking for 0.8.0 peers), sessions on vault handles,
-  `close!`, `with-conclave`, key records deprecated, `ssh/import-keypair!`.
-  Uses nacljc 0.3.0 (released 2026-09-25). Open design
-  topics (AEGIS suites, box key commitment, post-quantum, persistence and
-  password unlocking, names for keys) are in docs/07; password unlocking
-  (Argon2id, password-derived keys as vault handles) has notes in docs/08.
-  **After every release, bump build.clj to the next -SNAPSHOT.**
-- Verified from the installed jar in a scratch consumer (`bb test:jar`,
-  signet's tests only, no src; 2026-09-25, nacljc 0.3.1): JVM jca 196/1055,
-  JVM sodium 196/1069 + parity 57/57, bb sodium 186/1040.
-- CI (`.github/workflows/ci.yml`, green): `jca` on Ubuntu JDK 21 + 25
-  (`bb test:no-sodium`); `sodium-macos` (Homebrew libsodium; test:jvm-sodium,
-  test:bb-sodium, test:jar); `sodium-linux` (libsodium 1.0.22 built from a
-  sha256-pinned tarball, since Ubuntu ships 1.0.18; the dynamically linked
-  bb 1.13.224, sha256-pinned). nacljc comes from Clojars. Every job
-  only calls bb tasks.
+**Released: signet 0.10.0 (2026-09-28), on nacljc 0.6.0. main is
+0.11.0-SNAPSHOT** (CHANGELOG has an empty `## 0.11.0 (unreleased)`).
+CI green on both repos.
+
+What 0.10.0 brought (details in CHANGELOG.md):
+- Password unlocking, docs/10: `signet.password` (password-derived key
+  handles, seal/open) and `signet.vault.file` (vault files: create!/open!/
+  unlock!/lock!/save!, :auto-save, change-password!, optional recovery key
+  `SIGNET-RK1-…`).
+- docs/11: the destroy-race fix (per-vault gate: read/write lock on a fair
+  Semaphore, `::destroy-inside-operation`), auto-lock (`:idle-timeout`,
+  `:max-unlocked`, `:on-dirty`, `:on-lock`, timer thread + lazy check),
+  passwords as nacljc secrets (from `nacljc.tty/read-password`), password
+  handles (`vault/import-password!`, one use by default).
+- Review findings 11/12 (keyword errors in `chain/verify`; `verify-edn`
+  checks `:type`), doc notes (message-1 replay, `NACLJC_LIBSODIUM`).
+
+Earlier releases, briefly: 0.7.0 first Clojars release (libsodium backend,
+naming/purity batch); 0.8.0 the vault and handles; 0.9.0 sessions on vault
+handles, `close!`, `with-conclave`, Noise prologue fix, key records
+deprecated; 0.9.1–0.9.4 nacljc bumps, purity/throws docstrings on every
+function, Devin review fixes (`docs/review-devin-20260926.md`,
+`test/signet/seams_test.clj`).
+
+### Possible next steps (none chosen yet; ask the user)
+
+- **docs/12 phase 0: operation-level providers** (refactor, no behavior
+  change): providers offer operations instead of lending material. Useful
+  on its own as the seam for hardware tiers. But the agent work (docs/12:
+  ssh-agent client provider, the signet agent with an nREPL-message-model
+  EDN protocol, no eval) is **on the back burner** by the user's decision
+  (2026-09-27); ask before starting any of it.
+- **Open design topics in docs/07:** AEGIS suites, box key commitment,
+  post-quantum (X-Wing is in nacljc), names for keys, chain attenuation,
+  hardware tiers. docs/09 (E2E through TLS-terminating proxies) has a
+  possible first slice, not planned.
+- Small: rollback of a vault file is not detected (documented); Unicode
+  normalization of passwords (documented; a future option).
+- **Back burner:** CI for distributions with libsodium < 1.0.19 (Ubuntu
+  1.0.18); the agent (docs/12).
+
+### How we work (the user's preferences)
+
+- Commit and push only when asked; the user usually asks ("push it",
+  "release X"). No external users yet: breaking changes are fine, but
+  flagged in the CHANGELOG.
+- Bugs: a failing-first test, then the fix; every guard injection-checked
+  (remove it, see a test fail). External reviews: verify each finding by
+  reproduction, add a resolution section.
+- Discussion turns ("no coding", "discuss") get design answers, often
+  written up as docs/NN afterwards.
+- Audience (docs/07): signet protects developers from mistakes and
+  ordinary exposure; determined adversaries with code execution are
+  documented, not targeted.
+
+### Release procedure
+
+Set build.clj's version and the CHANGELOG heading `## X.Y.Z (YYYY-MM-DD)`;
+`bb release-check`, `bb test:all`, `bb test:jar`; commit "Release X.Y.Z",
+push, wait for CI green; tag `vX.Y.Z` and push the tag
+(`.github/workflows/release.yml` runs the tests, deploys to Clojars, runs
+`bb test:clojars X.Y.Z` against the published jar, creates the GitHub
+release); then bump build.clj to the next -SNAPSHOT and add an
+`## X.Y.Z (unreleased)` heading. A signet release that needs a new nacljc:
+release nacljc first, then pin it in deps.edn, bb.edn (test:bb-sodium) and
+test/signet/consumer_check.clj.
+
+### CI and environment notes
+
+- CI (`.github/workflows/ci.yml`): `jca` on Ubuntu JDK 21 + 25
+  (`bb test:no-sodium`); `sodium-macos` (Homebrew libsodium;
+  test:jvm-sodium, test:bb-sodium, test:jar); `sodium-linux` (libsodium
+  1.0.22 built from a sha256-pinned tarball, since Ubuntu ships 1.0.18;
+  the dynamically linked bb 1.13.224, sha256-pinned). Every job only calls
+  bb tasks.
 - **Linux + babashka.ffi needs the dynamically linked bb.** The static
   build, which `setup-clojure` installs on Linux, cannot load any shared
   library. The CI job asserts `file bb` says "dynamically linked".
-- Fresh machines: `build.clj`'s `:root nil` basis dropped Maven Central and
-  Clojars (they live in the root deps.edn), so `clojure -T:build install`
-  could only use jars already in ~/.m2 ("Could not find artifact"). Fixed
-  by adding both repositories back in `build.clj`.
+- babashka lacks some JDK classes (e.g. `ReentrantReadWriteLock`,
+  `StampedLock`, `java.security.InvalidKeyException`): check with
+  `bb -e` before relying on one.
+- No Docker on the user's laptop: Linux-only behavior is verified in CI.
+- Fresh machines: `build.clj` adds Maven Central and Clojars back to its
+  `:root nil` basis, else `clojure -T:build install` fails.
 
 ## Trust model and key-store rules
 
@@ -252,9 +282,9 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 ## Testing, lint, format
 
 ```bash
-bb test:jvm          # full suite, JCA backend (clojure -M:test): 199 tests / 1078 assertions
-bb test:jvm-sodium   # full suite, libsodium backend + JCA-vs-libsodium parity (57 checks)
-bb test:bb-sodium    # full suite on babashka, libsodium backend: 189 / 1063 (all but secp256k1)
+bb test:jvm          # full suite, JCA backend (clojure -M:test): 240 tests / 1096 assertions
+bb test:jvm-sodium   # full suite, libsodium backend (240 / 1304) + JCA-vs-libsodium parity
+bb test:bb-sodium    # full suite on babashka, libsodium backend: 230 / 1275 (all but secp256k1)
 bb smoke             # bb smoke suite (JCA): 9 tests
 bb test:no-sodium    # lint + fmt + JCA suite + bb smoke (no native libsodium needed)
 bb test:all          # test:no-sodium + test:jvm-sodium + test:bb-sodium
