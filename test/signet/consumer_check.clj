@@ -12,7 +12,7 @@
             [babashka.process :as p]
             [clojure.string :as str]))
 
-(def nacljc "com.github.franks42/nacljc {:mvn/version \"0.5.0\"}")
+(def nacljc "com.github.franks42/nacljc {:mvn/version \"0.6.0\"}")
 
 (defn- build-version []
   (or (second (re-find #"\(def version \"([^\"]+)\"\)" (slurp "build.clj")))

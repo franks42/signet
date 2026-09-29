@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.10.0 (unreleased)
+## 0.10.0 (2026-09-28)
 
 ### Added
 
@@ -63,7 +63,7 @@
 
 ### Changed
 
-- nacljc 0.5.0 for the `:sodium` backend (Argon2id, key wrapping).
+- nacljc 0.6.0 for the `:sodium` backend (Argon2id, key wrapping; `nacljc.tty` for terminal password input).
 
 ### Fixed
 
