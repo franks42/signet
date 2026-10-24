@@ -9,9 +9,9 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 
 ## Key Decisions Made
 - **Name**: signet (like a signet ring — personal key for signing/sealing)
-- **Crypto backends** (`signet.impl` facade, selected once at load: `-Dsignet.backend` / `SIGNET_BACKEND`, default `jca`):
-  - `:jca` — `signet.impl.jvm`, Java JCA. No native dependency. Its seed→public-key path (a `proxy [SecureRandom]` trick) does not work on babashka.
-  - `:sodium` — `signet.impl.sodium`, libsodium via `nacljc.core` (the backend keeps the name `:sodium`: it names libsodium, the native engine, not the wrapper) (github.com/franks42/nacljc, `com.github.franks42/nacljc 0.6.0` from Clojars via the `:sodium` alias; the version in bb.edn's test:bb-sodium and test/signet/consumer_check.clj (test:jar) must match; babashka.ffi). To test an unreleased nacljc, swap in `{:local/root "../nacljc"}`. Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
+- **Crypto backends** (`signet.impl` facade, selected once at load: `-Dsignet.backend` / `SIGNET_BACKEND` (empty = unset), **default `sodium` since 0.11.0**, Frank's decision 2026-10-24: one implementation everywhere; no silent fallback, JCA only on explicit request; JDK 25+ on the JVM accepted; secp256k1 stays on BouncyCastle):
+  - `:sodium` (default) — `signet.impl.sodium`, libsodium via `nacljc.core` (the backend keeps the name `:sodium`: it names libsodium, the native engine, not the wrapper) (github.com/franks42/nacljc, `com.github.franks42/nacljc 0.6.0`, a regular dependency in deps.edn and bb.edn; the version in test/signet/consumer_check.clj (test:jar) must match; babashka.ffi). Without libsodium, loading fails with an error naming the JCA opt-in (`bb test:fail-closed`).
+  - `:jca` — `signet.impl.jvm`, Java JCA, only when asked for (`:jca` alias, `SIGNET_BACKEND=jca`). No native dependency. Its seed→public-key path (a `proxy [SecureRandom]` trick) does not work on babashka. To test an unreleased nacljc, swap in `{:local/root "../nacljc"}`. Needs libsodium >= 1.0.19, JDK 25+ with `--enable-native-access=ALL-UNNAMED`, bb >= 1.13.220. Runs the full suite on bb too. Byte-identical output to `:jca` (`test/signet/backend_parity.clj`).
   - ClojureScript: not implemented (every `:cljs` branch throws). The browser plan is libsodium.js (see `../nacljc/docs/feasibility.md`).
 - **Dependencies**: canonical-edn (cedn) 1.6.1 for deterministic serialization, uuidv7 0.7.3 for request IDs (see README "Compatibility"). Bouncy Castle for secp256k1 only (JVM). nacljc 0.6.0 from Clojars for the `:sodium` backend (alias `:sodium`).
 - **Key fields**: JWK-inspired — `:x` (public), `:d` (private), `:crv` (:Ed25519/:X25519), `:type` (dispatch tag)
@@ -170,9 +170,8 @@ function, Devin review fixes (`docs/review-devin-20260926.md`,
   approved it). **Should be addressed:** secret results (DH outputs,
   derived keys) are returned to the caller as material, not kept in the
   provider as entries (docs/12 phase 0 "As built"). Next decided step: **make
-  libsodium the default backend** (Frank's decision 2026-10-24: fail
-  closed when libsodium is missing, JCA only on explicit request; JDK 25+
-  on the JVM; secp256k1 stays on BouncyCastle). The agent work (docs/12:
+  libsodium the default backend**: done 2026-10-24 (see Crypto backends).
+  The agent work (docs/12:
   ssh-agent client provider, the signet agent with an nREPL-message-model
   EDN protocol, no eval) is **on the back burner** by the user's decision
   (2026-09-27); ask before starting any of it.
@@ -287,12 +286,13 @@ test/signet/consumer_check.clj.
 ## Testing, lint, format
 
 ```bash
-bb test:jvm          # full suite, JCA backend (clojure -M:test): 247 tests / 1106 assertions
+bb test:jvm          # full suite, JCA backend (clojure -M:test:jca): 247 tests / 1106 assertions
 bb test:jvm-sodium   # full suite, libsodium backend (247 / 1320) + JCA-vs-libsodium parity
-bb test:bb-sodium    # full suite on babashka, libsodium backend: 237 / 1291 (all but secp256k1)
-bb smoke             # bb smoke suite (JCA): 9 tests
+bb test:bb-sodium    # full suite on babashka, default backend (libsodium): 237 / 1291 (all but secp256k1)
+bb test:fail-closed  # without libsodium the default refuses to load and names the JCA opt-in
+bb smoke             # bb smoke suite (JCA, asked for): 9 tests
 bb test:no-sodium    # lint + fmt + JCA suite + bb smoke (no native libsodium needed)
-bb test:all          # test:no-sodium + test:jvm-sodium + test:bb-sodium
+bb test:all          # test:no-sodium + test:jvm-sodium + test:bb-sodium + test:fail-closed
 bb test:jar          # install signet's jar, run its tests from a scratch consumer: jca, sodium + parity, bb
 bb test:clojars V    # the same against release V from Clojars (empty local repo)
 bb release-check     # X.Y.Z only, CHANGELOG section required

@@ -9,15 +9,18 @@
    Crypto backend facade. signet's namespaces call these 22 functions; they
    forward to the backend selected once, when this namespace loads:
 
-     :jca     signet.impl.jvm    — Java JCA (default; no native dependency)
-     :sodium  signet.impl.sodium — libsodium via babashka.ffi (JVM and bb)
+     :sodium  signet.impl.sodium — libsodium via nacljc and babashka.ffi
+                                   (JVM and bb; the default since 0.11.0)
+     :jca     signet.impl.jvm    — Java JCA (no native dependency; only
+                                   when asked for)
 
    Selection, in order: the JVM system property signet.backend, then the
-   environment variable SIGNET_BACKEND, then :jca. Reading them is the one
-   impure step, and it happens once, at load; after that the backend is
-   fixed for the life of the process. Selecting :sodium when libsodium or
-   nacljc is unavailable fails loudly at load instead of falling back
-   to JCA.
+   environment variable SIGNET_BACKEND (empty counts as unset), then
+   :sodium. Reading them is the
+   one impure step, and it happens once, at load; after that the backend is
+   fixed for the life of the process. When libsodium or nacljc is
+   unavailable, loading fails with an error that names the cause and the
+   explicit JCA opt-in: signet never falls back to JCA on its own.
 
    Both backends produce byte-identical output
    (test/signet/backend_parity.clj), so switching changes no signature, key
@@ -25,9 +28,10 @@
 
 (def backend
   "The selected backend: :jca or :sodium."
-  (keyword (or (System/getProperty "signet.backend")
-               (System/getenv "SIGNET_BACKEND")
-               "jca")))
+  ;; an empty value counts as unset
+  (keyword (or (not-empty (System/getProperty "signet.backend"))
+               (not-empty (System/getenv "SIGNET_BACKEND"))
+               "sodium")))
 
 (def ^:private backend-ns
   (case backend
@@ -42,7 +46,9 @@
     (let [root (loop [e t] (if-let [c (ex-cause e)] (recur c) e))]
       (throw (ex-info (str "signet backend " backend " failed to load"
                            (when (= :sodium backend)
-                             " — needs libsodium >= 1.0.19 and nacljc on the classpath (alias :sodium)")
+                             (str " — needs libsodium >= 1.0.19 (or NACLJC_LIBSODIUM naming it), nacljc on the"
+                                  " classpath and, on the JVM, JDK 25+. To use Java's JCA instead, ask for it"
+                                  " explicitly: -Dsignet.backend=jca or SIGNET_BACKEND=jca"))
                            ". Cause: " (ex-message root))
                       {:backend backend :ns backend-ns
                        :cause-class (str (class root)) :cause (ex-message root)}

@@ -5,7 +5,11 @@
         ;; BouncyCastle for secp256k1 ECDSA. Required only on the JVM
         ;; side — bb's SCI class allowlist excludes BC, so signet's
         ;; secp256k1 paths (signet.impl.jvm-secp256k1) are JVM-only.
-        org.bouncycastle/bcprov-jdk18on {:mvn/version "1.86"}}
+        org.bouncycastle/bcprov-jdk18on {:mvn/version "1.86"}
+        ;; libsodium binding for the default backend (signet.impl.sodium).
+        ;; Needs libsodium >= 1.0.19 installed and JDK 25+; the JCA backend
+        ;; (-Dsignet.backend=jca) loads none of it.
+        com.github.franks42/nacljc {:mvn/version "0.6.0"}}
  :aliases
  {:test {:extra-paths ["test"]
          :extra-deps {io.github.cognitect-labs/test-runner
@@ -13,12 +17,13 @@
          :main-opts ["-m" "cognitect.test-runner"]
          :exec-fn cognitect.test-runner.api/test}
 
-  ;; libsodium backend (signet.impl.sodium), through nacljc from Clojars.
-  ;; Needs libsodium >= 1.0.19 installed and JDK 25+. Use with :test, e.g.
-  ;; clojure -M:test:sodium
-  :sodium {:extra-deps {com.github.franks42/nacljc {:mvn/version "0.6.0"}}
-           :jvm-opts   ["--enable-native-access=ALL-UNNAMED"
-                        "-Dsignet.backend=sodium"]}
+  ;; libsodium backend (the default): native access for babashka.ffi, and
+  ;; the backend named explicitly. Use with :test: clojure -M:test:sodium
+  :sodium {:jvm-opts ["--enable-native-access=ALL-UNNAMED"
+                      "-Dsignet.backend=sodium"]}
+
+  ;; JCA backend, only on explicit request: clojure -M:test:jca
+  :jca {:jvm-opts ["-Dsignet.backend=jca"]}
 
   :build {:deps {io.github.clojure/tools.build {:mvn/version "0.10.6"}
                  slipset/deps-deploy {:mvn/version "0.2.2"}}

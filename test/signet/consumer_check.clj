@@ -7,7 +7,9 @@
      bb test:clojars 0.7.0  ; a release, fetched from Clojars into an empty
                             ; local Maven repository
 
-   Asserts that signet really loaded from a jar."
+   Asserts that signet really loaded from a jar. Each run names its
+   backend explicitly (aliases :jca and :sodium), so the check also works
+   for releases from before 0.11.0, whose default was JCA."
   (:require [babashka.fs :as fs]
             [babashka.process :as p]
             [clojure.string :as str]))
@@ -36,7 +38,8 @@
     (spit (str (fs/path dir "deps.edn"))
           (str "{:paths [\"" tests "\"] :deps {" coord "}" local
                " :aliases {:sodium {:extra-deps {" nacljc "}"
-               " :jvm-opts [\"--enable-native-access=ALL-UNNAMED\" \"-Dsignet.backend=sodium\"]}}}"))
+               " :jvm-opts [\"--enable-native-access=ALL-UNNAMED\" \"-Dsignet.backend=sodium\"]}"
+               " :jca {:jvm-opts [\"-Dsignet.backend=jca\"]}}}"))
     (try
       (let [where (sh {:dir dir} "clojure" "-M" "-e"
                       "(println :signet-from (str (clojure.java.io/resource \"signet/key.cljc\")))")]
@@ -45,7 +48,7 @@
         (when (and repo (not (str/includes? where repo)))
           (throw (ex-info "signet did not come from the fresh local repository" {:out where})))
         (println "signet" version "loads from the jar"))
-      (sh {:dir dir} "clojure" "-M" "-m" "signet.suite" "jca")
+      (sh {:dir dir} "clojure" "-M:jca" "-m" "signet.suite" "jca")
       (sh {:dir dir} "clojure" "-M:sodium" "-m" "signet.suite" "sodium")
       (sh {:dir dir} "clojure" "-M:sodium" "-m" "signet.backend-parity" "sodium")
       (sh {:dir dir :extra-env {"SIGNET_BACKEND" "sodium"}}

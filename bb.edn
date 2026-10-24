@@ -1,5 +1,7 @@
 {:deps  {com.github.franks42/cedn    {:mvn/version "1.6.1"}
-         com.github.franks42/uuidv7  {:mvn/version "0.7.3"}}
+         com.github.franks42/uuidv7  {:mvn/version "0.7.3"}
+         ;; the default backend's libsodium binding (must match deps.edn)
+         com.github.franks42/nacljc  {:mvn/version "0.6.0"}}
 
  :paths ["src" "test"]
 
@@ -7,18 +9,19 @@
  {:requires ([clojure.test :as t])
 
   smoke
-  {:doc  "Run the babashka compatibility smoke test suite.
-          Catches regressions in code paths that work on JVM but
-          fail on bb (typically proxy [SecureRandom] via the
-          seed->public-key derivation path)."
-   :requires ([signet.bb-smoke-test])
-   :task (let [r (t/run-tests 'signet.bb-smoke-test)]
-           (when (pos? (+ (:fail r 0) (:error r 0)))
-             (System/exit 1)))}
+  {:doc  "Run the babashka compatibility smoke test suite on the JCA backend
+          (asked for explicitly). Catches regressions in code paths that
+          work on JVM but fail on bb (typically proxy [SecureRandom] via
+          the seed->public-key derivation path)."
+   ;; a subprocess: the backend is read once, when signet.impl loads
+   :task (shell {:extra-env {"SIGNET_BACKEND" "jca"}}
+                "bb" "-e" (str "(require 'clojure.test 'signet.bb-smoke-test)"
+                               "(let [r (clojure.test/run-tests 'signet.bb-smoke-test)]"
+                               "  (System/exit (if (pos? (+ (:fail r 0) (:error r 0))) 1 0)))"))}
 
   test:jvm
-  {:doc  "Full test suite on the JVM, JCA backend (default)"
-   :task (shell "clojure" "-M:test")}
+  {:doc  "Full test suite on the JVM, JCA backend (asked for explicitly; no native libsodium needed)"
+   :task (shell "clojure" "-M:test:jca")}
 
   test:jvm-sodium
   {:doc  "Full test suite on the JVM, libsodium backend (needs libsodium >= 1.0.19 and JDK 25+; nacljc comes from Clojars)"
@@ -28,14 +31,24 @@
 
   test:bb-sodium
   {:doc  "Full test suite on babashka, libsodium backend (all but secp256k1)"
-   ;; A subprocess keeps this bb.edn's :paths and :deps; -cp would replace
-   ;; them. nacljc comes from Clojars via add-deps (the version must match
-   ;; deps.edn's :sodium alias). Its pom's org.babashka/ffi dependency is
-   ;; ignored by bb, which always uses its built-in babashka.ffi. No parity
-   ;; run here: its JCA oracle cannot derive keys from seeds on bb.
-   :task (shell {:extra-env {"SIGNET_BACKEND" "sodium"}}
-                "bb" "-e" (str "(babashka.deps/add-deps '{:deps {com.github.franks42/nacljc {:mvn/version \"0.6.0\"}}})"
-                               "(require 'signet.suite) (signet.suite/-main \"sodium\")"))}
+   ;; A subprocess with no backend set: this checks the default. nacljc
+   ;; comes from this bb.edn's :deps. Its pom's org.babashka/ffi dependency
+   ;; is ignored by bb, which always uses its built-in babashka.ffi. No
+   ;; parity run here: its JCA oracle cannot derive keys from seeds on bb.
+   :task (shell {:extra-env {"SIGNET_BACKEND" ""}}
+                "bb" "-e" "(require 'signet.suite) (signet.suite/-main \"sodium\")")}
+
+  test:fail-closed
+  {:doc  "Without libsodium the default backend fails at load, naming the JCA opt-in; it never falls back"
+   :task (let [r (shell {:continue true :out :string :err :string
+                         :extra-env {"SIGNET_BACKEND" "" "NACLJC_LIBSODIUM" "/nonexistent/libsodium.dylib"}}
+                        "bb" "-e" "(require 'signet.impl) (println :loaded signet.impl/backend)")
+               out (str (:out r) (:err r))]
+           (if (and (pos? (:exit r))
+                    (not (clojure.string/includes? out ":loaded"))
+                    (clojure.string/includes? out "signet.backend=jca"))
+             (println "test:fail-closed: refused to load without libsodium, and named the JCA opt-in")
+             (do (println "test:fail-closed FAILED:\n" out) (System/exit 1))))}
 
   test:no-sodium
   {:doc  "Everything that needs no native libsodium: lint, fmt, JCA suite, bb smoke"
@@ -43,7 +56,7 @@
 
   test:all
   {:doc  "Everything: test:no-sodium plus the libsodium backend on the JVM (with parity) and on bb. Needs libsodium >= 1.0.19"
-   :task (do (run 'test:no-sodium) (run 'test:jvm-sodium) (run 'test:bb-sodium))}
+   :task (do (run 'test:no-sodium) (run 'test:jvm-sodium) (run 'test:bb-sodium) (run 'test:fail-closed))}
 
   test:jar
   {:doc  "Install signet's jar locally, then run signet's own tests against the jar from a scratch consumer (tests only, no src): JVM jca, JVM sodium + parity, bb sodium. Refuses a version already on Clojars."

@@ -78,11 +78,11 @@ not a credential: the vault decides what it can do.
 - **Vaults route operations:** a handle's `:vault` names the vault
   (`register-vault!`); an unknown id throws `::unknown-vault`, never a
   fallback.
-- **Providers:** on the libsodium backend the default provider is
-  `:sodium`: keys live in libsodium's guarded memory (nacljc secrets: guard
+- **Providers:** on the libsodium backend (the default) the default
+  provider is `:sodium`: keys live in libsodium's guarded memory (nacljc secrets: guard
   pages, locked against swap, no-access outside a call), and derived
   secrets (DH outputs, message keys, shared keys) stay there too. On the
-  JCA backend it is `:memory`: secrets on the heap, inside the vault only,
+  JCA backend (only when asked for) it is `:memory`: secrets on the heap, inside the vault only,
   each lent copy wiped after use.
 - **The default identity is the vault's:** `vault/ensure-default-signing-key!`,
   `set-default-signing-key!`. `sign/sign-edn!` and key-less `chain/extend`
@@ -219,17 +219,23 @@ cacophony and snow test vectors).
 
 `signet.impl` selects the backend once, when it loads: the JVM system
 property `signet.backend`, then the environment variable `SIGNET_BACKEND`,
-then the default `jca`. Both backends produce byte-identical signatures,
-keys and ciphertexts.
+then the default **`sodium`** (since 0.11.0; before, it was `jca`). Both
+backends produce byte-identical signatures, keys and ciphertexts.
 
 | Backend | Namespace | Needs | Notes |
 |---|---|---|---|
-| `jca` (default) | `signet.impl.jvm` | a JDK | No native dependency. Deriving a public key from a seed does not work on babashka. |
-| `sodium` | `signet.impl.sodium` | libsodium >= 1.0.19 (`brew install libsodium`), [nacljc](https://github.com/franks42/nacljc) 0.6.0 from Clojars (added by the `:sodium` alias), JDK 25+ with `--enable-native-access=ALL-UNNAMED`, or bb >= 1.13.220 | The full test suite also passes on babashka. |
+| `sodium` (default) | `signet.impl.sodium` | libsodium >= 1.0.19 (`brew install libsodium`), [nacljc](https://github.com/franks42/nacljc) 0.6.0 (a dependency of signet), JDK 25+ (add `--enable-native-access=ALL-UNNAMED` to silence the JDK's warning), or bb >= 1.13.220 | One implementation on every platform (the browser plan is libsodium.js). Secrets in guarded memory. Password keys and vault files need it. |
+| `jca` | `signet.impl.jvm` | a JDK | Only when asked for: `-Dsignet.backend=jca` or `SIGNET_BACKEND=jca`. No native dependency. Deriving a public key from a seed does not work on babashka. |
+
+**No silent fallback.** Without libsodium (or on a JDK older than 25) the
+default fails when signet loads, with an error that names the cause and the
+JCA opt-in. secp256k1 runs on BouncyCastle on either backend (libsodium has
+no secp256k1).
 
 ```bash
-clojure -M:test:sodium      # the :sodium alias adds nacljc and selects the backend
-SIGNET_BACKEND=sodium bb …  # on babashka, with com.github.franks42/nacljc 0.6.0 added (see bb test:bb-sodium)
+clojure -M:test:sodium      # native access flag, backend named explicitly
+clojure -M:test:jca         # the JCA backend
+SIGNET_BACKEND=jca bb …     # JCA on babashka
 ```
 
 
@@ -294,8 +300,8 @@ CHANGELOG for 1.4.0 and 1.5.0.
 ```bash
 bb test:jvm   bb test:jvm-sodium   bb test:bb-sodium   bb smoke
 bb lint       bb fmt
-bb test:no-sodium    # lint + fmt + JCA suite + bb smoke (no native libsodium needed)
-bb test:all          # test:no-sodium + test:jvm-sodium + test:bb-sodium
+bb test:no-sodium    # lint + fmt + JCA suite + bb smoke (JCA asked for; no native libsodium needed)
+bb test:all          # test:no-sodium + test:jvm-sodium + test:bb-sodium + test:fail-closed
 bb test:jar          # install signet's jar, run its tests from a scratch consumer: jca, sodium + parity, bb
 ```
 

@@ -2,7 +2,17 @@
 
 ## 0.11.0 (unreleased)
 
-### Changed (breaking for custom providers)
+### Changed (breaking)
+
+- **libsodium is the default backend** (was JCA). One crypto
+  implementation on every platform, secrets in guarded memory by default.
+  nacljc 0.6.0 is now a regular dependency. Needs libsodium >= 1.0.19 and,
+  on the JVM, JDK 25+. **No silent fallback:** without libsodium, loading
+  `signet.impl` fails with an error that names the cause and the opt-in;
+  JCA only on explicit request (`-Dsignet.backend=jca`,
+  `SIGNET_BACKEND=jca`; the `:jca` alias in deps.edn). An empty
+  `SIGNET_BACKEND` now counts as unset. secp256k1 stays on BouncyCastle.
+  `bb test:fail-closed` checks the refusal; CI runs it on macOS and Linux.
 
 - **Providers offer operations instead of lending material** (docs/12
   phase 0). `signet.vault/Provider` gains `-sign`, `-x25519-dh`, `-hkdf`,

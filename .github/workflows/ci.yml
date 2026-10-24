@@ -4,7 +4,7 @@ name: ci
 # check, locally and here.
 #
 #   jca           Ubuntu, JDK 21 + 25: lint, fmt, JCA suite, bb smoke
-#                 (no native libsodium needed)
+#                 (JCA asked for explicitly; no native libsodium needed)
 #   sodium-macos  macOS, JDK 25: libsodium from Homebrew; libsodium backend on
 #                 the JVM (+ JCA parity) and on bb; the consumer-from-jar check
 #   sodium-linux  Ubuntu, JDK 25: libsodium 1.0.22 built from a checksum-pinned
@@ -12,7 +12,9 @@ name: ci
 #                 dynamically linked bb (the static build cannot load native
 #                 libraries); same libsodium-backend checks
 #
-# The libsodium backend uses nacljc from Clojars (deps.edn :sodium alias).
+# The libsodium backend is the default since 0.11.0; nacljc (from Clojars)
+# is a regular dependency. test:fail-closed checks that without libsodium
+# the default refuses to load instead of falling back to JCA.
 
 on:
   push:
@@ -100,6 +102,9 @@ jobs:
       - name: libsodium backend on babashka
         run: bb test:bb-sodium
 
+      - name: Without libsodium the default fails closed
+        run: bb test:fail-closed
+
       - name: Consumer check against the installed signet jar
         run: bb test:jar
 
@@ -155,3 +160,6 @@ jobs:
 
       - name: libsodium backend on babashka
         run: bb test:bb-sodium
+
+      - name: Without libsodium the default fails closed
+        run: bb test:fail-closed
