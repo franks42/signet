@@ -72,6 +72,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 
 ### signet.vault — secrets by reference (0.8.0; docs/07)
 - Handles (`KeyHandle`: kid + vault id); providers `:memory` and `:sodium` (`signet.vault.sodium`, nacljc guarded memory)
+- Providers offer operations (docs/12 phase 0, 0.11.0-SNAPSHOT): `-sign`, `-x25519-dh`, `-hkdf`, `-aead-encrypt`/`-aead-decrypt`, `-argon2id`, `-wrap`; secret results come back as material the caller adopts or destroys. Lending (`-with-material`) is the separate `Lending` protocol; `lending-provider` builds the operations from it (`:memory`, `:sodium`). signet's crypto code calls operations only (`test/signet/operations_test.clj`: a provider without `Lending` runs every feature); `vault/with-material` is `^:no-doc`, for white-box tests
 - `generate-signing-key!`, `generate-encryption-key!`, `import-*-key!`, `export-secret` (ack), `destroy!`, `public-key`, `lookup`, `handle(s)`, defaults, `import-password!`
 - Session entries (Noise secrets), internal entries (a vault file's master key), the gate (read/write lock), `note-use!` (auto-lock hook); `^:no-doc` internals for signet.password / signet.vault.file
 
@@ -165,9 +166,13 @@ function, Devin review fixes (`docs/review-devin-20260926.md`,
 
 ### Possible next steps (none chosen yet; ask the user)
 
-- **docs/12 phase 0: operation-level providers** (refactor, no behavior
-  change): providers offer operations instead of lending material. Useful
-  on its own as the seam for hardware tiers. But the agent work (docs/12:
+- **docs/12 phase 0: operation-level providers: done 2026-10-24** (Frank
+  approved it). **Should be addressed:** secret results (DH outputs,
+  derived keys) are returned to the caller as material, not kept in the
+  provider as entries (docs/12 phase 0 "As built"). Next decided step: **make
+  libsodium the default backend** (Frank's decision 2026-10-24: fail
+  closed when libsodium is missing, JCA only on explicit request; JDK 25+
+  on the JVM; secp256k1 stays on BouncyCastle). The agent work (docs/12:
   ssh-agent client provider, the signet agent with an nREPL-message-model
   EDN protocol, no eval) is **on the back burner** by the user's decision
   (2026-09-27); ask before starting any of it.
@@ -282,9 +287,9 @@ test/signet/consumer_check.clj.
 ## Testing, lint, format
 
 ```bash
-bb test:jvm          # full suite, JCA backend (clojure -M:test): 240 tests / 1096 assertions
-bb test:jvm-sodium   # full suite, libsodium backend (240 / 1304) + JCA-vs-libsodium parity
-bb test:bb-sodium    # full suite on babashka, libsodium backend: 230 / 1275 (all but secp256k1)
+bb test:jvm          # full suite, JCA backend (clojure -M:test): 247 tests / 1106 assertions
+bb test:jvm-sodium   # full suite, libsodium backend (247 / 1320) + JCA-vs-libsodium parity
+bb test:bb-sodium    # full suite on babashka, libsodium backend: 237 / 1291 (all but secp256k1)
 bb smoke             # bb smoke suite (JCA): 9 tests
 bb test:no-sodium    # lint + fmt + JCA suite + bb smoke (no native libsodium needed)
 bb test:all          # test:no-sodium + test:jvm-sodium + test:bb-sodium

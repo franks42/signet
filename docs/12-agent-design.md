@@ -71,6 +71,30 @@ As above. Also the moment to decide which derived values are secret
 (new entries) and which are public (returned): HKDF outputs used as keys
 are secret; a kid derived by HMAC is public.
 
+**As built (2026-10-24, 0.11.0-SNAPSHOT).** `Provider` has seven
+operations: `-sign`, `-x25519-dh`, `-hkdf` (the entry as ikm or as salt),
+`-aead-encrypt`, `-aead-decrypt`, `-argon2id`, `-wrap` (the entry wrapped
+under a key in hand). `-hmac` and `-unwrap` were not needed: no HMAC or
+unwrap runs on an entry's material (HMACs run on derived keys, unwraps
+produce material that is then adopted). `-with-material` lives on in a
+separate `Lending` protocol; `lending-provider` builds the operations
+from it, and `:memory` and `:sodium` are built that way.
+
+**Should be addressed (open gap, flagged by Frank 2026-10-24).** One step
+short of the table above: **secret results are returned as material the
+caller owns** (bytes, or a nacljc secret), not as new entry
+ids. That keeps the change behavior-neutral: the callers (box, shared,
+session, password, vault file) consume and destroy that material as
+before. It is enough for providers that cannot lend but can hand a
+result back (a smartcard's X25519 returns the shared secret to the host
+too). An agent that must keep DH outputs inside needs the entry-id form;
+that is a later step, and the call sites are now the operations, so it
+is a change in one place each.
+
+`test/signet/operations_test.clj` is the check that no path lends: a
+provider with the operations and without `Lending` runs signing, box,
+shared keys, Noise sessions, password keys and vault files.
+
 ### Phase 1: an ssh-agent client provider (sign-only), the quick win
 
 The standard ssh-agent protocol (draft-miller-ssh-agent) signs arbitrary

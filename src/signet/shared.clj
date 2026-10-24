@@ -116,9 +116,7 @@
    nonce, derived from root inside the call.
    Impure: reads the vault."
   [h ^bytes nonce ^bytes sender-x ^bytes recipient-x]
-  (vault/with-material
-    h #(impl/hkdf-sha-256 % nonce
-                          (concat-bytes (utf8 "signet/shared/v1/seal") sender-x recipient-x) 32)))
+  (vault/hkdf-material h nonce (concat-bytes (utf8 "signet/shared/v1/seal") sender-x recipient-x) 32))
 
 (defn- commitment
   "The key commitment for message key k (HMAC-SHA-256). Pure for bytes;
@@ -129,9 +127,7 @@
   "The directional MAC key sender-x -> recipient-x, derived from root h.
    Impure: reads the vault."
   [h ^bytes sender-x ^bytes recipient-x]
-  (vault/with-material
-    h #(impl/hkdf-sha-256 % (byte-array 0)
-                          (concat-bytes (utf8 "signet/shared/v1/mac") sender-x recipient-x) 32)))
+  (vault/hkdf-material h (byte-array 0) (concat-bytes (utf8 "signet/shared/v1/mac") sender-x recipient-x) 32))
 
 ;; ============================================================
 ;; seal / open

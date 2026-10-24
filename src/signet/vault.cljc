@@ -26,10 +26,14 @@
      (import-password! pw {:uses n})    → a password handle (one use by default)
      (default-signing-key) (set-default-signing-key! h) (ensure-default-signing-key!)
 
-   Providers hold the secret material and lend it to one operation at a
-   time (see with-material); signet's crypto code never keeps it. :memory
-   keeps it on the Clojure heap, inside the vault only, and wipes each lent
-   copy after use."
+   Providers hold the secret material and run the operations on it (sign,
+   DH, HKDF, AEAD, Argon2id, wrap: the Provider protocol, docs/12 phase 0);
+   signet's crypto code never holds a key's material. Software providers
+   (:memory, :sodium) are built with lending-provider, which runs each
+   operation on material lent for that call only; a provider that cannot
+   lend (hardware, an agent) implements the operations itself. :memory
+   keeps material on the Clojure heap, inside the vault only, and wipes each
+   lent copy after use."
   (:require [signet.encoding :as enc]
             [signet.key :as key]
             #?(:clj [signet.impl :as impl])))
@@ -55,8 +59,13 @@
 ;; ============================================================
 
 (defprotocol Provider
-  "Holds secret key material. Implementations never return it, except
-   through -export."
+  "Holds secret key material and runs operations on it. An entry's material
+   never leaves, except through -export. Secret results (a DH output, a
+   derived key) are returned as material the caller owns (bytes, or a
+   nacljc secret under :sodium): the caller adopts it into a vault or
+   releases it with impl/destroy-material!. Public results (signatures,
+   ciphertexts, plaintexts) are byte arrays. A provider that cannot run an
+   operation throws."
   (-generate! [p alg] "Create a new key of alg (:ed25519 or :x25519) inside the provider. Returns its public key record.")
   (-import! [p alg secret-bytes] "Take a copy of secret-bytes as a key of alg. Returns its public key record.")
   (-generate-secret! [p kid alg n] "Create n random secret bytes inside the provider under kid, as alg (for symmetric keys).")
@@ -64,9 +73,79 @@
   (-has? [p kid] "Does this provider hold kid?")
   (-kids [p] "The kids this provider holds.")
   (-alg [p kid] "The algorithm of kid (:ed25519 or :x25519).")
-  (-with-material [p kid f] "Call (f material) and return its result. material is valid only during f.")
   (-export [p kid] "A copy of kid's secret bytes.")
-  (-destroy! [p kid] "Wipe and forget kid's material. Returns true if it held kid."))
+  (-destroy! [p kid] "Wipe and forget kid's material. Returns true if it held kid.")
+  (-sign [p kid message] "Ed25519 signature (public) of message bytes with kid's seed.")
+  (-x25519-dh [p kid their-pub] "X25519 shared secret of kid's key (X25519, or Ed25519 converted) and their X25519 public key bytes. Secret: the caller owns it.")
+  (-hkdf [p kid as other info n] "HKDF-SHA-256, n bytes, with kid's material as the ikm (as :ikm; other is the salt, public bytes) or as the salt (as :salt; other is the ikm, material in hand). Secret: the caller owns it.")
+  (-aead-encrypt [p kid nonce plaintext aad] "ChaCha20-Poly1305 of plaintext under kid's key: the ciphertext.")
+  (-aead-decrypt [p kid nonce ciphertext aad] "Inverse of -aead-encrypt: the plaintext. Throws what the backend throws on authentication failure.")
+  (-argon2id [p kid salt n limits] "Argon2id of kid's material (a password) with salt and limits, n bytes. Secret: the caller owns it.")
+  (-wrap [p kid wrapping-key nonce aad] "kid's material encrypted (impl/wrap-material) under wrapping-key, material in hand: public bytes."))
+
+(defprotocol Lending
+  "INTERNAL: how a software provider holds material, for lending-provider,
+   which builds every Provider operation from it. signet's crypto code
+   calls the operations only; with-material (white-box tests) is the one
+   caller."
+  (-with-material [p kid f] "Call (f material) and return its result. material is valid only during f."))
+
+#?(:cljs
+   (defn- throw-cljs
+     "Never returns. Throws: not yet implemented for ClojureScript."
+     []
+     (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
+
+(defn lending-provider
+  "A Provider (and Lending) over storage functions, given as a map of
+     :generate! :import! :generate-secret! :adopt! :has? :kids :alg :export
+     :destroy!   the Provider methods of the same name, without p
+     :with-material (fn [kid f]): call (f material), material valid only
+                 during f
+   Each operation runs signet's backend on material lent for that call
+   only, so a software provider implements storage and gets the operations.
+   Pure: returns a provider over the given functions' state."
+  [{:keys [generate! import! generate-secret! adopt! has? kids alg export destroy! with-material]}]
+  (reify
+    Provider
+    (-generate! [_ a] (generate! a))
+    (-import! [_ a secret-bytes] (import! a secret-bytes))
+    (-generate-secret! [_ kid a n] (generate-secret! kid a n))
+    (-adopt! [_ kid a material] (adopt! kid a material))
+    (-has? [_ kid] (has? kid))
+    (-kids [_] (kids))
+    (-alg [_ kid] (alg kid))
+    (-export [_ kid] (export kid))
+    (-destroy! [_ kid] (destroy! kid))
+    (-sign [_ kid message]
+      #?(:clj (with-material kid #(impl/ed25519-sign % message)) :cljs (throw-cljs)))
+    (-x25519-dh [_ kid their-pub]
+      #?(:clj  (let [a (alg kid)]
+                 (with-material
+                   kid (fn [m]
+                         (case a
+                           :x25519  (impl/x25519-dh m their-pub)
+                           :ed25519 (let [xsk (impl/ed25519-seed->x25519-private m)]
+                                      (try (impl/x25519-dh xsk their-pub)
+                                           (finally (impl/destroy-material! xsk))))
+                           (throw (ex-info "x25519-dh needs an X25519 or Ed25519 key"
+                                           {:type ::wrong-algorithm :kid kid :algorithm a}))))))
+         :cljs (throw-cljs)))
+    (-hkdf [_ kid as other info n]
+      #?(:clj  (with-material kid #(case as
+                                     :ikm  (impl/hkdf-sha-256 % other info n)
+                                     :salt (impl/hkdf-sha-256 other % info n)))
+         :cljs (throw-cljs)))
+    (-aead-encrypt [_ kid nonce plaintext aad]
+      #?(:clj (with-material kid #(impl/chacha20-poly1305-encrypt % nonce plaintext aad)) :cljs (throw-cljs)))
+    (-aead-decrypt [_ kid nonce ciphertext aad]
+      #?(:clj (with-material kid #(impl/chacha20-poly1305-decrypt % nonce ciphertext aad)) :cljs (throw-cljs)))
+    (-argon2id [_ kid salt n limits]
+      #?(:clj (with-material kid #(impl/argon2id % salt n limits)) :cljs (throw-cljs)))
+    (-wrap [_ kid wrapping-key nonce aad]
+      #?(:clj (with-material kid #(impl/wrap-material wrapping-key nonce % aad)) :cljs (throw-cljs)))
+    Lending
+    (-with-material [_ kid f] (with-material kid f))))
 
 #?(:clj
    (defn- wipe!
@@ -125,8 +204,9 @@
                   (let [pub (public-key-record alg material)]
                     (swap! secrets assoc (key/kid pub) {:alg alg :material (copy-bytes material)})
                     pub))]
-    (reify Provider
-      (-generate! [_ alg]
+    (lending-provider
+     {:generate!
+      (fn [alg]
         ;; The backend's keypair generators, not seed -> public-key: the JCA
         ;; backend cannot derive a public key from a seed on babashka.
         #?(:clj  (let [[x m] (case alg
@@ -138,26 +218,29 @@
                    (try (swap! secrets assoc (key/kid pub) {:alg alg :material (copy-bytes m)})
                         pub
                         (finally (wipe! m))))
-           :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
-      (-import! [_ alg secret-bytes] (store! alg secret-bytes))
-      (-generate-secret! [_ kid alg n]
+           :cljs (throw-cljs)))
+      :import! store!
+      :generate-secret!
+      (fn [kid alg n]
         #?(:clj  (swap! secrets assoc kid {:alg alg :material (impl/random-bytes n)})
-           :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))
+           :cljs (throw-cljs))
         nil)
-      (-adopt! [_ kid alg material] (swap! secrets assoc kid {:alg alg :material (as-bytes material)}) nil)
-      (-has? [_ kid] (contains? @secrets kid))
-      (-kids [_] (set (keys @secrets)))
-      (-alg [_ kid] (:alg (get @secrets kid)))
-      (-with-material [_ kid f]
+      :adopt! (fn [kid alg material] (swap! secrets assoc kid {:alg alg :material (as-bytes material)}) nil)
+      :has? (fn [kid] (contains? @secrets kid))
+      :kids (fn [] (set (keys @secrets)))
+      :alg (fn [kid] (:alg (get @secrets kid)))
+      :with-material
+      (fn [kid f]
         (let [m (copy-bytes (:material (get @secrets kid)))]
           (try (f m)
                (finally #?(:clj (wipe! m))))))
-      (-export [_ kid] (copy-bytes (:material (get @secrets kid))))
-      (-destroy! [_ kid]
+      :export (fn [kid] (copy-bytes (:material (get @secrets kid))))
+      :destroy!
+      (fn [kid]
         (let [[old _] (swap-vals! secrets dissoc kid)]
           (when-let [m (get-in old [kid :material])]
             #?(:clj (wipe! m))
-            true))))))
+            true)))})))
 
 (defn default-provider
   "The provider a vault gets when none is given: :sodium (secrets in
@@ -397,15 +480,32 @@
                       {:type ::destroyed-key :kid (:kid h) :vault (:vault h)})))
     p))
 
-(defn with-material
-  "Call (f material) with h's secret material and return f's result.
-   INTERNAL to signet's crypto code: material is valid only during f and
-   must not be kept, returned or logged. Impure: reads the vault."
+(defn ^:no-doc with-material
+  "INTERNAL, for white-box tests: call (f material) with h's secret
+   material and return f's result. material is valid only during f.
+   signet's crypto code never calls this: it runs operations (run-op).
+   Impure: reads the vault.
+   Throws ex-info {:type ::not-lending} when h's provider does not lend
+   (it implements the operations only), and what provider-of throws."
   [h f]
   (check-handle h "with-material")
   (let [v (vault (:vault h))]
     (note-use! v)
-    (with-read v #(-with-material (provider-of h) (:kid h) f))))
+    (with-read v #(let [p (provider-of h)]
+                    (when-not (satisfies? Lending p)
+                      (throw (ex-info "This vault's provider does not lend material"
+                                      {:type ::not-lending :vault (:vault h)})))
+                    (-with-material p (:kid h) f)))))
+
+(defn- run-op
+  "(f provider kid) for h's key, holding its vault's gate for reading, after
+   noting the use (auto-lock). Impure: reads the vault, and what f does.
+   Throws ::not-a-handle, and what provider-of and f throw."
+  [h what f]
+  (check-handle h what)
+  (let [v (vault (:vault h))]
+    (note-use! v)
+    (with-read v #(f (provider-of h) (:kid h)))))
 
 ;; ============================================================
 ;; Keys are born in the vault
@@ -611,23 +711,9 @@
    ::wrong-algorithm for a shared key or a session secret."
   [h their-x25519-pub]
   (check-handle h "x25519-dh")
-  (note-use! (vault (:vault h)))
   (when-not (session-entry? (vault (:vault h)) (:kid h)) ; ephemerals are X25519 session entries
     (check-identity h "x25519-dh"))
-  (let [p (provider-of h) kid (:kid h)]
-    #?(:clj  (with-read
-               (vault (:vault h))
-               #(-with-material
-                 p kid
-                 (fn [m]
-                   (case (-alg p kid)
-                     :x25519  (impl/x25519-dh m their-x25519-pub)
-                     :ed25519 (let [xsk (impl/ed25519-seed->x25519-private m)]
-                                (try (impl/x25519-dh xsk their-x25519-pub)
-                                     (finally (impl/destroy-material! xsk))))
-                     (throw (ex-info "x25519-dh needs an X25519 or Ed25519 key"
-                                     {:type ::wrong-algorithm :kid kid :algorithm (-alg p kid)}))))))
-       :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))))
+  (run-op h "x25519-dh" (fn [p kid] (-x25519-dh p kid their-x25519-pub))))
 
 (defn sign
   "Ed25519 signature (64 bytes) of message bytes with h's key. The seed is
@@ -635,13 +721,19 @@
    Throws ::not-a-handle, ::unknown-vault, ::destroyed-key, or
    ::wrong-algorithm for a non-signing key."
   [h message-bytes]
-  (check-handle h "sign")
-  (note-use! (vault (:vault h)))
-  (let [p (provider-of h)]
-    (when-not (= :ed25519 (-alg p (:kid h)))
-      (throw (ex-info "sign needs an Ed25519 signing key" {:type ::wrong-algorithm :kid (:kid h)})))
-    #?(:clj  (with-read (vault (:vault h)) (fn [] (-with-material p (:kid h) #(impl/ed25519-sign % message-bytes))))
-       :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript")))))
+  (run-op h "sign" (fn [p kid]
+                     (when-not (= :ed25519 (-alg p kid))
+                       (throw (ex-info "sign needs an Ed25519 signing key" {:type ::wrong-algorithm :kid kid})))
+                     (-sign p kid message-bytes))))
+
+(defn ^:no-doc hkdf-material
+  "INTERNAL to signet.shared and signet.password: HKDF-SHA-256 (n bytes)
+   with h's key as the ikm, run inside its provider. Returns material
+   (bytes, or a nacljc secret under :sodium) that the caller must release
+   with impl/destroy-material!. Impure: reads the vault.
+   Throws ::not-a-handle, ::unknown-vault, ::destroyed-key."
+  [h salt info n]
+  (run-op h "hkdf-material" (fn [p kid] (-hkdf p kid :ikm salt info n))))
 
 ;; ============================================================
 ;; Session entries: signet.session's secrets (docs/08)
@@ -661,14 +753,13 @@
   #?(:clj  (str "urn:signet:session:" (enc/bytes->base64url (impl/random-bytes 16)))
      :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
 
-(defn ^:no-doc with-temp-material
-  "INTERNAL to signet.password and signet.vault.file: adopt bs (a byte
-   array, or a nacljc secret) into vault-id's provider as a temporary
-   entry (under :sodium an array moves into guarded memory and is wiped at
-   once; a secret is taken as it is), call (f material) and return its
-   result, then destroy the entry. So bs is consumed: wiped, or destroyed,
-   also when the vault is unknown. Works on a locked vault too (unlocking
-   needs it); nothing lasting is written.
+(defn- with-temp-entry
+  "Adopt bs (a byte array, or a nacljc secret) into vault-id's provider as
+   a temporary entry (under :sodium an array moves into guarded memory and
+   is wiped at once; a secret is taken as it is), call (f provider entry-id)
+   and return its result, then destroy the entry. So bs is consumed: wiped,
+   or destroyed, also when the vault is unknown. Works on a locked vault
+   too (unlocking needs it); nothing lasting is written.
    Impure: writes and reads the vault's provider, consumes bs.
    Throws ex-info {:type ::unknown-vault}, and what f throws."
   [vault-id bs f]
@@ -677,10 +768,20 @@
                    #?(:clj (impl/destroy-material! bs)) (throw t)))
         tmp (new-entry-id)]
     (-adopt! p tmp :temporary bs)
-    ;; the gate covers the lending; the destroy needs none: no other
-    ;; thread knows this entry (and clear! waits for the lending)
-    (try (with-read (vault vault-id) #(-with-material p tmp f))
+    ;; the gate covers the operation; the destroy needs none: no other
+    ;; thread knows this entry (and clear! waits for the operation)
+    (try (with-read (vault vault-id) #(f p tmp))
          (finally (-destroy! p tmp)))))
+
+(defn ^:no-doc temp-hkdf
+  "INTERNAL to signet.vault.file: HKDF-SHA-256 (n bytes) with bs as the
+   ikm, run inside vault-id's provider on a temporary entry (see
+   with-temp-entry: bs is consumed). Returns material the caller must
+   release with impl/destroy-material!. Works on a locked vault.
+   Impure: writes and reads the vault's provider, consumes bs.
+   Throws ex-info {:type ::unknown-vault}."
+  [vault-id bs salt info n]
+  (with-temp-entry vault-id bs (fn [p tmp] (-hkdf p tmp :ikm salt info n))))
 
 (defn- claim-password-use!
   "Take one use of password handle h: :last when it was the last (the
@@ -767,13 +868,12 @@
    Throws what impl/argon2id throws (:signet.impl/unsupported on the JCA
    backend), and ::destroyed-key for a used-up handle."
   [vault-id password salt limits]
-  (let [f #?(:clj  #(impl/argon2id % salt 32 limits)
-             :cljs (fn [_] (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))]
+  (let [f (fn [p kid] (-argon2id p kid salt 32 limits))]
     (if (handle? password)
       (let [claim (claim-password-use! password)]
-        (try (with-material password f)
+        (try (run-op password "argon2id-material" f)
              (finally (when (= :last claim) (destroy! password)))))
-      (with-temp-material vault-id password f))))
+      (with-temp-entry vault-id password f))))
 
 (defn- adopt-session-entry!
   "Store material (the vault takes ownership) as a new session entry of
@@ -810,8 +910,9 @@
   [vault-id session-id salt ikm]
   #?(:clj
      (try
-       (let [derive (fn [salt-m] (impl/hkdf-sha-256 ikm salt-m (byte-array 0) 64))
-             out    (if (handle? salt) (with-material salt derive) (derive salt))]
+       (let [out (if (handle? salt)
+                   (run-op salt "hkdf-pair!" (fn [p kid] (-hkdf p kid :salt ikm (byte-array 0) 64)))
+                   (impl/hkdf-sha-256 ikm salt (byte-array 0) 64))]
          (try
            (let [[a b] (impl/split-material out [32 32])]
              [(adopt-session-entry! vault-id session-id :session a)
@@ -825,18 +926,14 @@
    with the caller's nonce (12 bytes) and aad (nil for none). The caller
    owns nonce uniqueness. Impure: reads the vault."
   [h nonce plaintext aad]
-  (check-handle h "aead-encrypt")
-  #?(:clj  (with-material h #(impl/chacha20-poly1305-encrypt % nonce plaintext aad))
-     :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
+  (run-op h "aead-encrypt" (fn [p kid] (-aead-encrypt p kid nonce plaintext aad))))
 
 (defn ^:no-doc aead-decrypt
   "INTERNAL to signet.session: inverse of aead-encrypt. Throws whatever the
    backend throws on authentication failure (signet.session maps it to one
    error). Impure: reads the vault."
   [h nonce ciphertext aad]
-  (check-handle h "aead-decrypt")
-  #?(:clj  (with-material h #(impl/chacha20-poly1305-decrypt % nonce ciphertext aad))
-     :cljs (throw (js/Error. "signet.vault not yet implemented for ClojureScript"))))
+  (run-op h "aead-decrypt" (fn [p kid] (-aead-decrypt p kid nonce ciphertext aad))))
 
 (defn ^:no-doc destroy-session!
   "INTERNAL to signet.session: destroy every entry of session-id in
@@ -939,15 +1036,31 @@
     (swap! (:internal v) conj id)
     id))
 
-(defn ^:no-doc with-internal
-  "INTERNAL: (f material) with the vault's own secret id. Impure: reads
-   the vault.
+(defn- internal-op
+  "(f provider id) for the vault's own secret id, holding the gate for
+   reading. Impure: reads the vault, and what f does.
    Throws ex-info {:type ::vault-locked} when the vault does not hold it."
   [vault-id id f]
   (let [v (vault vault-id)]
     (with-read v (fn []
                    (when-not (and id (-has? (:provider v) id)) (throw-locked v))
-                   (-with-material (:provider v) id f)))))
+                   (f (:provider v) id)))))
+
+(defn ^:no-doc internal-hkdf
+  "INTERNAL: HKDF-SHA-256 (n bytes) with the vault's own secret id as the
+   ikm. Returns material the caller must release with
+   impl/destroy-material!. Impure: reads the vault.
+   Throws ex-info {:type ::vault-locked} when the vault does not hold it."
+  [vault-id id salt info n]
+  (internal-op vault-id id (fn [p id] (-hkdf p id :ikm salt info n))))
+
+(defn ^:no-doc internal-wrap
+  "INTERNAL: the vault's own secret id wrapped (impl/wrap-material) under
+   wrapping-key (material in hand) with nonce and aad: public bytes.
+   Impure: reads the vault.
+   Throws ex-info {:type ::vault-locked} when the vault does not hold it."
+  [vault-id id wrapping-key nonce aad]
+  (internal-op vault-id id (fn [p id] (-wrap p id wrapping-key nonce aad))))
 
 (defn ^:no-doc destroy-internal!
   "INTERNAL: destroy the vault's own secret id. Impure: writes the vault."
@@ -960,9 +1073,10 @@
 (defn ^:no-doc snapshot
   "INTERNAL: what a vault file saves, as
      {:public [kid …] :secrets [{:kid :alg :wrapped} …] :default-signing kid}
-   Each identity key's material is lent to (wrap i kid alg material),
-   whose result is stored as :wrapped. Impure: reads the vault."
-  [vault-id wrap]
+   Each identity key is wrapped inside the provider with the parameters
+   (wrap-params i kid alg) gives, {:key wrapping-key-material :nonce :aad};
+   the result is stored as :wrapped. Impure: reads the vault."
+  [vault-id wrap-params]
   (let [v    (vault vault-id)
         p    (:provider v)
         kids (sort (filter #(and (not (hidden? v %)) (#{:ed25519 :x25519} (-alg p %))) (-kids p)))]
@@ -970,7 +1084,8 @@
                          :secrets         (vec (map-indexed (fn [i kid]
                                                               (let [alg (-alg p kid)]
                                                                 {:kid kid :alg alg
-                                                                 :wrapped (-with-material p kid #(wrap i kid alg %))}))
+                                                                 :wrapped (let [{k :key :keys [nonce aad]} (wrap-params i kid alg)]
+                                                                            (-wrap p kid k nonce aad))}))
                                                             kids))
                          :default-signing (:kid (:signing @(:defaults v)))}))))
 

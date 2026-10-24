@@ -213,15 +213,16 @@
               :nonce (impl/random-bytes 12)}
         k    (vault/argon2id-material vault-id pw salt limits)]
     (try
-      (assoc e :wrapped (vault/with-internal vault-id mk
-                          #(impl/wrap-material k (:nonce e) % (entry-aad e))))
+      (assoc e :wrapped (vault/internal-wrap vault-id mk k (:nonce e) (entry-aad e)))
       (finally (impl/destroy-material! k)))))
 
 (defn- recovery-unlock-key
-  "The recovery key's unlock key, derived from rk-material. Pure for
-   bytes; with a nacljc secret, impure: reads it and allocates the result."
-  [rk-material]
-  (impl/hkdf-sha-256 rk-material (byte-array 0) (utf8 "signet/vault-file/v1/recovery-key") 32))
+  "The recovery key's unlock key, derived from rk (bytes, consumed) inside
+   vault-id's provider on a temporary entry. Returns material the caller
+   must release with impl/destroy-material!.
+   Impure: writes and reads the provider, consumes rk."
+  [vault-id rk]
+  (vault/temp-hkdf vault-id rk (byte-array 0) (utf8 "signet/vault-file/v1/recovery-key") 32))
 
 (defn- unwrap-mk
   "The master key material of entry e, with unlock key k. Impure: reads k.
@@ -328,8 +329,7 @@
   "k = HKDF(MK, salt, \"signet/vault-file/v1/save\"). Impure: reads the
    master key; under :sodium allocates the result."
   [vault-id mk salt]
-  (vault/with-internal vault-id mk
-    #(impl/hkdf-sha-256 % salt (utf8 "signet/vault-file/v1/save") 32)))
+  (vault/internal-hkdf vault-id mk salt (utf8 "signet/vault-file/v1/save") 32))
 
 (defn- write-file!
   "Snapshot the vault, encrypt it and write the file. Impure: reads the
@@ -339,8 +339,8 @@
         salt (impl/random-bytes 24)
         k    (save-key vault-id mk salt)]
     (try
-      (let [content (vault/snapshot vault-id (fn [i kid alg m]
-                                               (impl/wrap-material k (nonce (inc i)) m (secret-aad kid alg))))
+      (let [content (vault/snapshot vault-id (fn [i kid alg]
+                                               {:key k :nonce (nonce (inc i)) :aad (secret-aad kid alg)}))
             header  {:type :signet/vault-file :v 1 :unlock unlock :salt salt}
             f       (assoc header :body (impl/chacha20-poly1305-encrypt
                                          k (nonce 0) (cedn/canonical-bytes content)
@@ -704,16 +704,14 @@
                       ;; its characters, so export them for the parse only
                             (let [txt ((requiring-resolve 'nacljc.core/secret-export) rk {:i-understand :exposes-secret})]
                               (try (parse-recovery-key txt) (finally (wipe! txt)))))
-                      m   (vault/with-temp-material vault-id key
-                            (fn [rk-m]
-                              (let [k (recovery-unlock-key rk-m)]
-                                (try (unwrap-mk k e)
-                                     (catch clojure.lang.ExceptionInfo ex
-                                       (if (= :signet.impl/auth-failed (:type (ex-data ex)))
-                                         (throw (ex-info "This recovery key does not open this vault"
-                                                         {:type ::wrong-recovery-key :vault vault-id}))
-                                         (throw ex)))
-                                     (finally (impl/destroy-material! k))))))]
+                      m   (let [k (recovery-unlock-key vault-id key)]
+                            (try (unwrap-mk k e)
+                                 (catch clojure.lang.ExceptionInfo ex
+                                   (if (= :signet.impl/auth-failed (:type (ex-data ex)))
+                                     (throw (ex-info "This recovery key does not open this vault"
+                                                     {:type ::wrong-recovery-key :vault vault-id}))
+                                     (throw ex)))
+                                 (finally (impl/destroy-material! k))))]
                   (finish-unlock! vault-id a m :recovery-key)))))))
 
 (defn lock!
@@ -809,12 +807,9 @@
             formatted (format-recovery-key rk)
             e         {:method :recovery-key :nonce (impl/random-bytes 12)}
             e         (assoc e :wrapped
-                             (vault/with-temp-material vault-id rk
-                               (fn [rk-m]
-                                 (let [k (recovery-unlock-key rk-m)]
-                                   (try (vault/with-internal vault-id (:mk @a)
-                                          #(impl/wrap-material k (:nonce e) % (entry-aad e)))
-                                        (finally (impl/destroy-material! k)))))))]
+                             (let [k (recovery-unlock-key vault-id rk)]
+                               (try (vault/internal-wrap vault-id (:mk @a) k (:nonce e) (entry-aad e))
+                                    (finally (impl/destroy-material! k)))))]
         (try
           (swap! a update :unlock #(conj (vec (remove (comp #{:recovery-key} :method) %)) e))
           (write-file! vault-id a)

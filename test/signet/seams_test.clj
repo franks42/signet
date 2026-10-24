@@ -159,9 +159,15 @@
               (-has? [_ kid] (vault/-has? mem kid))
               (-kids [_] (vault/-kids mem))
               (-alg [_ kid] (vault/-alg mem kid))
-              (-with-material [_ kid f] (vault/-with-material mem kid f))
               (-export [_ kid] (vault/-export mem kid))
-              (-destroy! [_ kid] (vault/-destroy! mem kid)))]
+              (-destroy! [_ kid] (vault/-destroy! mem kid))
+              (-sign [_ kid m] (vault/-sign mem kid m))
+              (-x25519-dh [_ kid pub] (vault/-x25519-dh mem kid pub))
+              (-hkdf [_ kid as other info n] (vault/-hkdf mem kid as other info n))
+              (-aead-encrypt [_ kid nonce pt aad] (vault/-aead-encrypt mem kid nonce pt aad))
+              (-aead-decrypt [_ kid nonce ct aad] (vault/-aead-decrypt mem kid nonce ct aad))
+              (-argon2id [_ kid salt n limits] (vault/-argon2id mem kid salt n limits))
+              (-wrap [_ kid k nonce aad] (vault/-wrap mem kid k nonce aad)))]
     (vault/register-vault! :refusing bad)
     (try
       (is (= ::refused (error-type #(vault/hkdf-pair! :refusing :s (byte-array 32) (impl/random-bytes 32)))))

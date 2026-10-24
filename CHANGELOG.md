@@ -2,6 +2,31 @@
 
 ## 0.11.0 (unreleased)
 
+### Changed (breaking for custom providers)
+
+- **Providers offer operations instead of lending material** (docs/12
+  phase 0). `signet.vault/Provider` gains `-sign`, `-x25519-dh`, `-hkdf`,
+  `-aead-encrypt`, `-aead-decrypt`, `-argon2id` and `-wrap`; a key's
+  material never leaves the provider except through `-export`, and secret
+  results (DH outputs, derived keys) are returned as material the caller
+  adopts or destroys. `-with-material` moved to a separate `Lending`
+  protocol; the new `lending-provider` builds every operation from it, and
+  the `:memory` and `:sodium` providers are built that way. So a provider
+  that cannot lend (a hardware token, an agent) implements the operations
+  only. Every crypto path in signet now runs operations:
+  `test/signet/operations_test.clj` runs signing, box, shared keys, Noise
+  sessions, password keys and vault files on a provider without `Lending`.
+  No behavior change otherwise (full suite and backend parity unchanged).
+  **Open gap, should be addressed:** secret results (DH outputs, derived
+  keys) come back to the caller as material instead of staying inside the
+  provider as new entries (docs/12 phase 0, "As built"). Fine for a
+  smartcard, not for an agent that must keep them.
+- `vault/with-material` is `^:no-doc` (white-box tests only) and throws
+  `:signet.vault/not-lending` for a provider without `Lending`. The internal
+  `with-temp-material` and `with-internal` are replaced by operations
+  (`hkdf-material`, `temp-hkdf`, `internal-hkdf`, `internal-wrap`);
+  `snapshot` takes wrap parameters instead of a wrapping function.
+
 ## 0.10.0 (2026-09-28)
 
 ### Added

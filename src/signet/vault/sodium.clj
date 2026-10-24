@@ -2,8 +2,9 @@
   "The vault's :sodium provider: secrets in libsodium's guarded memory, via
    nacljc 0.2.0 secrets (sodium_malloc: guard pages, canaries, mlock; no
    access outside a call, read-only during one). Keys are generated
-   directly in guarded memory, operations get the nacljc secret itself
-   (nacljc reads it in place), and secret results of operations on it (DH
+   directly in guarded memory, operations (built by
+   signet.vault/lending-provider) get the nacljc secret itself (nacljc
+   reads it in place), and secret results of operations on it (DH
    outputs, derived keys) are nacljc secrets too. So under this provider
    secret bytes never touch the Clojure heap, except through export-secret.
 
@@ -38,15 +39,18 @@
                   (let [pub (public-key-record alg s)]
                     (swap! secrets assoc (key/kid pub) {:alg alg :secret s})
                     pub))]
-    (reify vault/Provider
-      (-generate! [_ alg] (store! alg (na/secret-random 32)))
-      (-import! [_ alg secret-bytes]
+    (vault/lending-provider
+     {:generate! (fn [alg] (store! alg (na/secret-random 32)))
+      :import!
+      (fn [alg secret-bytes]
         ;; secret-import! copies into guarded memory and wipes secret-bytes
         (store! alg (na/secret-import! secret-bytes)))
-      (-generate-secret! [_ kid alg n]
+      :generate-secret!
+      (fn [kid alg n]
         (swap! secrets assoc kid {:alg alg :secret (na/secret-random n)})
         nil)
-      (-adopt! [_ kid alg material]
+      :adopt!
+      (fn [kid alg material]
         ;; Derived material from a secret input is already a nacljc secret.
         ;; Bytes (derived from public inputs only) are moved into guarded
         ;; memory: secret-import! copies them, then wipes the array. So this
@@ -54,12 +58,14 @@
         (let [s (if (na/secret? material) material (na/secret-import! material))]
           (swap! secrets assoc kid {:alg alg :secret s}))
         nil)
-      (-has? [_ kid] (contains? @secrets kid))
-      (-kids [_] (set (keys @secrets)))
-      (-alg [_ kid] (:alg (get @secrets kid)))
-      (-with-material [_ kid f] (f (:secret (get @secrets kid))))
-      (-export [_ kid] (na/secret-export (:secret (get @secrets kid)) ack))
-      (-destroy! [_ kid]
+      :has? (fn [kid] (contains? @secrets kid))
+      :kids (fn [] (set (keys @secrets)))
+      :alg (fn [kid] (:alg (get @secrets kid)))
+      ;; operations get the nacljc secret itself: nacljc reads it in place
+      :with-material (fn [kid f] (f (:secret (get @secrets kid))))
+      :export (fn [kid] (na/secret-export (:secret (get @secrets kid)) ack))
+      :destroy!
+      (fn [kid]
         ;; Free first, forget after: secret-destroy! throws ::secret-in-use
         ;; while a call reads the secret, and the entry must then stay, so
         ;; that it can still be destroyed (the vault's gate makes destroys
@@ -67,4 +73,4 @@
         (when-let [s (:secret (get @secrets kid))]
           (na/secret-destroy! s)
           (swap! secrets dissoc kid)
-          true)))))
+          true))})))

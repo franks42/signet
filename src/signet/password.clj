@@ -106,17 +106,24 @@
       (throw (ex-info "Not a password key handle" {:type ::not-a-password-key :kid (:kid h)})))))
 
 (defn- message-key
-  "The one-message key, salted with nonce, derived from the root inside the
-   call. with-root calls its argument with the root material: the vault
-   lends a handle's (vault/with-material), or it is material in hand.
+  "The one-message key, salted with nonce, derived from the root. hkdf-root
+   is (fn [salt info n]) giving HKDF material from the root: inside the
+   vault for a handle (handle-root), or on material in hand.
    Impure: reads the vault for a handle."
-  [with-root ^bytes nonce]
-  (with-root #(impl/hkdf-sha-256 % nonce (utf8 "signet/password/v1/seal") 32)))
+  [hkdf-root ^bytes nonce]
+  (hkdf-root nonce (utf8 "signet/password/v1/seal") 32))
 
 (defn- handle-root
-  "with-root for handle h. Impure: reads the vault."
+  "hkdf-root for handle h: HKDF runs in its vault's provider.
+   Impure: reads the vault."
   [h]
-  (fn [f] (vault/with-material h f)))
+  (fn [salt info n] (vault/hkdf-material h salt info n)))
+
+(defn- material-root
+  "hkdf-root for root material in hand. Pure for bytes; with a nacljc
+   secret, impure: reads it."
+  [root]
+  (fn [salt info n] (impl/hkdf-sha-256 root salt info n)))
 
 (defn- commitment ^bytes [k] (impl/hmac-sha-256 k (utf8 "signet/password/v1/commit")))
 
@@ -158,12 +165,12 @@
     (not (and (bytes? (:ct sealed)) (<= 16 (alength ^bytes (:ct sealed)))))     :bad-ciphertext))
 
 (defn- open-with-root
-  "Open sealed with the root that with-root lends, known to have kid.
-   :wrong-key when kid is not the sealed value's."
-  [with-root kid sealed opts]
+  "Open sealed with the root behind hkdf-root (see message-key), known to
+   have kid. :wrong-key when kid is not the sealed value's."
+  [hkdf-root kid sealed opts]
   (if (not= kid (:kid sealed))
     {:valid? false :error :wrong-key}
-    (let [k (message-key with-root (:nonce sealed))]
+    (let [k (message-key hkdf-root (:nonce sealed))]
       (try
         (if-not (java.security.MessageDigest/isEqual (commitment k) (:commit sealed))
           {:valid? false :error :commitment-mismatch}
@@ -204,7 +211,7 @@
                                                   (select-keys sealed [:opslimit :memlimit]))
                          (finally (impl/destroy-material! key-or-password)))]
            (try
-             (let [r (open-with-root (fn [f] (f root)) (kid-of root) sealed opts)]
+             (let [r (open-with-root (material-root root) (kid-of root) sealed opts)]
                (if (= :wrong-key (:error r)) {:valid? false :error :wrong-password} r))
              (finally (impl/destroy-material! root))))
          (do (meta! key-or-password)
