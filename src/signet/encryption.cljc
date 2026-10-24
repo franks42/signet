@@ -51,10 +51,11 @@
        [k] (:d (key/encryption-private-key k)))
 
      (defn- dh
-       "X25519 of our key (a keypair, or a handle: the DH then runs on
-        material the vault lends for this call) with their X25519 public key
-        bytes. The caller wipes the result.
-        Impure for a handle: reads the vault; pure for a record.
+       "X25519 of our key with their X25519 public key bytes. For a handle
+        the DH runs in the vault and the result is a temporary entry's
+        handle; for a keypair record (deprecated) it is bytes. The caller
+        releases it (wipe!).
+        Impure for a handle: reads and writes the vault; pure for a record.
         Throws what the backend's x25519-dh throws (a low-order public key)."
        [ours their-xpk]
        (if (vault/handle? ours)
@@ -71,24 +72,43 @@
          (some? (:d k))))
 
      (defn- wipe!
-       "Release secret material whose purpose has ended: a byte array is
-        zeroed; a nacljc secret (under the vault's :sodium provider) is
-        destroyed. Impure."
+       "Release a secret whose purpose has ended: a temporary vault entry is
+        destroyed; a byte array (the deprecated record path) is zeroed.
+        Impure."
        [x]
-       (when x (impl/destroy-material! x)))
+       (cond (vault/handle? x) (vault/destroy-temp! x)
+             x                 (impl/destroy-material! x)))
 
      (defn- message-key!
-       "HKDF key for one message, bound to its direction. Consumes (wipes)
-        the DH output.
-        Impure: wipes (destroys) shared."
+       "HKDF key for one message, bound to its direction, from the DH output
+        shared: in the vault for a temporary entry (the key is one too),
+        else on bytes. Consumes (releases) shared.
+        Impure: reads and writes the vault for an entry; wipes shared."
        [shared ^bytes nonce ^bytes sender-xpk ^bytes recipient-xpk]
        (let [info (byte-array (+ (alength info-prefix) 64))]
          (System/arraycopy info-prefix 0 info 0 (alength info-prefix))
          (System/arraycopy sender-xpk 0 info (alength info-prefix) 32)
          (System/arraycopy recipient-xpk 0 info (+ (alength info-prefix) 32) 32)
-         (let [k (impl/hkdf-sha-256 shared nonce info 32)]
-           (wipe! shared)
-           k)))
+         (try (if (vault/handle? shared)
+                (vault/derive! (:vault shared) shared nonce info 32)
+                (impl/hkdf-sha-256 shared nonce info 32))
+              (finally (wipe! shared)))))
+
+     (defn- aead-encrypt
+       "ChaCha20-Poly1305 under message key k (a temporary entry, or bytes).
+        Impure for an entry: reads the vault."
+       [k nonce plaintext aad]
+       (if (vault/handle? k)
+         (vault/aead-encrypt k nonce plaintext aad)
+         (impl/chacha20-poly1305-encrypt k nonce plaintext aad)))
+
+     (defn- aead-decrypt
+       "Inverse of aead-encrypt. Throws on authentication failure.
+        Impure for an entry: reads the vault."
+       [k nonce ciphertext aad]
+       (if (vault/handle? k)
+         (vault/aead-decrypt k nonce ciphertext aad)
+         (impl/chacha20-poly1305-decrypt k nonce ciphertext aad)))
 
      (def ^:private zero-nonce
        "AEAD nonce: always zero, because every message has its own key."
@@ -127,8 +147,7 @@
                        to?                   (assoc :to (key/kid recipient-pub))
                        (contains? opts :aad) (assoc :aad aad))
               k      (message-key! (dh sender-kp r-xpk) nonce s-xpk r-xpk)
-              ct     (try (impl/chacha20-poly1305-encrypt k zero-nonce plaintext
-                                                          (cedn/canonical-bytes header))
+              ct     (try (aead-encrypt k zero-nonce plaintext (cedn/canonical-bytes header))
                           (finally (wipe! k)))]
           (assoc header :ct ct))]
        :cljs
@@ -193,8 +212,7 @@
              k     (message-key! (dh recipient (x-pub sender))
                                  nonce (x-pub sender) (x-pub recipient))]
          (try
-           (impl/chacha20-poly1305-decrypt k zero-nonce (:ct boxed)
-                                           (cedn/canonical-bytes (dissoc boxed :ct)))
+           (aead-decrypt k zero-nonce (:ct boxed) (cedn/canonical-bytes (dissoc boxed :ct)))
            (catch Exception _ nil)
            (finally (wipe! k)))))))
 

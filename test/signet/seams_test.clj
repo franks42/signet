@@ -149,25 +149,29 @@
     (is (:verified? (box/unbox me bx {:from #{(:kid peer)}})) "a set of kids, as before")))
 
 (deftest orphan-session-entries-are-not-counted
-  ;; adopt-session-entry! must not record an entry the provider refused.
+  ;; hkdf-pair! must not record entries the provider refused to fill.
   (let [mem (vault/memory-provider)
         bad (reify vault/Provider
               (-generate! [_ alg] (vault/-generate! mem alg))
               (-import! [_ alg bs] (vault/-import! mem alg bs))
               (-generate-secret! [_ kid alg n] (vault/-generate-secret! mem kid alg n))
               (-adopt! [_ _ _ _] (throw (ex-info "refused" {:type ::refused})))
+              (-move! [_ from to alg] (vault/-move! mem from to alg))
               (-has? [_ kid] (vault/-has? mem kid))
               (-kids [_] (vault/-kids mem))
               (-alg [_ kid] (vault/-alg mem kid))
+              (-public-key [_ kid] (vault/-public-key mem kid))
               (-export [_ kid] (vault/-export mem kid))
               (-destroy! [_ kid] (vault/-destroy! mem kid))
               (-sign [_ kid m] (vault/-sign mem kid m))
-              (-x25519-dh [_ kid pub] (vault/-x25519-dh mem kid pub))
-              (-hkdf [_ kid as other info n] (vault/-hkdf mem kid as other info n))
+              (-x25519-dh [_ kid pub out] (vault/-x25519-dh mem kid pub out))
+              (-hkdf [_ _ _ _ _] (throw (ex-info "refused" {:type ::refused})))
+              (-hmac [_ kid data] (vault/-hmac mem kid data))
               (-aead-encrypt [_ kid nonce pt aad] (vault/-aead-encrypt mem kid nonce pt aad))
               (-aead-decrypt [_ kid nonce ct aad] (vault/-aead-decrypt mem kid nonce ct aad))
-              (-argon2id [_ kid salt n limits] (vault/-argon2id mem kid salt n limits))
-              (-wrap [_ kid k nonce aad] (vault/-wrap mem kid k nonce aad)))]
+              (-argon2id [_ kid salt limits out] (vault/-argon2id mem kid salt limits out))
+              (-wrap [_ kid k nonce aad] (vault/-wrap mem kid k nonce aad))
+              (-unwrap [_ k nonce w aad out] (vault/-unwrap mem k nonce w aad out)))]
     (vault/register-vault! :refusing bad)
     (try
       (is (= ::refused (error-type #(vault/hkdf-pair! :refusing :s (byte-array 32) (impl/random-bytes 32)))))

@@ -51,21 +51,21 @@
                           {:type ::bad-option :limits limits}))))
 
 (defn- kid-of
-  "The kid of root material: HKDF-Expand with the kid label. Pure for
-   bytes; with a nacljc secret, impure: reads it."
-  [root]
+  "The kid of root key h (a handle: a password key, or a temporary entry):
+   HKDF-Expand with the kid label, in the vault. Impure: reads the vault."
+  [h]
   (str "urn:signet:password:"
-       (enc/bytes->base64url (impl/hmac-sha-256 root (byte-array (concat (utf8 "signet/password/v1/kid") [1]))))))
+       (enc/bytes->base64url (vault/hmac h (byte-array (concat (utf8 "signet/password/v1/kid") [1]))))))
 
 (defn- derive!
-  "Adopt the password key for password, salt and limits into vault-id;
-   returns its handle. Impure: writes the vault, consumes password."
+  "The password key for password, salt and limits, kept in vault-id;
+   returns its handle. Argon2id's output stays in the vault (a temporary
+   entry until it becomes the key). Impure: writes the vault, consumes
+   password."
   [vault-id ^bytes password ^bytes salt {:keys [opslimit memlimit] :as limits}]
-  (let [root (vault/argon2id-material vault-id password salt limits)]
-    (try
-      (vault/adopt-symmetric! vault-id (kid-of root) :password root
-                              {:salt (aclone salt) :opslimit opslimit :memlimit memlimit})
-      (catch Throwable t (impl/destroy-material! root) (throw t)))))
+  (let [root (vault/argon2id! vault-id password salt limits)
+        kid  (try (kid-of root) (catch Throwable t (vault/destroy-temp! root) (throw t)))]
+    (vault/promote! root kid :password {:salt (aclone salt) :opslimit opslimit :memlimit memlimit})))
 
 (defn password-key!
   "A handle to the key derived from password (a byte array: the UTF-8 of
@@ -106,26 +106,17 @@
       (throw (ex-info "Not a password key handle" {:type ::not-a-password-key :kid (:kid h)})))))
 
 (defn- message-key
-  "The one-message key, salted with nonce, derived from the root. hkdf-root
-   is (fn [salt info n]) giving HKDF material from the root: inside the
-   vault for a handle (handle-root), or on material in hand.
-   Impure: reads the vault for a handle."
-  [hkdf-root ^bytes nonce]
-  (hkdf-root nonce (utf8 "signet/password/v1/seal") 32))
+  "The one-message key, salted with nonce, derived from root key h (a
+   password key, or a temporary entry) inside its vault: a temporary entry,
+   which the caller destroys (vault/destroy-temp!). Impure: reads and
+   writes the vault."
+  [h ^bytes nonce]
+  (vault/derive! (:vault h) h nonce (utf8 "signet/password/v1/seal") 32))
 
-(defn- handle-root
-  "hkdf-root for handle h: HKDF runs in its vault's provider.
+(defn- commitment
+  "The key commitment for message key k (a temporary entry), in the vault.
    Impure: reads the vault."
-  [h]
-  (fn [salt info n] (vault/hkdf-material h salt info n)))
-
-(defn- material-root
-  "hkdf-root for root material in hand. Pure for bytes; with a nacljc
-   secret, impure: reads it."
-  [root]
-  (fn [salt info n] (impl/hkdf-sha-256 root salt info n)))
-
-(defn- commitment ^bytes [k] (impl/hmac-sha-256 k (utf8 "signet/password/v1/commit")))
+  ^bytes [k] (vault/hmac k (utf8 "signet/password/v1/commit")))
 
 (def ^:private header-slots #{:type :v :kid :salt :opslimit :memlimit :nonce :commit :aad})
 
@@ -141,15 +132,15 @@
   ([h plaintext opts]
    (let [{:keys [salt opslimit memlimit]} (meta! h)
          nonce (impl/random-bytes 24)
-         k     (message-key (handle-root h) nonce)]
+         k     (message-key h nonce)]
      (try
        (let [header (cond-> {:type :signet/password-sealed :v 1 :kid (:kid h)
                              :salt salt :opslimit opslimit :memlimit memlimit
                              :nonce nonce :commit (commitment k)}
                       (contains? opts :aad) (assoc :aad (:aad opts)))
-             ct     (impl/chacha20-poly1305-encrypt k zero-nonce plaintext (cedn/canonical-bytes header))]
+             ct     (vault/aead-encrypt k zero-nonce plaintext (cedn/canonical-bytes header))]
          (assoc header :ct ct))
-       (finally (impl/destroy-material! k))))))
+       (finally (vault/destroy-temp! k))))))
 
 (defn- shape-error [sealed]
   (cond
@@ -165,17 +156,17 @@
     (not (and (bytes? (:ct sealed)) (<= 16 (alength ^bytes (:ct sealed)))))     :bad-ciphertext))
 
 (defn- open-with-root
-  "Open sealed with the root behind hkdf-root (see message-key), known to
-   have kid. :wrong-key when kid is not the sealed value's."
-  [hkdf-root kid sealed opts]
+  "Open sealed with root key h (a password key, or a temporary entry),
+   known to have kid. :wrong-key when kid is not the sealed value's."
+  [h kid sealed opts]
   (if (not= kid (:kid sealed))
     {:valid? false :error :wrong-key}
-    (let [k (message-key hkdf-root (:nonce sealed))]
+    (let [k (message-key h (:nonce sealed))]
       (try
         (if-not (java.security.MessageDigest/isEqual (commitment k) (:commit sealed))
           {:valid? false :error :commitment-mismatch}
-          (let [pt (try (impl/chacha20-poly1305-decrypt k zero-nonce (:ct sealed)
-                                                        (cedn/canonical-bytes (dissoc sealed :ct)))
+          (let [pt (try (vault/aead-decrypt k zero-nonce (:ct sealed)
+                                            (cedn/canonical-bytes (dissoc sealed :ct)))
                         (catch Exception _ nil))
                 aad-ok? (or (not (contains? opts :aad))
                             (and (contains? sealed :aad)
@@ -184,7 +175,7 @@
               (nil? pt)     {:valid? false :error :authentication-failed}
               (not aad-ok?) {:valid? false :error :aad-mismatch :aad (:aad sealed)}
               :else         {:valid? true :plaintext pt :aad (:aad sealed)})))
-        (finally (impl/destroy-material! k))))))
+        (finally (vault/destroy-temp! k))))))
 
 (defn open
   "Open a value made by seal. key-or-password is the password key's handle,
@@ -207,14 +198,14 @@
        (if (vault/password-input? key-or-password)
          ;; derive the root, use it and destroy it: nothing is adopted into
          ;; the vault (an existing handle with the same kid stays untouched)
-         (let [root (try (vault/argon2id-material (:vault opts :default) key-or-password (:salt sealed)
-                                                  (select-keys sealed [:opslimit :memlimit]))
+         (let [root (try (vault/argon2id! (:vault opts :default) key-or-password (:salt sealed)
+                                          (select-keys sealed [:opslimit :memlimit]))
                          (finally (impl/destroy-material! key-or-password)))]
            (try
-             (let [r (open-with-root (material-root root) (kid-of root) sealed opts)]
+             (let [r (open-with-root root (kid-of root) sealed opts)]
                (if (= :wrong-key (:error r)) {:valid? false :error :wrong-password} r))
-             (finally (impl/destroy-material! root))))
+             (finally (vault/destroy-temp! root))))
          (do (meta! key-or-password)
-             (open-with-root (handle-root key-or-password) (:kid key-or-password) sealed opts))))
+             (open-with-root key-or-password (:kid key-or-password) sealed opts))))
      (catch Exception e
        {:valid? false :error :malformed :message (ex-message e)}))))

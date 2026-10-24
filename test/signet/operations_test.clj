@@ -5,7 +5,10 @@
    or an agent) carries every feature: signing, box, shared keys, Noise
    sessions, password keys and vault files (the last two need libsodium).
    If any path still lent material, it would fail here with ::not-lending
-   or a missing protocol method."
+   or a missing protocol method. Secret results (DH outputs, derived and
+   unwrapped keys) must stay in the provider as entries: every
+   secret-producing operation returns nothing, and every temporary entry
+   is destroyed by the end of each test."
   (:require [clojure.java.io :as io]
             [clojure.test :refer [deftest is testing use-fixtures]]
             [signet.encryption :as box]
@@ -28,27 +31,38 @@
   (try (f) :no-throw
        (catch Throwable e (or (:type (ex-data e)) [:not-ex-info (.getSimpleName (class e))]))))
 
+(def ^:private secret-results
+  "Calls to secret-producing operations that returned something: each one
+   would be a secret leaving the provider. Must stay empty."
+  (atom []))
+
 (defn- ops-only
   "inner's Provider methods, without its Lending: a provider that runs
-   operations but never lends material."
+   operations but never lends material. Records any secret-producing
+   operation that returns a value instead of filling its output entry."
   [inner]
-  (reify vault/Provider
-    (-generate! [_ alg] (vault/-generate! inner alg))
-    (-import! [_ alg bs] (vault/-import! inner alg bs))
-    (-generate-secret! [_ kid alg n] (vault/-generate-secret! inner kid alg n))
-    (-adopt! [_ kid alg m] (vault/-adopt! inner kid alg m))
-    (-has? [_ kid] (vault/-has? inner kid))
-    (-kids [_] (vault/-kids inner))
-    (-alg [_ kid] (vault/-alg inner kid))
-    (-export [_ kid] (vault/-export inner kid))
-    (-destroy! [_ kid] (vault/-destroy! inner kid))
-    (-sign [_ kid m] (vault/-sign inner kid m))
-    (-x25519-dh [_ kid pub] (vault/-x25519-dh inner kid pub))
-    (-hkdf [_ kid as other info n] (vault/-hkdf inner kid as other info n))
-    (-aead-encrypt [_ kid nonce pt aad] (vault/-aead-encrypt inner kid nonce pt aad))
-    (-aead-decrypt [_ kid nonce ct aad] (vault/-aead-decrypt inner kid nonce ct aad))
-    (-argon2id [_ kid salt n limits] (vault/-argon2id inner kid salt n limits))
-    (-wrap [_ kid k nonce aad] (vault/-wrap inner kid k nonce aad))))
+  (let [none (fn [op r] (when (some? r) (swap! secret-results conj op)) r)]
+    (reify vault/Provider
+      (-generate! [_ alg] (vault/-generate! inner alg))
+      (-import! [_ alg bs] (vault/-import! inner alg bs))
+      (-generate-secret! [_ kid alg n] (vault/-generate-secret! inner kid alg n))
+      (-adopt! [_ kid alg m] (vault/-adopt! inner kid alg m))
+      (-move! [_ from to alg] (vault/-move! inner from to alg))
+      (-has? [_ kid] (vault/-has? inner kid))
+      (-kids [_] (vault/-kids inner))
+      (-alg [_ kid] (vault/-alg inner kid))
+      (-public-key [_ kid] (vault/-public-key inner kid))
+      (-export [_ kid] (vault/-export inner kid))
+      (-destroy! [_ kid] (vault/-destroy! inner kid))
+      (-sign [_ kid m] (vault/-sign inner kid m))
+      (-x25519-dh [_ kid pub out] (none :x25519-dh (vault/-x25519-dh inner kid pub out)))
+      (-hkdf [_ ikm salt info outs] (none :hkdf (vault/-hkdf inner ikm salt info outs)))
+      (-hmac [_ kid data] (vault/-hmac inner kid data))
+      (-aead-encrypt [_ kid nonce pt aad] (vault/-aead-encrypt inner kid nonce pt aad))
+      (-aead-decrypt [_ kid nonce ct aad] (vault/-aead-decrypt inner kid nonce ct aad))
+      (-argon2id [_ kid salt limits out] (none :argon2id (vault/-argon2id inner kid salt limits out)))
+      (-wrap [_ kid k nonce aad] (vault/-wrap inner kid k nonce aad))
+      (-unwrap [_ k nonce w aad out] (none :unwrap (vault/-unwrap inner k nonce w aad out))))))
 
 (defn- drop-vaults! []
   (doseq [id [:ops :ops2]] (when (contains? (vault/vault-ids) id) (vault/unregister-vault! id))))
@@ -58,7 +72,12 @@
                       (vault/reset-default-vault!)
                       (drop-vaults!)
                       (vault/register-vault! :ops (ops-only (vault/default-provider)))
-                      (try (f) (finally (drop-vaults!)))))
+                      (reset! secret-results [])
+                      (try (f)
+                           (is (empty? @secret-results) "no secret-producing operation returned its result")
+                           (doseq [id [:ops :ops2] :when (contains? (vault/vault-ids) id)]
+                             (is (zero? (vault/temp-entry-count id)) (str id ": every temporary entry was destroyed")))
+                           (finally (drop-vaults!)))))
 
 (defn- tmp-path []
   (let [d (.toFile (java.nio.file.Files/createTempDirectory "signet-ops" (make-array java.nio.file.attribute.FileAttribute 0)))]

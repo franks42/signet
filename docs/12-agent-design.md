@@ -71,29 +71,59 @@ As above. Also the moment to decide which derived values are secret
 (new entries) and which are public (returned): HKDF outputs used as keys
 are secret; a kid derived by HMAC is public.
 
-**As built (2026-10-24, 0.11.0-SNAPSHOT).** `Provider` has seven
-operations: `-sign`, `-x25519-dh`, `-hkdf` (the entry as ikm or as salt),
-`-aead-encrypt`, `-aead-decrypt`, `-argon2id`, `-wrap` (the entry wrapped
-under a key in hand). `-hmac` and `-unwrap` were not needed: no HMAC or
-unwrap runs on an entry's material (HMACs run on derived keys, unwraps
-produce material that is then adopted). `-with-material` lives on in a
-separate `Lending` protocol; `lending-provider` builds the operations
-from it, and `:memory` and `:sodium` are built that way.
+**As built (2026-10-24, 0.11.0-SNAPSHOT).** Two steps, the same day.
 
-**Should be addressed (open gap, flagged by Frank 2026-10-24).** One step
-short of the table above: **secret results are returned as material the
-caller owns** (bytes, or a nacljc secret), not as new entry
-ids. That keeps the change behavior-neutral: the callers (box, shared,
-session, password, vault file) consume and destroy that material as
-before. It is enough for providers that cannot lend but can hand a
-result back (a smartcard's X25519 returns the shared secret to the host
-too). An agent that must keep DH outputs inside needs the entry-id form;
-that is a later step, and the call sites are now the operations, so it
-is a change in one place each.
+1. *Operations instead of lending.* `-with-material` moved to a separate
+   `Lending` protocol; `lending-provider` builds every operation from it,
+   and `:memory` and `:sodium` are built that way.
+2. *Secret results stay in the provider* (the gap left by step 1, flagged
+   by Frank as "should be addressed", closed the same day). A
+   secret-producing operation writes its result into a new entry the
+   caller names (an output spec `[id alg]` or `[id alg n]`) and returns
+   nothing:
 
-`test/signet/operations_test.clj` is the check that no path lends: a
-provider with the operations and without `Lending` runs signing, box,
-shared keys, Noise sessions, password keys and vault files.
+| Operation | Inputs | Result |
+|---|---|---|
+| `-sign` | entry, message | signature (public) |
+| `-x25519-dh` | entry, peer public key, out | entry |
+| `-hkdf` | ikm and salt (each an entry or public bytes), info, outs | one or more entries (slices of one output) |
+| `-hmac` | entry, data | tag (public): commitments, derived kids, MACs |
+| `-aead-encrypt` / `-aead-decrypt` | entry, nonce, data, aad | ciphertext / plaintext |
+| `-argon2id` | entry (a password), salt, limits, out | entry |
+| `-wrap` | entry, wrapping-key entry, nonce, aad | ciphertext (public) |
+| `-unwrap` | wrapping-key entry, nonce, ciphertext, aad, out | entry |
+
+   Plus storage methods: `-move!` (a derived root becomes a shared or
+   password key under its kid) and `-public-key` (a restored key is
+   checked against its kid).
+
+   The vault tracks those results as **temporary entries** (hidden like
+   session entries: no handle, no export), and each caller destroys its
+   own (`vault/destroy-temp!`) when done; `vault/temp-entry-count` is zero
+   between operations. Callers chain operations on handles: box derives
+   its message key from the DH entry and encrypts under it; shared keys
+   derive the root, its kid (HMAC) and promote it; sessions mix DH entries
+   into the chaining key; password keys run Argon2id into an entry; vault
+   files derive the save key from the master key, wrap and unwrap inside
+   the provider, and unwrap the master key straight into an internal
+   entry.
+
+What still passes through the host, by design:
+- **Deprecated key records** (box and session inputs that hold `:d`):
+  their DH runs on the backend; a session moves the output into the vault
+  at once, box uses it as bytes. Records are on the heap anyway.
+- **A password handle used for another vault** (Argon2id runs in the
+  handle's vault): the 32-byte result is exported and adopted by the
+  target vault (wiped on the way).
+- **Material from outside**: imports, passwords, recovery keys enter
+  through `-adopt!`/`-import!`, as before.
+
+`test/signet/operations_test.clj` is the check: a provider with the
+operations and without `Lending` runs signing, box, shared keys, Noise
+sessions, password keys and vault files; every secret-producing operation
+returns nothing; no temporary entry outlives a test. Injection-checked:
+a no-op `destroy-temp!` fails 6 of its 7 tests, operations that return
+their secret fail 5.
 
 ### Phase 1: an ssh-agent client provider (sign-only), the quick win
 

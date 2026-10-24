@@ -95,14 +95,17 @@
          their-x (x25519-pub their)
          [a b]   (sorted-pair my-x their-x)
          info    (concat-bytes (utf8 "signet/shared/v1/root") (cedn/canonical-bytes context) a b)
+         ;; DH output, root and kid derivation all run in the vault: the
+         ;; root is a temporary entry until it becomes the shared key
          shared  (vault/x25519-dh my-handle their-x)
-         root    (try (impl/hkdf-sha-256 shared (byte-array 0) info 32)
-                      (finally (impl/destroy-material! shared)))
-         kid-bs  (impl/hmac-sha-256 root (concat-bytes (utf8 "signet/shared/v1/kid") (byte-array [1])))
+         root    (try (vault/derive! (:vault my-handle) shared (byte-array 0) info 32)
+                      (finally (vault/destroy-temp! shared)))
+         kid-bs  (try (vault/hmac root (concat-bytes (utf8 "signet/shared/v1/kid") (byte-array [1])))
+                      (catch Throwable t (vault/destroy-temp! root) (throw t)))
          kid     (str "urn:signet:shared:" (enc/bytes->base64url kid-bs))]
-     (vault/adopt-shared! (:vault my-handle) kid root
-                          {:my-x my-x :their-x their-x :context context
-                           :mine (:kid my-handle) :peer (key/kid their)}))))
+     (vault/promote! root kid :shared
+                     {:my-x my-x :their-x their-x :context context
+                      :mine (:kid my-handle) :peer (key/kid their)}))))
 
 (defn- checked-meta
   "The metadata of shared key h, or throws. Impure: reads the vault.
@@ -113,21 +116,23 @@
 
 (defn- message-key
   "The one-message key for direction sender-x → recipient-x, salted with
-   nonce, derived from root inside the call.
-   Impure: reads the vault."
+   nonce, derived from root h inside the vault: a temporary entry, which
+   the caller destroys (vault/destroy-temp!). Impure: reads and writes the
+   vault."
   [h ^bytes nonce ^bytes sender-x ^bytes recipient-x]
-  (vault/hkdf-material h nonce (concat-bytes (utf8 "signet/shared/v1/seal") sender-x recipient-x) 32))
+  (vault/derive! (:vault h) h nonce (concat-bytes (utf8 "signet/shared/v1/seal") sender-x recipient-x) 32))
 
 (defn- commitment
-  "The key commitment for message key k (HMAC-SHA-256). Pure for bytes;
-   with a nacljc secret, impure: reads it."
-  ^bytes [k] (impl/hmac-sha-256 k (utf8 "signet/shared/v1/commit")))
+  "The key commitment for message key k (a temporary entry): HMAC-SHA-256
+   in the vault. Impure: reads the vault."
+  ^bytes [k] (vault/hmac k (utf8 "signet/shared/v1/commit")))
 
 (defn- mac-key
-  "The directional MAC key sender-x -> recipient-x, derived from root h.
-   Impure: reads the vault."
+  "The directional MAC key sender-x -> recipient-x, derived from root h: a
+   temporary entry, which the caller destroys. Impure: reads and writes the
+   vault."
   [h ^bytes sender-x ^bytes recipient-x]
-  (vault/hkdf-material h (byte-array 0) (concat-bytes (utf8 "signet/shared/v1/mac") sender-x recipient-x) 32))
+  (vault/derive! (:vault h) h (byte-array 0) (concat-bytes (utf8 "signet/shared/v1/mac") sender-x recipient-x) 32))
 
 ;; ============================================================
 ;; seal / open
@@ -150,9 +155,9 @@
        (let [header (cond-> {:type :signet/sealed :v 1 :kid (:kid h) :nonce nonce
                              :commit (commitment k)}
                       (contains? opts :aad) (assoc :aad (:aad opts)))
-             ct     (impl/chacha20-poly1305-encrypt k zero-nonce plaintext (cedn/canonical-bytes header))]
+             ct     (vault/aead-encrypt k zero-nonce plaintext (cedn/canonical-bytes header))]
          (assoc header :ct ct))
-       (finally (impl/destroy-material! k))))))
+       (finally (vault/destroy-temp! k))))))
 
 (defn- shape-error
   "The first structural problem of sealed, as a keyword, or nil. Pure."
@@ -186,8 +191,8 @@
              (try
                (if-not (java.security.MessageDigest/isEqual (commitment k) (:commit sealed))
                  {:valid? false :error :commitment-mismatch}
-                 (let [pt (try (impl/chacha20-poly1305-decrypt k zero-nonce (:ct sealed)
-                                                               (cedn/canonical-bytes (dissoc sealed :ct)))
+                 (let [pt (try (vault/aead-decrypt k zero-nonce (:ct sealed)
+                                                   (cedn/canonical-bytes (dissoc sealed :ct)))
                                (catch Exception _ nil))
                        aad-ok? (or (not (contains? opts :aad))
                                    (and (contains? sealed :aad)
@@ -196,7 +201,7 @@
                      (nil? pt)     {:valid? false :error :authentication-failed}
                      (not aad-ok?) {:valid? false :error :aad-mismatch :aad (:aad sealed)}
                      :else         {:valid? true :plaintext pt :aad (:aad sealed)})))
-               (finally (impl/destroy-material! k)))))))
+               (finally (vault/destroy-temp! k)))))))
      (catch Exception e
        {:valid? false :error :malformed :message (ex-message e)}))))
 
@@ -211,8 +216,8 @@
   [h message]
   (let [{:keys [my-x their-x]} (checked-meta h)
         k (mac-key h my-x their-x)]
-    (try (impl/hmac-sha-256 k message)
-         (finally (impl/destroy-material! k)))))
+    (try (vault/hmac k message)
+         (finally (vault/destroy-temp! k)))))
 
 (defn verify-mac?
   "Is tag the peer's MAC of message under shared key h? Constant-time
@@ -223,6 +228,6 @@
     (let [{:keys [my-x their-x]} (checked-meta h)
           k (mac-key h their-x my-x)]
       (try (boolean (and (bytes? tag)
-                         (java.security.MessageDigest/isEqual (impl/hmac-sha-256 k message) tag)))
-           (finally (impl/destroy-material! k))))
+                         (java.security.MessageDigest/isEqual (vault/hmac k message) tag)))
+           (finally (vault/destroy-temp! k))))
     (catch Exception _ false)))

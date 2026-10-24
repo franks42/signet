@@ -72,7 +72,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 
 ### signet.vault — secrets by reference (0.8.0; docs/07)
 - Handles (`KeyHandle`: kid + vault id); providers `:memory` and `:sodium` (`signet.vault.sodium`, nacljc guarded memory)
-- Providers offer operations (docs/12 phase 0, 0.11.0-SNAPSHOT): `-sign`, `-x25519-dh`, `-hkdf`, `-aead-encrypt`/`-aead-decrypt`, `-argon2id`, `-wrap`; secret results come back as material the caller adopts or destroys. Lending (`-with-material`) is the separate `Lending` protocol; `lending-provider` builds the operations from it (`:memory`, `:sodium`). signet's crypto code calls operations only (`test/signet/operations_test.clj`: a provider without `Lending` runs every feature); `vault/with-material` is `^:no-doc`, for white-box tests
+- Providers offer operations (docs/12 phase 0, 0.11.0-SNAPSHOT): `-sign`, `-x25519-dh`, `-hkdf`, `-hmac`, `-aead-encrypt`/`-aead-decrypt`, `-argon2id`, `-wrap`/`-unwrap`; secret results go into new entries the caller names (temporary entries, destroyed by the caller with `vault/destroy-temp!`; `vault/temp-entry-count` is 0 between operations), never back to the caller. Lending (`-with-material`) is the separate `Lending` protocol; `lending-provider` builds the operations from it (`:memory`, `:sodium`). signet's crypto code calls operations only (`test/signet/operations_test.clj`: a provider without `Lending` runs every feature); `vault/with-material` is `^:no-doc`, for white-box tests
 - `generate-signing-key!`, `generate-encryption-key!`, `import-*-key!`, `export-secret` (ack), `destroy!`, `public-key`, `lookup`, `handle(s)`, defaults, `import-password!`
 - Session entries (Noise secrets), internal entries (a vault file's master key), the gate (read/write lock), `note-use!` (auto-lock hook); `^:no-doc` internals for signet.password / signet.vault.file
 
@@ -167,9 +167,12 @@ function, Devin review fixes (`docs/review-devin-20260926.md`,
 ### Possible next steps (none chosen yet; ask the user)
 
 - **docs/12 phase 0: operation-level providers: done 2026-10-24** (Frank
-  approved it). **Should be addressed:** secret results (DH outputs,
-  derived keys) are returned to the caller as material, not kept in the
-  provider as entries (docs/12 phase 0 "As built"). Next decided step: **make
+  approved it), including secret results kept in the provider as
+  temporary entries (2026-10-24; docs/12 phase 0 "As built"). **Todo
+  (Frank, 2026-10-24): a tutorial** on this mode of operation: every
+  crypto call works on references (handles), never on key bytes, unlike
+  conventional toolkits; PKCS#11 did it from the start, with a hostile
+  interface. Next decided step: **make
   libsodium the default backend**: done 2026-10-24 (see Crypto backends).
   The agent work (docs/12:
   ssh-agent client provider, the signet agent with an nREPL-message-model
@@ -286,9 +289,9 @@ test/signet/consumer_check.clj.
 ## Testing, lint, format
 
 ```bash
-bb test:jvm          # full suite, JCA backend (clojure -M:test:jca): 247 tests / 1106 assertions
-bb test:jvm-sodium   # full suite, libsodium backend (247 / 1320) + JCA-vs-libsodium parity
-bb test:bb-sodium    # full suite on babashka, default backend (libsodium): 237 / 1291 (all but secp256k1)
+bb test:jvm          # full suite, JCA backend (clojure -M:test:jca): 247 tests / 1120 assertions
+bb test:jvm-sodium   # full suite, libsodium backend (247 / 1335) + JCA-vs-libsodium parity
+bb test:bb-sodium    # full suite on babashka, default backend (libsodium): 237 / 1306 (all but secp256k1)
 bb test:fail-closed  # without libsodium the default refuses to load and names the JCA opt-in
 bb smoke             # bb smoke suite (JCA, asked for): 9 tests
 bb test:no-sodium    # lint + fmt + JCA suite + bb smoke (no native libsodium needed)

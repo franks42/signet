@@ -235,9 +235,12 @@
       HKDF with the chaining key as salt; the first 32 output bytes become
       the new ck, the last 32 the new k. Resets the nonce counter to zero.
       Both live in the vault. Consumes and destroys ikm (a DH output,
-      used once). Impure: writes the vault."
+      used once): a temporary entry of the session's vault, or bytes from a
+      deprecated key record, which are moved into the vault first.
+      Impure: writes the vault."
      [{:keys [ck vault session-id] :as state} ikm]
-     (let [[ck' k'] (vault/hkdf-pair! vault session-id ck ikm)]
+     (let [ikm      (if (vault/handle? ikm) ikm (vault/adopt-temp! vault ikm))
+           [ck' k'] (vault/hkdf-pair! vault session-id ck ikm)]
        (created! ck' k')
        (assoc state :ck ck' :k k' :n 0))))
 
@@ -371,9 +374,9 @@
 #?(:clj
    (defn- x25519-dh*
      "The raw X25519 computation behind dh and edh. A local ephemeral or
-      handle computes inside the vault (the result is material that
-      mix-key! consumes: bytes, or a nacljc secret under :sodium); a
-      deprecated key record computes on the backend directly. Nothing is
+      handle computes inside the vault (the result is a temporary entry
+      that mix-key! consumes); a deprecated key record computes on the
+      backend directly (bytes, which mix-key! moves into the vault). Nothing is
       registered anywhere.
       Impure for a handle or an ephemeral: reads the vault; pure for a key
       record. Throws what the backend's x25519-dh throws (a low-order key)."

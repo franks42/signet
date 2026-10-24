@@ -58,6 +58,9 @@
         (let [s (if (na/secret? material) material (na/secret-import! material))]
           (swap! secrets assoc kid {:alg alg :secret s}))
         nil)
+      :move! (fn [from to alg]
+               (swap! secrets (fn [m] (-> m (dissoc from) (assoc to (assoc (get m from) :alg alg)))))
+               nil)
       :has? (fn [kid] (contains? @secrets kid))
       :kids (fn [] (set (keys @secrets)))
       :alg (fn [kid] (:alg (get @secrets kid)))

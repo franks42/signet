@@ -211,24 +211,27 @@
         salt (impl/random-bytes 16)
         e    {:method :password :salt salt :opslimit opslimit :memlimit memlimit
               :nonce (impl/random-bytes 12)}
-        k    (vault/argon2id-material vault-id pw salt limits)]
+        k    (vault/argon2id! vault-id pw salt limits)]
     (try
       (assoc e :wrapped (vault/internal-wrap vault-id mk k (:nonce e) (entry-aad e)))
-      (finally (impl/destroy-material! k)))))
+      (finally (vault/destroy-temp! k)))))
 
 (defn- recovery-unlock-key
   "The recovery key's unlock key, derived from rk (bytes, consumed) inside
-   vault-id's provider on a temporary entry. Returns material the caller
-   must release with impl/destroy-material!.
-   Impure: writes and reads the provider, consumes rk."
+   vault-id's provider: a temporary entry, which the caller destroys
+   (vault/destroy-temp!). Impure: writes and reads the provider, consumes
+   rk."
   [vault-id rk]
-  (vault/temp-hkdf vault-id rk (byte-array 0) (utf8 "signet/vault-file/v1/recovery-key") 32))
+  (let [t (vault/adopt-temp! vault-id rk)]
+    (try (vault/derive! vault-id t (byte-array 0) (utf8 "signet/vault-file/v1/recovery-key") 32)
+         (finally (vault/destroy-temp! t)))))
 
 (defn- unwrap-mk
-  "The master key material of entry e, with unlock key k. Impure: reads k.
-   Throws ex-info {:type :signet.impl/auth-failed} for a wrong key."
-  [k e]
-  (impl/unwrap-material k (:nonce e) (:wrapped e) (entry-aad e)))
+  "Unwrap entry e's master key with unlock key k (a temporary entry) into
+   a new internal entry of vault-id; returns its id. Impure: writes the
+   vault. Throws ex-info {:type :signet.impl/auth-failed} for a wrong key."
+  [vault-id k e]
+  (vault/unwrap-internal! vault-id k (:nonce e) (:wrapped e) (entry-aad e)))
 
 (defn- entry
   "The unlock entry of method in unlock entries es, or nil. Pure."
@@ -326,10 +329,12 @@
 (defn- secret-aad ^bytes [kid alg] (cedn/canonical-bytes {:kid kid :alg alg}))
 
 (defn- save-key
-  "k = HKDF(MK, salt, \"signet/vault-file/v1/save\"). Impure: reads the
-   master key; under :sodium allocates the result."
+  "k = HKDF(MK, salt, \"signet/vault-file/v1/save\"), in the vault: a
+   temporary entry, which the caller destroys (vault/destroy-temp!).
+   Impure: reads the master key, writes the vault.
+   Throws :signet.vault/vault-locked when the vault no longer holds MK."
   [vault-id mk salt]
-  (vault/internal-hkdf vault-id mk salt (utf8 "signet/vault-file/v1/save") 32))
+  (vault/derive! vault-id (vault/internal-handle vault-id mk) salt (utf8 "signet/vault-file/v1/save") 32))
 
 (defn- write-file!
   "Snapshot the vault, encrypt it and write the file. Impure: reads the
@@ -342,13 +347,13 @@
       (let [content (vault/snapshot vault-id (fn [i kid alg]
                                                {:key k :nonce (nonce (inc i)) :aad (secret-aad kid alg)}))
             header  {:type :signet/vault-file :v 1 :unlock unlock :salt salt}
-            f       (assoc header :body (impl/chacha20-poly1305-encrypt
+            f       (assoc header :body (vault/aead-encrypt
                                          k (nonce 0) (cedn/canonical-bytes content)
                                          (cedn/canonical-bytes header)))]
         (write-atomically! path (cedn/canonical-str f))
         (swap! a assoc :file f :dirty? false)
         nil)
-      (finally (impl/destroy-material! k)))))
+      (finally (vault/destroy-temp! k)))))
 
 (defn- load-body!
   "Decrypt file f's body with master key mk and load it into vault-id.
@@ -359,7 +364,7 @@
   (let [k (save-key vault-id mk (:salt f))]
     (try
       (let [content (try (edn/read-string {:readers cedn/readers}
-                                          (String. ^bytes (impl/chacha20-poly1305-decrypt
+                                          (String. ^bytes (vault/aead-decrypt
                                                            k (nonce 0) (:body f)
                                                            (cedn/canonical-bytes (dissoc f :body)))
                                                    "UTF-8"))
@@ -371,11 +376,11 @@
           (throw (ex-info "The vault file's body is not a snapshot" {:type ::corrupt-file})))
         (vault/restore! vault-id content
                         (fn [i {:keys [kid alg wrapped]}]
-                          (try (impl/unwrap-material k (nonce (inc i)) wrapped (secret-aad kid alg))
+                          (try (vault/unwrap-key! vault-id k (nonce (inc i)) wrapped (secret-aad kid alg) kid alg)
                                (catch clojure.lang.ExceptionInfo _
                                  (throw (ex-info "A key in the vault file failed authentication"
                                                  {:type ::corrupt-file :kid kid})))))))
-      (finally (impl/destroy-material! k)))))
+      (finally (vault/destroy-temp! k)))))
 
 (declare start-timer!)
 
@@ -390,21 +395,20 @@
   ((or (:clock s) default-clock)))
 
 (defn- finish-unlock!
-  "Adopt master-key material mk-m into vault-id, load the body, and mark
-   the vault unlocked by method. On failure the vault is cleared and stays
-   locked. Impure: writes the vault and the file state."
-  [vault-id a mk-m method]
-  (let [mk (vault/adopt-internal! vault-id mk-m)]
-    (try
-      (load-body! vault-id mk (:file @a))
-      (swap! a (fn [s] (let [t (now-ms s)]
-                         (assoc s :locked? false :dirty? false :mk mk :unlocked-by method
-                                :unlocked-at t :last-used t))))
-      (start-timer! vault-id a)
-      vault-id
-      (catch Throwable t
-        (vault/clear! vault-id)
-        (throw t)))))
+  "With master key mk (an internal entry of vault-id, just unwrapped), load
+   the body and mark the vault unlocked by method. On failure the vault is
+   cleared and stays locked. Impure: writes the vault and the file state."
+  [vault-id a mk method]
+  (try
+    (load-body! vault-id mk (:file @a))
+    (swap! a (fn [s] (let [t (now-ms s)]
+                       (assoc s :locked? false :dirty? false :mk mk :unlocked-by method
+                              :unlocked-at t :last-used t))))
+    (start-timer! vault-id a)
+    vault-id
+    (catch Throwable t
+      (vault/clear! vault-id)
+      (throw t))))
 
 (declare save!)
 
@@ -664,14 +668,14 @@
                                   {:type ::already-unlocked :vault vault-id})))
                 (let [e (or (entry (:unlock @a) :password)
                             (throw (ex-info "This vault file has no password" {:type ::no-password})))
-                      k (vault/argon2id-material vault-id password (:salt e)
-                                                 (select-keys e [:opslimit :memlimit]))
-                      m (try (unwrap-mk k e)
+                      k (vault/argon2id! vault-id password (:salt e)
+                                         (select-keys e [:opslimit :memlimit]))
+                      m (try (unwrap-mk vault-id k e)
                              (catch clojure.lang.ExceptionInfo ex
                                (if (= :signet.impl/auth-failed (:type (ex-data ex)))
                                  (throw (ex-info "Wrong password" {:type ::bad-password :vault vault-id}))
                                  (throw ex)))
-                             (finally (impl/destroy-material! k)))]
+                             (finally (vault/destroy-temp! k)))]
                   (finish-unlock! vault-id a m :password)))))))
 
 (defn unlock-with-recovery-key!
@@ -705,13 +709,13 @@
                             (let [txt ((requiring-resolve 'nacljc.core/secret-export) rk {:i-understand :exposes-secret})]
                               (try (parse-recovery-key txt) (finally (wipe! txt)))))
                       m   (let [k (recovery-unlock-key vault-id key)]
-                            (try (unwrap-mk k e)
+                            (try (unwrap-mk vault-id k e)
                                  (catch clojure.lang.ExceptionInfo ex
                                    (if (= :signet.impl/auth-failed (:type (ex-data ex)))
                                      (throw (ex-info "This recovery key does not open this vault"
                                                      {:type ::wrong-recovery-key :vault vault-id}))
                                      (throw ex)))
-                                 (finally (impl/destroy-material! k))))]
+                                 (finally (vault/destroy-temp! k))))]
                   (finish-unlock! vault-id a m :recovery-key)))))))
 
 (defn lock!
@@ -751,12 +755,14 @@
              (let [a (unlocked-state vault-id)]
                (locking a
                  (let [e (entry (:unlock @a) :password)
-                       k (when e (vault/argon2id-material vault-id old (:salt e) (select-keys e [:opslimit :memlimit])))]
+                       k (when e (vault/argon2id! vault-id old (:salt e) (select-keys e [:opslimit :memlimit])))]
                    (try
-                     (when (or (nil? e) (try (impl/destroy-material! (unwrap-mk k e)) false
+                     ;; the old password must unwrap the master key: a second
+                     ;; copy, destroyed at once
+                     (when (or (nil? e) (try (vault/destroy-internal! vault-id (unwrap-mk vault-id k e)) false
                                              (catch clojure.lang.ExceptionInfo _ true)))
                        (throw (ex-info "Wrong password" {:type ::bad-password :vault vault-id})))
-                     (finally (impl/destroy-material! k))))
+                     (finally (vault/destroy-temp! k))))
                  (let [e (password-entry vault-id (:mk @a) new limits)]
                    (swap! a update :unlock #(conj (vec (remove (comp #{:password} :method) %)) e))
                    (write-file! vault-id a))))
@@ -809,7 +815,7 @@
             e         (assoc e :wrapped
                              (let [k (recovery-unlock-key vault-id rk)]
                                (try (vault/internal-wrap vault-id (:mk @a) k (:nonce e) (entry-aad e))
-                                    (finally (impl/destroy-material! k)))))]
+                                    (finally (vault/destroy-temp! k)))))]
         (try
           (swap! a update :unlock #(conj (vec (remove (comp #{:recovery-key} :method) %)) e))
           (write-file! vault-id a)

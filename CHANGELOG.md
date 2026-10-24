@@ -27,10 +27,19 @@
   `test/signet/operations_test.clj` runs signing, box, shared keys, Noise
   sessions, password keys and vault files on a provider without `Lending`.
   No behavior change otherwise (full suite and backend parity unchanged).
-  **Open gap, should be addressed:** secret results (DH outputs, derived
-  keys) come back to the caller as material instead of staying inside the
-  provider as new entries (docs/12 phase 0, "As built"). Fine for a
-  smartcard, not for an agent that must keep them.
+- **Secret results stay in the provider.** `-x25519-dh`, `-hkdf`,
+  `-argon2id` and the new `-unwrap` write their result into a new entry
+  the caller names and return nothing; new `-hmac`, `-move!` and
+  `-public-key`. The vault keeps such results as hidden temporary entries
+  (`vault/temp-entry-count`), and box, shared keys, sessions, password keys
+  and vault files chain operations on them instead of holding key bytes.
+  Internal API: `derive!`, `hmac`, `argon2id!`, `promote!`,
+  `adopt-temp!`, `destroy-temp!`, `unwrap-internal!`, `unwrap-key!`,
+  `internal-handle` replace `hkdf-material`, `temp-hkdf`,
+  `internal-hkdf`, `argon2id-material`, `adopt-symmetric!`,
+  `adopt-shared!`, `adopt-internal!`; `x25519-dh` returns a temporary
+  entry's handle; `snapshot` takes a key handle, `restore!` an unwrap!
+  callback. Wire formats unchanged (full suite, Noise vectors, parity).
 - `vault/with-material` is `^:no-doc` (white-box tests only) and throws
   `:signet.vault/not-lending` for a provider without `Lending`. The internal
   `with-temp-material` and `with-internal` are replaced by operations
