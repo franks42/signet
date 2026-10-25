@@ -139,6 +139,8 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `docs/12-agent-design.md` — design (2026-09-27): secrets in a separate process; operation-level providers (phase 0), an ssh-agent client provider (sign-only), the signet agent (Unix socket, peer check, CEDN protocol), policy and the PDP seam. Not built.
 - `docs/13-aws-kms-provider.md` — research (2026-10-24): AWS KMS as a provider: Ed25519 signing yes (4096-byte limit vs sign-edn), no X25519; KMS-sealed vault files (a `:kms` unlock method) as the first integration; AWS credentials via an agent, ideally IAM Roles Anywhere with the YubiKey; spike plan; prior art: the AWS Encryption SDK (keyrings, encryption context, key commitment). Not built.
 - `docs/14-algorithms-and-cross-key-identity.md` — design notes (2026-10-24): 25519 at the core, P-256/secp256k1 at the edges via vetted libraries and providers; algorithm × provider matrix; signature profiles (pre-hash, encoding, low-s, recovery id); several keys from one seed; cross-signed key bindings (one identity, several keys) for SPKI assertions and stroopwafel. Not built.
+- `docs/tutorial/README.md` — tutorial outline (2026-10-24): cryptography by reference, written as the API we want; snippets marked [works]/[change]/[new] and run as tests; identity as the central reference; seed and KEK options; decisions D1–D12 (sync/async is D12).
+- `docs/15-seed-and-kek.md` — design and research (2026-10-24): one seed, many keys; HKDF-Expand with the seed as the HMAC key; seed storage; KEK variants (KMS symmetric, a KMS HMAC key as the seed (verified feasible in AWS docs), YubiKey); importing derived keys; spike plan. Not built.
 
 ## Current state (2026-09-28)
 
