@@ -26,28 +26,72 @@ HMAC message. That single choice makes the derivation runnable inside KMS
 (below) and is why the scheme is plain HKDF-Expand rather than BIP32 or
 SLIP-0010.
 
-- **The seed is the HKDF pseudo-random key.** 32 random bytes. RFC 5869
+- **The seed is the HKDF pseudo-random key.** 64 random bytes. RFC 5869
   (§3.3) allows skipping HKDF-Extract when the input is already a uniformly
   random key of hash length (documented). So the seed *is* PRK.
-- **Each key is HKDF-Expand(seed, label, length)**, with HMAC-SHA-256:
+- **Each key is HKDF-SHA-512-Expand(seed, label, length)**, at most 64
+  bytes, which is a single HMAC truncated to the length:
 
   ```
-  T(1) = HMAC(seed, label ‖ 0x01)
-  T(2) = HMAC(seed, T(1) ‖ label ‖ 0x02)        ; when more than 32 bytes
-  label = "signet/seed/v1/<identity-name>/<alg>/<index>"
+  out   = first length bytes of HMAC-SHA-512(seed, label ‖ 0x01)
+  label = "signet/seed/v1/<identity-name>/<alg>/<index>/<counter>"
   ```
 
-- **Lengths per algorithm** (ECDSA scalars use FIPS 186-5's method with
-  64 extra bits, d = (c mod (n−1)) + 1, so no retry loop; documented):
+  (Revised 2026-10-24 from HMAC-SHA-256 with a 32-byte seed. With SHA-256,
+  P-256 and P-384 needed a second block, T(2) = HMAC(seed, T(1) ‖ label ‖
+  0x02), which puts the secret T(1) into an HMAC *message*: KMS can still
+  compute it, but nacljc's HMAC takes only public messages. With SHA-512,
+  every key is one HMAC, one KMS `GenerateMac` call.)
+- **Per algorithm**:
 
-  | Key | Output | HMAC calls |
+  | Key | Output | Accept when |
   |---|---|---|
-  | Ed25519 seed | 32 bytes, used as is | 1 |
-  | X25519 | 32 bytes (clamped by the library) | 1 |
-  | P-256, secp256k1 | 40 bytes, reduced to a scalar | 2 |
-  | P-384 | 56 bytes, reduced | 2 |
+  | Ed25519 | 32 bytes, the seed of `crypto_sign_seed_keypair` | always |
+  | X25519 | 32 bytes (clamped by the library) | always |
+  | P-256, secp256k1 | 32 bytes, a big-endian scalar d | 0 < d < n |
+  | P-384 | 48 bytes, d | 0 < d < n |
 
+- **ECDSA scalars by rejection, not reduction** (revised 2026-10-24 from
+  FIPS 186-5's "64 extra bits, then mod n"). Reduction is arithmetic on a
+  secret, and libsodium has no bignum for these curves, so it would run on
+  the heap. Rejection needs only a validity check, which the curve library
+  that computes the public key does anyway, on a pointer (libsecp256k1's
+  `secp256k1_ec_seckey_verify`, for example). On rejection, the counter
+  goes up and the HMAC runs again. The chance is about 2⁻³² for P-256 and
+  negligible for the others, so the retry path is tested by injection, not
+  by finding a real vector.
 - **`index`** gives rotation without a new seed: index 1 is the next key.
+  **`counter`** starts at 0 and only moves on rejection.
+
+### The same derivation in guarded memory
+
+The local derivation is the same function as KMS's, not an emulation:
+`GenerateMac` is "the standard, raw HMAC defined in RFC 2104" (verified,
+AWS API reference), and libsodium's `crypto_kdf_hkdf_sha512_expand` (or
+`crypto_auth_hmacsha512`) is the same RFC 2104 HMAC-SHA-512 (documented).
+Both exist in the libsodium in use (1.0.22; verified in its headers).
+
+- **Sodium provider**: the seed is a 64-byte entry; derivation is an
+  operation that writes the output into a new entry (phase 0's secret
+  results), the seed and the output never leaving guarded memory. A
+  shorter key is the same output read with a shorter length: pointer plus
+  length, no copy through Clojure.
+- **KMS provider**: the same operation as one `GenerateMac(HMAC_SHA_512)`
+  on an `HMAC_512` key holding the imported seed (64 bytes, the key spec's
+  length; verified). The output comes back over TLS into guarded memory.
+- **What is missing** (verified in the source): nacljc wraps
+  `crypto_kdf_hkdf_sha256_*` only, as extract-then-expand, and its
+  `hmac-sha-256` returns a public tag. Needed: an expand-only
+  HKDF-SHA-512 in nacljc, secret in, secret out (a nacljc change, Frank's
+  approval), and the operation in signet's provider protocol.
+- **Checks before KMS**: libsodium against an independent HMAC-SHA-512
+  (JCA's `HmacSHA512`, on the JVM) on fixed seeds and labels; RFC 4231's
+  HMAC-SHA-512 vectors for the primitive (RFC 5869 has SHA-256 vectors
+  only). Then the KMS spike compares with the same vectors.
+- **ECDSA** additionally needs the curve library (docs/14's open P-256
+  decision; libsecp256k1 for secp256k1) to validate the scalar and give the
+  public key from the pointer. Ed25519 and X25519 need nothing beyond
+  libsodium.
 
 **Why not BIP32/SLIP-0010.** Their master step is HMAC-SHA512 with the
 fixed key `"Bitcoin seed"` (or a per-curve string) and the **seed as the
@@ -56,18 +100,13 @@ the message too (documented). With the seed in the message, a KMS HMAC key
 cannot hold it. Interop with wallets that expect BIP32 paths would need
 BIP32 itself, locally; this scheme is for signet's own identities.
 
-**In signet today** (verified in the source): `-hkdf` runs
-Extract-then-Expand over an entry or bytes; nacljc wraps libsodium's
-`crypto_kdf_hkdf_sha256_extract` and `_expand` separately. An
-expand-only operation on a seed entry is the small addition.
-
 ## Where the seed lives
 
 1. **In the vault file**, as an entry (guarded memory while unlocked,
    ciphertext on disk). Simple; the seed is as safe as the vault password
    or recovery key.
 2. **Offline only**: written down after the keys are imported, then
-   destroyed. Formats: a BIP39-style word list (the 32 bytes as words; only
+   destroyed. Formats: a BIP39-style word list (the 64 bytes as words; only
    the encoding is borrowed, not BIP39's PBKDF2 seed stretching) or Shamir
    shares (SLIP-0039, k of n). Documented, not designed here.
 3. **Wrapped under a KEK**, so using the seed needs a separately authorized
@@ -89,8 +128,8 @@ anywhere (the vault file, S3).
 
 ### B. KMS HMAC key as the seed
 
-The seed is imported into a KMS `HMAC_256` key; derivation is
-`GenerateMac(HMAC_SHA_256, label ‖ 0x01)` (and a second call for T(2)).
+The seed is imported into a KMS `HMAC_512` key; derivation is
+`GenerateMac(HMAC_SHA_512, label ‖ 0x01)`, truncated to the key's length.
 The result is byte-identical to the local derivation.
 
 Verified in AWS's documentation:
@@ -98,8 +137,8 @@ Verified in AWS's documentation:
 - HMAC keys **accept imported key material**, and AWS states that for
   HMAC (and asymmetric) keys "importing creates compatible and
   interoperable keys that operate within and outside of AWS".
-- Imported HMAC key material must match the key spec's length: `HMAC_256`
-  takes **32 bytes**, which is the seed. Wrapping for import:
+- Imported HMAC key material must match the key spec's length: `HMAC_512`
+  takes **64 bytes**, which is the seed. Wrapping for import:
   `RSAES_OAEP_SHA_256` (or `_SHA_1`, or `RSA_AES_KEY_WRAP_*`).
 - `GenerateMac` computes "the standard, raw HMAC defined in RFC 2104", on
   messages of 1 to 4096 bytes, and AWS says the raw result can "implement
@@ -179,19 +218,20 @@ memory and inside the target.
 
 ## Spike plan (when AWS credentials are at hand)
 
-1. Local: derive Ed25519, P-256 and secp256k1 keys from a test seed with
-   HKDF-Expand; check determinism and the scalar reduction against known
-   vectors.
-2. KMS: create an `HMAC_256` key with origin `EXTERNAL`, import the test
-   seed, call `GenerateMac` on a label; pass when it equals the local
-   `T(1)`. Then T(2).
+1. Local: derive Ed25519, P-256 and secp256k1 keys from a test seed;
+   libsodium against JCA's HmacSHA512 on the same seeds and labels;
+   determinism; the rejection path by injection.
+2. KMS: create an `HMAC_512` key with origin `EXTERNAL`, import the test
+   seed, call `GenerateMac` on the labels; pass when every result equals
+   the local derivation.
 3. KMS: import a derived Ed25519 key into an `ECC_NIST_EDWARDS25519` key;
    pass when `GetPublicKey` gives the local kid.
 
 ## Open decisions (Frank's)
 
-- The scheme: HKDF-Expand with the seed as PRK and labelled outputs, as
-  above (no BIP32 for signet identities).
+- The scheme: HKDF-SHA-512-Expand with a 64-byte seed as PRK, labelled
+  outputs, rejection for ECDSA scalars (no BIP32 for signet identities).
+- The nacljc addition: expand-only HKDF-SHA-512, secret in, secret out.
 - The default home of the seed: vault file, offline, or a KEK (A, B, C).
 - B's one-key-per-identity rule and who holds `kms:GenerateMac`.
 - A dedicated YubiKey slot with PIN and touch *always* for C.

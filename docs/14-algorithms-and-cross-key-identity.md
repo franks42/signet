@@ -289,6 +289,189 @@ the strength question made explicit.
   envelope with two signers (signet's envelopes have one signer today).
   stroopwafel: what a binding means for policy.
 
+## Choosing by the relying party (Frank's question, 2026-10-24)
+
+Idea: Alice reads Bob's key type from his kid, which hints at the formats
+and algorithms Bob supports; since Alice can derive a key of any type from
+her seed, she can match Bob without either of them configuring anything.
+
+It works, with three refinements.
+
+**1. The key type is a hint; a capability statement is the authority.**
+A P-256 key says which curve, not which format: ECDH-ES (JWE), HPKE
+(RFC 9180), ECIES, CMS, or AWS's ECDH keyring all fit one P-256 key. So
+Bob publishes, signed by his identity, which profiles each key accepts:
+
+```clojure
+{:type :signet/capabilities :v 1
+ :kid  "urn:signet:pk:p256:…"
+ :accepts [:hpke/p256-sha256-aes128gcm]       ; encrypt to me like this
+ :verifies [:ed25519 :p256/x509]}               ; I can check these signatures
+```
+
+Precedents (documented): OpenPGP's key flags and preferred-algorithm
+subpackets, S/MIME's capabilities attribute, JWK's `use` and `alg`, DID
+documents' verification methods, TLS's cipher-suite negotiation.
+
+**The statement is also what to exchange instead of a bare kid**
+(Frank, 2026-10-24: "a signed uri with the key"). A kid already carries
+the whole public key, so the signature does not add the key; it adds
+*proof of possession*: the key is a valid point and someone holding its
+private key made the statement. A self-signed kid alone is weak (it is
+replayable, says nothing about what the key is for, and invalid keys
+already fail closed when used: libsodium rejects small-order keys). Signed
+together with the capabilities, purpose, expiry and bindings, it becomes a
+*key card*, like an OpenPGP self-signature on a user ID. Self-signed means
+possession, not trust: whether this is Bob's card is still learned
+authentically, by fingerprint, or by a signature from someone Alice
+trusts (SPKI). The kid stays the reference; the card is how it travels.
+
+**2. What Alice needs to match depends on the operation.**
+
+- **Encrypting to Bob, sender-authenticated** (signet's box: static-static
+  DH): Alice needs a key **on Bob's curve**, because Diffie-Hellman only
+  works within one curve. This is where the seed helps: Alice derives her
+  P-256 key, binds it to her identity (a key binding, above), and Bob
+  checks the sender through the binding.
+- **Encrypting to Bob, anonymous** (an ephemeral sender key, as in HPKE's
+  base mode): Alice needs no key of her own; Bob's key and accepted
+  profile are enough.
+- **Signing for Bob**: Bob's own key type is irrelevant; what matters is
+  what Bob can *verify* (`:verifies`). A JWT or X.509 verifier that only
+  knows ES256 makes Alice sign with her P-256 key.
+
+**3. Negotiation must be authenticated and have a floor.**
+
+- **Downgrade**: an attacker who can change Bob's statement in transit
+  steers Alice to the weakest profile. The statement is signed by Bob's
+  identity root, and Alice obtains that root authentically (the same
+  problem as obtaining Bob's kid at all).
+- **Floor**: Alice's policy can refuse profiles (no forward secrecy for
+  some data, no curve below a level) and fail closed rather than
+  "accommodate" down to them.
+- **Preference**: among profiles both support, a fixed order (Alice's
+  policy), not Bob's.
+
+**Two consequences worth noting:**
+
+- **Pairwise keys.** The same seed can derive a different key *per relying
+  party* (Bob's kid in the label), as passkeys do per site: Bob and Carol
+  then cannot link Alice by her key. Linkable identity via bindings, or
+  unlinkable pairwise keys, becomes a per-relationship choice.
+- **One encryption format for every curve.** Box v2 is X25519 and
+  ChaCha20-Poly1305. Rather than a signet-specific box for P-256, HPKE
+  (RFC 9180) covers both: DHKEM(X25519) and DHKEM(P-256) suites, with an
+  authenticated mode (AuthEncap) matching box's sender authentication. Its
+  X25519/HKDF-SHA-256/ChaCha20-Poly1305 suite can be built from libsodium
+  primitives (unverified: no libsodium HPKE API; an implementation would be
+  checked against RFC 9180's test vectors). A possible box v3; not
+  proposed yet.
+
+## Key cards: how keys and capabilities travel (next to resolve)
+
+Frank, 2026-10-25: without a card, a relying party learns what a key is
+for and what it supports in some ad hoc, hard-coded, unspecified way. So
+the card comes before profiles, HPKE and the seed: it is where all of
+them become visible to the other side. It is defined in EDN, as a map
+with a `:type`, and signed as a signet envelope.
+
+**Trust is orthogonal.** A card proves possession (whoever signed it holds
+the keys it names) and states properties. Whether the card belongs to
+"Bob", and whether Bob may do anything, is decided elsewhere: by how the
+kid was obtained, by SPKI/SDSI certificates, by stroopwafel policy.
+Nothing in the card changes that.
+
+### What existing cards do, and what to take
+
+RFC 9420 is verified (sections 7 and 10 read on 2026-10-25). The others
+are documented from memory and not re-read for this section.
+
+| Spec | Signed by | What to take |
+|---|---|---|
+| MLS KeyPackage (RFC 9420) | its own signature key (label `"KeyPackageTBS"`) | the closest model. Carries a signature key, an HPKE `init_key`, a leaf `encryption_key`, **capabilities** (versions, cipher suites, extensions, proposals, credential types) and a **lifetime** (`not_before`, `not_after`). Rules: the sender must check the lifetime and the receiver should; applications must set a maximum lifetime and reject longer ones; every extension used must be listed in capabilities; the encryption key must differ from `init_key`; KeyPackages are meant for one use (reuse enables replay), with an optional "last resort" package; a client must support everything it advertises (13.4) |
+| Signal prekey bundle (X3DH/PQXDH) | the long-term identity key signs the prekey | an identity key vouching for an encryption key, which is our binding applied to `:agree` keys |
+| PKCS#10 CSR, S/MIME capabilities (RFC 2986, RFC 8551) | the key it contains | proof of possession; algorithm preferences, in order, as an attribute. Replayable (no freshness) |
+| DPoP (RFC 9449) | the key in its header | freshness for a *presentation*: issued-at, a unique id, the audience (method and URL) |
+| JWK / COSE_Key (RFC 7517, RFC 9052) | (a key, not a card) | the vocabulary: `use`, `key_ops` (sign, verify, encrypt, decrypt, wrapKey, unwrapKey, deriveKey, deriveBits), `alg`, and `crit` for must-understand headers; RFC 7638 thumbprints |
+| W3C DID document | the controller | keys by role (`authentication`, `assertionMethod`, `keyAgreement`, `capabilityInvocation`, `capabilityDelegation`); service endpoints; `did:key`, an identifier that is the key, as signet's kid is |
+| OpenPGP self-signature (RFC 9580) | the primary key | key flags (certify, sign, encrypt communications, encrypt storage, authenticate); preferred algorithms in order; key expiration; subkeys bound by the primary key, with a back-signature by the subkey (cross-signing) |
+| KERI | the current keys | pre-rotation: commit now to the hash of the next key, so a stolen current key cannot rotate the identity |
+| WebAuthn / YubiKey PIV attestation | the authenticator's attestation key | evidence that the key was generated in hardware and cannot be exported; trusting it is a separate question (the vendor's root) |
+| X.509, SSH certificates | an issuer | validity periods, key usage; the issuer part is trust, so it is out of scope here |
+
+### The dictionary (draft)
+
+| Key | Meaning | From |
+|---|---|---|
+| `:type` | `:signet/key-card` | JOSE `typ`, MLS structures |
+| `:v` | card format version | MLS `version` |
+| `:keys` | the keys this card names, each a map described by the rows below | DID verification methods, MLS (several keys in one package) |
+| `:kid` (per key) | the key itself; the kid carries the algorithm and the public key | `did:key`, JWK |
+| `:purposes` (per key) | what the key is for: `#{:sign :agree :authenticate :certify}`; a relying party refuses other uses | JWK `key_ops`, OpenPGP key flags, DID roles |
+| `:profiles` (per key) | signature profiles the key produces (`:ed25519`, `:p256/x509`, `:secp256k1/cosmos`) | the profiles in this doc |
+| `:accepts` (per key) | encryption formats the key can open, in preference order (`:box/v2`, `:hpke/p256-sha256-aes128gcm`) | MLS cipher suites, OpenPGP preferences, S/MIME capabilities |
+| `:verifies` | signature profiles the holder can check, in order | MLS capabilities, TLS `signature_algorithms` |
+| `:formats` | envelope and protocol versions the holder speaks | MLS `versions` |
+| `:critical` | keys the reader must understand, or else reject the card | JOSE `crit`, MLS (extensions listed in capabilities) |
+| `:not-before`, `:not-after` | validity; the relying party also enforces its own maximum | MLS `Lifetime`, X.509 validity |
+| `:next` | hash of the next key or card (pre-rotation) | KERI |
+| `:attestation` | optional hardware evidence, per key (YubiKey PIV attestation, WebAuthn) | WebAuthn, PIV |
+| `:names` | optional claimed names: assertions, not facts | OpenPGP user IDs, SDSI local names |
+| `:services` | optional endpoints (agent, inbox) | DID services |
+
+When the card is presented to one relying party, it goes inside a fresh
+envelope (`:aud`, `:iat`, a nonce), DPoP-style. The card itself stays
+reusable.
+
+```clojure
+{:type :signet/key-card :v 1
+ :keys [{:kid "urn:signet:pk:ed25519:…" :purposes #{:sign :certify}
+         :profiles [:ed25519]}
+        {:kid "urn:signet:pk:x25519:…"  :purposes #{:agree} :accepts [:box/v2]}
+        {:kid "urn:signet:pk:p256:…"    :purposes #{:sign :agree}
+         :profiles [:p256/x509] :accepts [:hpke/p256-sha256-aes128gcm]
+         :attestation {:type :yubikey/piv :cert "…"}}]
+ :verifies [:ed25519 :p256/x509]
+ :formats  {:envelope [1] :box [2]}
+ :not-before 1792886400000 :not-after 1824422400000
+ :next "sha256:…"}
+```
+
+**Signed by every key it names.** Each key signs the card: the root
+first, then every other key over the same bytes. That makes the card both
+the proof of possession and the multi-key binding from "One identity,
+several keys" above, so there is one statement rather than two
+mechanisms. Keys that sign nothing (`:agree` only) still need to prove
+possession. Two options: a key-agreement check, or a signature from a
+signature key derived from the same seed. To decide.
+
+### Rules for the reader (draft, after MLS 10.1)
+
+1. `:type` and `:v` are known and every key in `:critical` is understood;
+   otherwise reject the card.
+2. Every listed key's signature verifies over the canonical card.
+3. The current time is within `:not-before`/`:not-after`, and the span
+   does not exceed the reader's maximum.
+4. Use a key only for its `:purposes`. Choose among `:accepts` and
+   `:verifies` by the reader's own order and floor (D15), never by the
+   card's order.
+5. The holder must support everything the card advertises (MLS 13.4). If
+   the holder can't open a format it lists, that is the holder's error.
+6. Accepting the card establishes nothing about trust.
+
+### Questions
+
+- One card per identity (as above), or one per key?
+- signet's box today agrees with an X25519 key derived from the Ed25519
+  signing key, while MLS requires encryption keys that are distinct from
+  each other. Keep the derived pair, or give `:agree` its own key?
+- One-time cards for forward secrecy (as in MLS and Signal's one-time
+  prekeys), or only reusable cards for now?
+- How a card is replaced: a newer card signed by the old root, the `:next`
+  commitment, revocation.
+- Canonical form: the existing envelope (CEDN) over the card map, with
+  sets sorted.
+
 ## Open decisions (Frank's)
 
 - Signature profiles as the extension of `-sign` (recommended before the
@@ -300,3 +483,8 @@ the strength question made explicit.
 - P-256 on bb: which C library (the one looked at earlier) or BouncyCastle
   through a JVM subprocess.
 - Two-signer envelopes for key bindings, and the transitivity rule.
+- Capability statements and choosing by the relying party (D15); HPKE as a
+  possible box v3.
+- Key cards (D16, next to resolve): the dictionary, one card per identity
+  or per key, signed by every key, the reader's rules, and the questions
+  above.

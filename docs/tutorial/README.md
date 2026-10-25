@@ -145,6 +145,22 @@ the user's side of it.
   provider operations allowed to return deferred results and an async
   facade on cljs. Leaning (c); to decide with the cljs plan.
 
+- **D13 Unknown options** (chapter 1, F2): reject option keys a function
+  doesn't know, so a typo can't silently drop a property such as expiry.
+- **D14 Values, not bytes** (chapter 1, F3, F4): `box`/`unbox` over EDN
+  values like `sign-edn`, bytes as the lower layer; and whether kids
+  travel visibly in a box by default.
+
+- **D15 Choosing by the relying party** (docs/14): signed capability
+  statements per key; Alice derives a matching key from her seed where an
+  operation needs one; authenticated, with a policy floor.
+- **D16 Key cards** (docs/14, next to resolve): a self-signed EDN map,
+  `:type :signet/key-card`, naming an identity's keys with their purposes,
+  profiles, accepted formats and validity, and signed by every key it
+  names. This is how capabilities travel. Trust is orthogonal.
+
+The working list of gaps and their status: `TODO.md`.
+
 ## Order of work
 
 1. This outline and the glossary.
