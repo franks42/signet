@@ -56,11 +56,16 @@ serialize safely; what the vault does with them; what never leaves
 idea, without sessions, templates and attribute arrays. **[works]**,
 **[change]** for identity.
 
-### 3. One identity, several keys
-An identity with an Ed25519 signing key, an X25519 key, a P-256 key and a
-secp256k1 key; `(sign me tx {:for :cosmos})` picks the secp256k1 key and
-its profile. The keys are bound (docs/14 bindings), so a relying party sees
-one principal. **[new]** (D1, D3, D4).
+### 3. Key cards: who I am, and what I accept
+*Drafted: `03-key-cards.md`.* Alice publishes a card listing her keys,
+their purposes, what she accepts and verifies; Bob reads it, checks the
+proof level of each agreement key, and boxes to her by his own order of
+preference. Adding a P-256 key re-issues the card (`:supersedes`), which
+is also the binding between her keys. Sessions as the stronger
+alternative; a card as a set of statements for policy. **[works]** by
+hand today, **[new]** as `signet.card` (D16; also D1, D3, D4, D15).
+Using several keys by purpose (`(sign me tx {:for :cosmos})`) moves to
+chapter 4 or stays here, to decide.
 
 ### 4. Where keys live
 The same code with the identity's keys in guarded memory, SoftHSM, the
