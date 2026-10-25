@@ -459,6 +459,128 @@ signature key derived from the same seed. To decide.
    the holder can't open a format it lists, that is the holder's error.
 6. Accepting the card establishes nothing about trust.
 
+### A card is a set of statements by its keys (Frank, 2026-10-25)
+
+A verified card is an assertion in the stroopwafel sense: it binds names
+and statements to a key. The sayer is the key (the principal is the
+public key, as in SPKI). There are two kinds of identifier for it:
+
+- **Self-certifying aliases** are identifiers the relying party derives
+  itself from the public key: the kid, a hash of the key, or any URI
+  scheme that contains the whole key or its hash (`did:key`). The
+  equivalence of these aliases with the key is *computed* by the reader,
+  not asserted by anyone, so it needs no sayer and no trust. Two
+  conditions:
+  - The alias must name its derivation (algorithm and hash), as a
+    multihash does.
+  - The key must be in one canonical encoding before it is hashed. A
+    P-256 or secp256k1 point has a compressed and an uncompressed form,
+    which give two hashes for the same key.
+- **Asserted names** cannot be derived: a UUID, a nickname, an account,
+  an email address. These are always kept with their sayer: "K says
+  `name` is N", which is SDSI's local name `(K N)`. They are never a fact
+  about the key. Such a name means something outside K's own namespace
+  only through someone the relying party already trusts.
+
+Reading a card therefore produces facts, each tagged with its sayer and
+validity. Examples: K says "my purposes are …"; K says "I accept …"; K1
+says K2 is the same entity, and K2 says the same about K1; K says its
+next key hashes to H. Whether "K1 and K2 are the same entity" follows from
+those mutual statements is a *rule* in the relying party's policy, not
+something the card decides.
+
+**Consequence: a reduction engine.** Several questions are policy
+reductions over these facts plus local policy, not lookups:
+
+- whom a name refers to;
+- whether two keys count as one principal;
+- which profile to use with Bob (D15: Bob says he accepts X, combined
+  with the local preference order and floor);
+- whether a statement is still in scope.
+
+SPKI's 5-tuple reduction (issuer, subject, delegation, authorization,
+validity) and stroopwafel's Datalog-style rules are this kind of engine.
+The proposed layering:
+
+- **signet** verifies signatures, checks the card's format rules (above)
+  and emits says-facts with validity. It doesn't depend on the engine.
+- **stroopwafel** reduces facts and local policy to decisions.
+- In between, simple decisions (one card, no names, fixed policy) can be
+  plain code at first, as long as they are expressed as the same facts.
+
+Open points for the engine:
+
+- Revocation and replacement (a newer card, a `:next` commitment) need
+  non-monotonic reasoning: stratified negation, or short validity plus a
+  fresh check, as SPKI chose.
+- Time is an input to the reduction (each fact's validity window), not
+  something checked once at load time.
+
+### How this maps onto stroopwafel today (source read 2026-10-25)
+
+Read: stroopwafel 0.11.0 (`c92ab8c`) and stroopwafel-pdp (`dfaa477`, the
+`stroopwafel.pdp.spki.*` namespaces), plus stroopwafel's
+`docs/generic-assertion-schema.md` and `docs/library-separation-plan.md`.
+
+**The layering already exists.** Stroopwafel is now a pure Datalog engine
+with no dependencies (`evaluate`: blocks of facts, rules and checks in;
+`{:valid? …}` out). signet signs and verifies. stroopwafel-pdp verifies
+blocks, filters them and calls the engine. A card reader in signet that
+outputs plain data fits that design without new dependencies.
+
+**The shapes already fit.**
+
+- An SPKI assertion block (`stroopwafel.pdp.spki.assertion`) is a signet
+  envelope whose message is
+  `{:not-before … :not-after … :assertions [{:id :type :statement} …]}`.
+  Its sayer is the signer's kid.
+- The pre-filter turns each surviving assertion into a fact
+  `[sayer ts not-before not-after type id & statement]`.
+- Templates turn those facts into predicates: `[:can …]`, `[:named ?key
+  ?name]`, `[:delegated …]`, `[:revoked-… …]`.
+
+A card's statements are new assertion types in the same tuple, for
+example `:key-purposes`, `:accepts`, `:verifies`, `:same-entity` and
+`:next`. Proposal: the card stays the readable map from the dictionary
+above (the protocol-facing form), and signet has a deterministic
+`card->assertions` that produces this tuple shape. A card could also be
+an assertion block directly, but it would lose its per-key structure.
+
+**Four gaps, found in the source:**
+
+1. **Untrusted sayers are dropped** (pdp pre-filter pass 4: an assertion
+   survives only if its sayer is a trust root or delegated for that
+   type). A card is signed by a key nobody trusts yet, so all of its
+   statements would vanish. Needed: *self-scoped* assertions. These are
+   statements whose subject is the sayer itself (my purposes, my formats,
+   my names in my namespace, my other keys). They are admitted without
+   trust because they bind only the sayer; policy rules decide whether
+   they matter.
+2. **The name-binding template drops the sayer** (`[:named ?key ?name]`).
+   That is sound only while every surviving name comes from a trusted
+   sayer, so that names are effectively the relying party's own. Once
+   self-asserted names are admitted, a name must stay attached to its
+   sayer: `[:named ?sayer ?key ?name]`, the SDSI name `(K N)`.
+3. **One signer per block** (a signet envelope has one signer). A card
+   signed by every key it names becomes N envelopes over the same card.
+   `verify-block` already returns `:message-digest`, so the reader can
+   emit `[:card-signed-by digest kid]` and a rule can join on the
+   digest.
+4. **Derived aliases have no sayer yet.** The relying party computes them
+   itself (kid ↔ key hash ↔ `did:key`). They are injected facts, which is
+   open question 4 in `generic-assertion-schema.md` (a special
+   `:injected` sayer or bare facts). Self-certifying aliases are the
+   clean case for it: they are true by construction.
+
+**Revocation and time are already outside Datalog.** The engine has no
+negation in rule bodies. Denial is expressed through `:reject` checks and
+`:deny` policies (closed world). In the pdp, validity (pass 2, with a
+verifier cap `:max-block-ttl-ms`) and revocation (passes 5 and 6) are
+filters applied before evaluation. That is the "short validity plus a
+check outside the engine" approach recommended above. A card's
+replacement (a newer card, `:next`) would be one more pre-filter pass,
+not a Datalog feature.
+
 ### Questions
 
 - One card per identity (as above), or one per key?
@@ -488,3 +610,7 @@ signature key derived from the same seed. To decide.
 - Key cards (D16, next to resolve): the dictionary, one card per identity
   or per key, signed by every key, the reader's rules, and the questions
   above.
+- Stroopwafel-pdp, for cards (changes there need Frank's approval):
+  self-scoped assertions admitted without trust, name bindings keeping
+  their sayer, a join over multi-signed cards, and a sayer for derived
+  aliases.

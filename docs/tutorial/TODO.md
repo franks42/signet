@@ -33,6 +33,7 @@ built in slices with the chapter's snippets as tests. Status: **open**,
 | G11 | `signet.chain`: require low-s before a chain root may be ECDSA | docs/14 | open |
 | G12 | choosing algorithms and formats by the relying party: capability statements, matching keys from the seed | docs/14, D15 | open |
 | G13 | **next to resolve** (Frank, 2026-10-25): a self-signed *key card*, an EDN map with `:type :signet/key-card`, exchanged instead of a bare kid. It is how keys, purposes, profiles and accepted formats reach a relying party; without it that knowledge is ad hoc and hard-coded. It subsumes G12's capability statement and G3's binding (signed by every key it names). Proof of possession only; trust is orthogonal | docs/14 "Key cards", D16 | open |
+| G14 | cards as says-statements in stroopwafel-pdp: self-scoped assertions admitted without trust, `:named` keeping its sayer, a join over multi-signed cards (`:message-digest`), a sayer for derived aliases; signet's `card->assertions` | docs/14 "How this maps onto stroopwafel" | open |
 
 ## Order (proposed)
 
