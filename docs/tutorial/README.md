@@ -158,6 +158,12 @@ the user's side of it.
   `:type :signet/key-card`, naming an identity's keys with their purposes,
   profiles, accepted formats and validity, and signed by every key it
   names. This is how capabilities travel. Trust is orthogonal.
+  Decided (2026-10-25, docs/14 "Decisions"): one card per identity; the
+  X25519 key derived from Ed25519 is listed as its own `:agree` entry;
+  agreement keys carry a proof level the reader computes (`:derived`,
+  `:signed`, `:asserted`), with Noise sessions as the stronger option; no
+  one-time cards; replacement by
+  `:supersedes` and `:next`; a CEDN envelope.
 
 The working list of gaps and their status: `TODO.md`.
 

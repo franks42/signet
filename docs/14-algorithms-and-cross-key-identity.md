@@ -441,15 +441,18 @@ reusable.
 first, then every other key over the same bytes. That makes the card both
 the proof of possession and the multi-key binding from "One identity,
 several keys" above, so there is one statement rather than two
-mechanisms. Keys that sign nothing (`:agree` only) still need to prove
-possession. Two options: a key-agreement check, or a signature from a
-signature key derived from the same seed. To decide.
+mechanisms. Keys that sign nothing (`:agree` only) are covered by the
+other keys' signatures, with a proof level the reader computes (decision
+3 below).
 
 ### Rules for the reader (draft, after MLS 10.1)
 
 1. `:type` and `:v` are known and every key in `:critical` is understood;
    otherwise reject the card.
-2. Every listed key's signature verifies over the canonical card.
+2. Every listed signing key's signature verifies over the canonical card.
+   Each `:agree` key gets a proof level computed by the reader
+   (`:derived`, `:signed`, `:asserted`; decision 3). Policy may require a
+   minimum level per use.
 3. The current time is within `:not-before`/`:not-after`, and the span
    does not exceed the reader's maximum.
 4. Use a key only for its `:purposes`. Choose among `:accepts` and
@@ -672,18 +675,96 @@ conservative answer is that all of them are revoked. Also open: what the
 pre-filter does when a revocation source is unavailable (fail closed, or
 accept within a configured staleness).
 
-### Questions
+### Decisions (Frank, 2026-10-25)
 
-- One card per identity (as above), or one per key?
-- signet's box today agrees with an X25519 key derived from the Ed25519
-  signing key, while MLS requires encryption keys that are distinct from
-  each other. Keep the derived pair, or give `:agree` its own key?
-- One-time cards for forward secrecy (as in MLS and Signal's one-time
-  prekeys), or only reusable cards for now?
-- How a card is replaced: a newer card signed by the old root, the `:next`
-  commitment, revocation.
-- Canonical form: the existing envelope (CEDN) over the card map, with
-  sets sorted.
+1. **One card per identity.** A one-key card is the special case. The
+   card is also the binding between the keys. Adding a key re-issues the
+   card (every key signs again), with `:supersedes` pointing at the old
+   one.
+2. **X25519 derived from Ed25519 stays, for the default 25519 identity.**
+   The card lists it as its own `:agree` entry. Because the conversion
+   uses public keys only, a reader checks the link the way it recomputes
+   a kid: it is a self-certifying alias, and the Ed25519 signature covers
+   it. P-256 and secp256k1 use separate keys for signing and for
+   agreement. (From memory, not re-checked: Thormarker 2021 analysed
+   Ed25519 plus an X25519-based KEM with a shared key pair and found it
+   secure under its assumptions; Signal's XEdDSA reuses keys in the other
+   direction.)
+3. **Agreement keys are asserted by the card; their proof is graded and
+   visible** (revised the same day, after the conflict with decision 2:
+   a separate P-256 agreement key is not derivable, so requiring
+   derivation would rule out P-256 encryption). Frank's reasoning: trusting
+   an encryption key that the card asserts but that hasn't proven
+   possession is less harmful than trusting an unproven signing key. A
+   wrong encryption key leaks confidentiality to whoever holds it, while
+   an unproven signing key would let someone *speak as* the identity.
+   Signing keys always prove possession by signing the card. An `:agree`
+   key carries one of these proof levels, which the reader computes; the
+   card cannot claim them:
+   - `:derived`: the reader derives it from a signing key on the card
+     (X25519 from Ed25519). Equivalent to proven.
+   - `:signed`: the key pair signed the card itself (possible for
+     P-256 and secp256k1, where the same key pair can do ECDSA). That
+     signature is the key's only one, so no protocol uses it for both
+     signing and agreement.
+   - `:asserted`: covered only by the other signatures on the card.
+
+   A reader's policy sets the minimum level per use; the default accepts
+   `:asserted`.
+
+   **The attack vector to be aware of** is a card listing an encryption
+   key whose private key someone else holds. Messages boxed to it can be
+   read by that party, and an unknown key-share is possible: Alice
+   believes she writes to Bob, but Carol can read. Who can cause it:
+   - *Not an outsider.* Adding a key changes the card bytes, so it
+     requires the card's signing keys. An outsider who has those keys has
+     taken over the identity anyway.
+   - *The holder, by mistake or on purpose.* A malicious holder can leak
+     plaintext anyway; a mistaken one is what the proof levels catch.
+   - *A compromised issuing system* (for example, card generation in an
+     environment an attacker controls). Here `:signed` or `:derived` help,
+     because the attacker would also need that key's private half to
+     sign.
+
+   **The more secure alternative: a session.** In a Noise handshake each
+   side proves possession of its static key implicitly: without the
+   private key, the handshake fails. So a session to an `:asserted` key
+   either proves the key or fails. This is the interactive challenge
+   (option b), for free. Limits: signet's sessions are
+   `Noise_KK_25519_…`, and Noise defines only 25519 and 448, so for P-256
+   the alternatives are `:signed` cards or a TLS-style handshake. A box,
+   in contrast, is accepted by the sender without the recipient ever
+   proving anything.
+4. **No one-time cards for now.** Reusable cards with short validity.
+   If forward secrecy for asynchronous first messages becomes a
+   requirement, follow MLS and Signal (one-time prekeys plus a last-resort
+   key).
+5. **Replacement:** a newer card carries `:supersedes <digest>` and is
+   signed by the old root key. `:next` commits to the next root key, so a
+   stolen current key cannot take over the identity, and a lost one can
+   be succeeded. Revocation goes through the pre-filter (W4).
+6. **Canonical form:** a signet envelope (CEDN) over the card map.
+
+**Forward secrecy, raised with decision 2 ("the default should use
+ephemeral keys").** What each mode gives:
+
+| Mode | Keys | Forward secrecy |
+|---|---|---|
+| box today (verified in `encryption.cljc`) | static-static X25519, a fresh HKDF key per message (salt = nonce) | none: a later compromise of either static key opens past boxes |
+| ephemeral sender + static recipient (HPKE base/auth mode) | a fresh sender key per message; auth mode adds static-static for sender authentication | only against compromise of the *sender's* key; a compromise of the recipient's static key still opens every past message |
+| one-time prekeys (Signal, MLS) | the recipient publishes single-use keys | yes, for asynchronous messages; needs one-time cards (decision 4: not now) |
+| Noise KK session (verified in `session.cljc`) | ephemeral on both sides | yes; both sides must take part |
+
+So "ephemeral by default" can mean two things. For **boxes**, the
+achievable default is an ephemeral sender key with static authentication
+(HPKE auth mode, the box v3 candidate). It is better than today (sender
+compromise no longer exposes past messages, and it matches the P-256
+path), but it is not forward-secret against compromise of the recipient's
+key. Real **forward secrecy** needs either both parties online (signet's
+Noise sessions, which exist) or one-time prekeys (deferred). Proposal: a
+box v3 with an ephemeral sender key (HPKE auth mode, X25519 and P-256
+suites); sessions for forward secrecy; a card's `:accepts` names which
+ones the holder supports. To decide with box v3 (TODO G15).
 
 ## Open decisions (Frank's)
 
@@ -698,9 +779,9 @@ accept within a configured staleness).
 - Two-signer envelopes for key bindings, and the transitivity rule.
 - Capability statements and choosing by the relying party (D15); HPKE as a
   possible box v3.
-- Key cards (D16, next to resolve): the dictionary, one card per identity
-  or per key, signed by every key, the reader's rules, and the questions
-  above.
+- Key cards (D16): decisions 1 to 6 made (2026-10-25). Still open: the
+  dictionary's final form, the reader's rules, and box v3 with an
+  ephemeral sender key.
 - Stroopwafel-pdp, for cards (changes there need Frank's approval):
   self-scoped assertions admitted without trust, name bindings keeping
   their sayer, a join over multi-signed cards, and a sayer for derived
