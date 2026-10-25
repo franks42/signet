@@ -510,9 +510,9 @@ The proposed layering:
 
 Open points for the engine:
 
-- Revocation and replacement (a newer card, a `:next` commitment) need
-  non-monotonic reasoning: stratified negation, or short validity plus a
-  fresh check, as SPKI chose.
+- Revocation and replacement (a newer card, a `:next` commitment) are
+  non-monotonic. Resolved below: they are filtered out before the
+  reduction ("Revocation and negatives").
 - Time is an input to the reduction (each fact's validity window), not
   something checked once at load time.
 
@@ -570,7 +570,20 @@ an assertion block directly, but it would lose its per-key structure.
    itself (kid ↔ key hash ↔ `did:key`). They are injected facts, which is
    open question 4 in `generic-assertion-schema.md` (a special
    `:injected` sayer or bare facts). Self-certifying aliases are the
-   clean case for it: they are true by construction.
+   clean case for it: they are true by construction. Frank's answer
+   (2026-10-25) is `:self` as the sayer. That matches the trust anchor
+   in `stroopwafel-tutorial/notebooks/00_new_model_sketch.clj`: the
+   local PDP, the only axiom `[:trusted :self]`, with trust roots as
+   `:self` assertions. It is SPKI's `Self` at the root of an ACL. The
+   condition: a sayer always comes from signature verification and never
+   from a message, so nothing signed can claim to be `:self`.
+
+**A fifth finding, beyond cards: the engine fails open at its limit.**
+Rule evaluation stops silently at 100 iterations or 1000 facts. A
+`:reject` check or a `:deny` policy over facts that were never derived
+then passes. This was reproduced on 2026-10-25 with a transitive closure
+over 50 edges. It matters here because equivalence closure over bound
+keys grows quadratically (TODO W1).
 
 **Revocation and time are already outside Datalog.** The engine has no
 negation in rule bodies. Denial is expressed through `:reject` checks and
@@ -580,6 +593,84 @@ filters applied before evaluation. That is the "short validity plus a
 check outside the engine" approach recommended above. A card's
 replacement (a newer card, `:next`) would be one more pre-filter pass,
 not a Datalog feature.
+
+### Resolving the gaps (Frank, 2026-10-25)
+
+- **Gap 1, untrusted sayers: trust becomes facts, activation becomes
+  rules.** Every verified statement enters the store with its sayer and
+  stays dormant until a trust fact activates it (`:self` trusts K for a
+  type, a scope and a period). When such a fact is added later,
+  statements that were already present start to count. Delegation closure
+  becomes recursive rules, and explain mode shows why something was
+  trusted. "A key may speak about itself" becomes a default `:self` rule
+  (subject = sayer). This replaces the pdp's pass 4 and answers open
+  question 1 of `generic-assertion-schema.md` in favour of the engine.
+  Three conditions:
+  - Dormant raw facts must be invisible to policies, since a policy that
+    matched a raw tuple would bypass trust. This needs a discipline that
+    is checked, or an engine origin that rules can lift from and policies
+    can't see.
+  - Per-sayer caps against flooding (and W1 fixed first).
+  - Validity is the intersection along the chain.
+- **Gap 2, names: one predicate, `[:named-by ?sayer ?key ?name]`.** The
+  local namespace is `:self`'s: `[:named-by :self …]`, derived from K's
+  bindings when `:self` trusts K for names. This is SDSI, where all local
+  names are relative to `Self`.
+- **Gap 3, several signers: identical statements signed separately mean
+  the same as one multi-signed statement**, as long as the reduction
+  requires every signer. Start with N envelopes joined on the message
+  digest. The envelopes themselves differ (each carries its own signer,
+  timestamp and request id), so the join must not be on the envelope. A
+  multi-signer envelope comes later as an optimization: one object (no
+  partial delivery), one id for revocation, k-of-n thresholds.
+- **Gap 4, injected facts: `:self` as their sayer.**
+
+### Revocation and negatives: kept out of the reduction
+
+Revocation and negative permissions are where policy evaluation becomes
+ambiguous: a deny by one sayer against an allow by another, order
+dependence, revocations of revocations. Frank's position (2026-10-25):
+treat revocation specially and filter revoked statements out *before*
+the reduction. The reduction then stays monotonic: adding facts can only
+add conclusions.
+
+Moving trust into Datalog (gap 1) makes one point delicate: who may
+revoke. If revocation authority were itself derived by rules, revocation
+would depend on trust, and trust (via revoked delegations) on
+revocation. That is a cycle which needs stratified negation to resolve.
+The way out is that **revocation authority is never derived**:
+
+1. **A sayer may always revoke its own statements.** That is
+   unambiguous, since it only removes the sayer's own words, and it needs
+   no trust.
+2. **`:self` may revoke anything.**
+3. **Revokers that `:self` configures** (a revocation service, an
+   organisation's root), named directly, not reached by delegation.
+
+The pre-filter can then apply revocations as a plain function before any
+rule runs: no negation, no cycle. A revoked delegation never enters the
+store, so the trust computed by rules is already clean.
+
+Alternatives and complements, each avoiding a revocation where possible:
+
+- **Short validity** (SPKI's preference). A statement expires before
+  revocation would matter; reissuing it replaces revoking it.
+- **Positive freshness**, the monotonic form of revocation: a policy
+  requires a recent "K is still valid as of t" statement from a status
+  service (OCSP-like, instead of a CRL). A missing statement then means
+  deny under the closed world, without any negation, and an unreachable
+  status service fails closed by itself.
+- **Rotation instead of revocation:** the `:next` commitment replaces a
+  key without a revocation statement.
+- **Negatives only from `:self`**: deny policies, or attenuating checks
+  inside a token, which can only make a decision fail (Biscuit's model).
+  A "deny" asserted by another sayer is not a statement type.
+
+Open: when a *key* is revoked, are its statements from before the
+revocation still valid? The compromise time is usually unknown, so the
+conservative answer is that all of them are revoked. Also open: what the
+pre-filter does when a revocation source is unavailable (fail closed, or
+accept within a configured staleness).
 
 ### Questions
 
