@@ -51,6 +51,78 @@ YubiKey options for secp256k1 are the OpenPGP applet (unverified whether
 and from which firmware) or a different device. KMS covers secp256k1
 signing.
 
+## Background: low-s and the recovery id
+
+Two ECDSA details that decide whether a secp256k1 (or P-256) signature is
+accepted outside signet. Neither exists for Ed25519.
+
+**The signature.** An ECDSA signature is two numbers (r, s), each below the
+curve order n (a constant per curve). The verifier combines r, s, the
+message hash and the public key and checks that it gets r back.
+
+**Low-s: every signature has a twin.** If (r, s) is valid for a message,
+(r, n − s) is valid too: same message, same key, same r. Anyone can make
+the twin, no private key needed. Exactly one of the two has s ≤ n/2; the
+*low-s rule* says to publish that one. Normalizing after signing is one
+comparison and one subtraction:
+
+```
+if s > n/2 then s := n − s
+```
+
+Blockchains require it because a transaction id is a hash over the
+transaction, signature included: without the rule, anyone relaying a
+transaction could swap in the twin, giving the same valid payment a
+different id (*transaction malleability*, a well-known Bitcoin problem).
+Bitcoin enforces low-s in relay policy, Ethereum since Homestead (EIP-2),
+and Cosmos SDK chains, Provenance included, reject high-s in verification
+(all documented).
+
+Signet today (verified in `signet.impl.jvm-secp256k1/secp256k1-sign`)
+returns whatever s BouncyCastle produces. The nonce is random, so s is in
+the upper half about half the time: roughly every second signature would
+be rejected by Cosmos or Ethereum. Signet's own verifier accepts both
+twins, which is correct ECDSA but means "valid" does not imply "unique".
+
+Inside signet this matters only where signature bytes act as an
+identifier. `signet.chain` links each block to the previous block's
+signature (`prev-sig`), so a block whose signature can be swapped for its
+twin could be re-signed by a third party into a different but valid
+chain. Today that looks out of reach (read, not tested): the chain's root
+is documented as an Ed25519 keypair and later blocks are signed by
+ephemeral Ed25519 keys. It becomes a question the day a chain root can be
+secp256k1 or P-256. Ed25519 has no twin: RFC 8032 has verifiers reject the
+non-canonical form, and libsodium does.
+
+**The recovery id: the public key from the signature.** From (r, s) and
+the message hash one can compute the public key that made the signature,
+up to a small ambiguity: in practice two candidate keys. The *recovery id*
+`v` (0 or 1; also written 27/28, or folded with the chain id under
+EIP-155) says which.
+
+Ethereum needs it: a transaction does not contain the sender's public key
+or address. Nodes recover the public key from the signature (`ecrecover`)
+and derive the address from it, so an Ethereum signature is 65 bytes,
+r‖s‖v. Cosmos does not: its transactions carry the signer's public key,
+and 64 bytes of r‖s suffice.
+
+Signet returns 64 bytes r‖s, no `v`. Hardware and KMS are the same: a
+YubiKey or KMS `Sign` returns only (r, s), usually DER-encoded. A provider
+computes `v` afterwards: recover both candidates, keep the index of the one
+equal to the known public key. Cheap, and it needs only the public key.
+
+**Why one key needs several outputs.** The same secp256k1 key and message
+must give different bytes per destination:
+
+| | pre-hash | s | output |
+|---|---|---|---|
+| signet today | SHA-256 | either half | r‖s, 64 bytes |
+| Cosmos / Provenance | SHA-256 | low half | r‖s, 64 bytes |
+| Ethereum | Keccak-256 | low half | r‖s‖v, 65 bytes |
+
+A profile (next section) fixes all three, so a caller says "sign for
+Cosmos" and needs to know none of this.
+
 ## Signature profiles
 
 `-sign` today means "sign these bytes with this key". For ECDSA, the same
@@ -223,6 +295,8 @@ the strength question made explicit.
   first non-25519 provider).
 - Fix today's secp256k1 path (low-s at least) or leave it until a chain
   profile is built.
+- Before a chain root may be secp256k1 or P-256: require low-s in
+  `signet.chain` verification (the `prev-sig` link), or keep roots Ed25519.
 - P-256 on bb: which C library (the one looked at earlier) or BouncyCastle
   through a JVM subprocess.
 - Two-signer envelopes for key bindings, and the transitivity rule.
