@@ -16,6 +16,18 @@ built in slices with the chapter's snippets as tests. Status: **open**,
 | F5 | `:ttl` in seconds, `:expires`/`:now` in epoch ms | one convention | D13 | open |
 | F6 | `generate-signing-key!` makes a key that also receives boxes and runs sessions | the identity reference | D1 | open |
 
+## Found by chapter 3, key cards (2026-10-25)
+
+| # | Gap | Proposal | Status |
+|---|---|---|---|
+| C1 | no card API: a card is made and read by hand (a map, `sign-edn`, `verify-edn`, a filter over `:keys`) | `signet.card`: `publish`, `read` (verify; check `:type`, `:v`, `:critical`; compute proof levels; apply the reader's rules) and `->assertions` | open (G13) |
+| C2 | `verify-edn` accepts any signed map; nothing checks that it is a card | part of `card/read` | open |
+| C3 | deriving the agreement kid takes three calls in two namespaces | one function, e.g. `key/agreement-kid` | open |
+| C4 | box to the derived X25519 kid works end to end (`unbox` finds the Ed25519 entry) | nothing to change; verified in the chapter | done |
+| C5 | one signer per envelope; a multi-key card is several envelopes | W5 (join on the message digest), later a multi-signer envelope | open |
+| C6 | validity as `:ttl` seconds | explicit `:not-before`/`:not-after` plus the reader's maximum; see F5 | open |
+| C7 | no P-256 in signet, so the chapter's P-256 parts are fiction | G6 | open |
+
 ## From the design docs
 
 | # | Gap | Where | Status |
@@ -53,19 +65,19 @@ for each item and an injection check for each guard.
 | W4 | revocation and negative permissions | revocation stays a **pre-filter**, applied before the reduction, with **revocation authority that is never derived**: (1) a sayer may always revoke its own statements; (2) `:self`; (3) revokers `:self` configures. No revocation through delegation, so there is no cycle with trust in Datalog and no negation in rules. Prefer short validity and positive freshness (a recent "still valid as of t" statement) where possible. Negatives only as `:self`'s deny policies or attenuating checks, never as statements from others. Fail closed when a revocation source is unavailable. docs/14 "Revocation and negatives" | pdp | open (Frank: pre-filter, 2026-10-25) |
 | W5 | one signer per block; a card is signed by every key it names | start with N envelopes over the same card, joined on `:message-digest` (or the assertion `:id`s): `[:card-signed-by digest kid]`. Semantically identical to multi-sig when the reduction requires every signer. A multi-signer envelope in signet later, as an optimization: one object, one id for revocation, k-of-n thresholds (Frank likes it) | pdp, signet | open |
 | W6 | cards to facts | `card->assertions` in signet: deterministic, plain data, no dependency on stroopwafel | signet | open |
+| W8 | one fact db for keys, capabilities and cards (Frank, 2026-10-25) | holdings, state and received facts in one db; a card is a query over holdings; statecharts per provider write state facts; docs/14 "One fact db" | signet, stroopwafel | open (brainstorm) |
+| W9 | no generic query API: the engine is shaped around tokens, origins are block indices | store, rules, query, sayers as origins; returns binding maps; used by token evaluation and signet. `.cljc` port; docs/14 "Stroopwafel inside signet" | stroopwafel | open |
+| W10 | no aggregation; solution order is arbitrary | grouping and ordering after the query (Frank): declarative post-processing on the result maps (sort, group, min/max, count, first); deduplicate by projection, total order with a tie-breaker, ranks from rank facts; never rely on solution order; docs/14 "Grouping and ordering after the query" | stroopwafel | open |
 | W7 | stroopwafel docs still describe the pre-0.11 token API | README and `context.md` rewritten on 2026-10-25; the use-case, LLM and websocket docs are marked as pre-0.11 | stroopwafel | done |
 
 ## Order (proposed)
 
-0. **W1** (the fail-open fixpoint) before anything builds on the engine.
-   **Key card (G13, D16) next.** Settle the dictionary against the prior
-   art in docs/14 (MLS KeyPackage, Signal prekeys, CSR, DPoP, JWK/COSE,
-   DID, OpenPGP, KERI, attestation), answer docs/14's questions, then write
-   the card's chapter as design fiction. Profiles (G2), capabilities (G7),
-   bindings (G3) and relying-party choice (G12) take their vocabulary from
-   it.
+0. Done: **W1** (the engine fails closed at its limits; stroopwafel
+   0.12.0, pdp `1ceccb1`). **Key card** (G13, D16): decisions 1–6 made,
+   chapter 3 drafted (C1–C7). Profiles (G2), capabilities (G7), bindings
+   (G3) and relying-party choice (G12) take their vocabulary from it.
 1. Chapters 2 and 6 against today's API (more F-items expected).
-2. Chapters 3–5 and 7 as design fiction: forces D1–D9 and D15.
+2. Chapters 4, 5 and 7 as design fiction: forces D1–D9 and D15.
 3. Decisions with Frank, in this order: D1 (identity), D2 + D13 + D14
    (small, chapter-1 fixes), D3/D5 (profiles, capabilities), D15, D8/D9
    (seed), the rest.

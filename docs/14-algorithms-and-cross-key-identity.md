@@ -766,6 +766,158 @@ box v3 with an ephemeral sender key (HPKE auth mode, X25519 and P-256
 suites); sessions for forward secrecy; a card's `:accepts` names which
 ones the holder supports. To decide with box v3 (TODO G15).
 
+## One fact db for keys, capabilities and cards (Frank, 2026-10-25)
+
+Brainstorm, no code. Frank's proposal: everything that gives access to
+keys, providers and formats becomes facts in one Datalog db. The db
+holds both the local facts and the verified statements received from
+others. A key card is the result of a query on it; a received card is
+facts in it; a deployment change is facts added, changed or removed. The
+db is the source for keys, ids and capabilities, and for the cards we
+sign and exchange.
+
+The system is dynamic: a YubiKey is plugged in and its PIN unlocked, a
+P-256 module is loaded, AWS KMS credentials are enabled or expire.
+Capabilities depend on providers and credentials being reachable, so
+they change at runtime. A db kept in step with that state makes every
+query reflect it.
+
+### Three kinds of facts
+
+| Kind | Example | Changes when | Source | Origin |
+|---|---|---|---|---|
+| **Holdings** | `:self` holds K in YubiKey 39977151 slot 9c; KMS key X | keys are added, rotated, destroyed | configuration | `:self` |
+| **State** | YubiKey present/absent; agent unlocked/locked; KMS credentials valid until t; P-256 module loaded | plug, unplug, unlock, expiry | watchers, through statecharts | `:self` |
+| **Received** | Bob says his `:agree` key is K', until t | cards arrive, expire, are revoked | signature verification | the sayer |
+
+Derived from them: *available* (held, present, unlocked), *possible*
+(held, but absent or locked), *publishable*, and the candidates for a
+peer (below).
+
+### What follows
+
+- **A card publishes holdings, not state.** Unplugging the YubiKey does
+  not re-issue the card: peers can cache it, and the card does not tell
+  the world when the key is plugged in. The card changes when holdings
+  change (re-issued with `:supersedes`); availability stays local.
+- **Unavailability is a derived answer.** A box arrives for K: held and
+  available → open; held, YubiKey absent → "insert YubiKey 39977151";
+  held, agent locked → "unlock the agent"; not held → error. This is the
+  error taxonomy (D11: `:unavailable`, `:locked`, `:unsupported`) computed
+  from facts. "What would be possible with the YubiKey plugged in" is the
+  same query on a db value with the state fact flipped; the db is an
+  immutable value, so what-if queries and "what do I lose if X goes away"
+  (the difference of two query results) are cheap.
+- **The db advises; the provider decides.** Operations use the db to
+  *select* a key. The provider stays authoritative: if the YubiKey is
+  pulled between query and operation, the provider fails closed and the
+  event updates the db. A fact saying "available" never replaces the
+  provider's own check.
+- **Statecharts own transitions, Datalog derives consequences.** One
+  statechart per provider (absent → present → unlocked → locked; KMS:
+  unconfigured → valid → expired/denied) writes exactly one positive state
+  fact, such as `[:self :provider-state P :absent]`. Datalog then never
+  needs negation: "absent" is a fact, not missing data.
+- **Real-time without incremental maintenance.** The local db is small
+  (tens to hundreds of facts, plus capped received cards, W3b): on each
+  event, make a new db value, recompute the views (kid → handle index,
+  availability, card content) from scratch, and let watchers act
+  (re-issue the card when holdings change, prompt the user).
+- **Origins enforced by the engine.** Local and received facts share one
+  db, so a selection query that forgets the sayer would pick Mallory's
+  key. Received facts can never become `:self` facts (W2), and raw
+  received facts are not visible to selection or policy (W3a). The card
+  query reads an allowlist of publishable predicates, so provider details
+  (serial, ARN) can't leak onto a card.
+- **Facts hold references only.** Kids and handle references, never key
+  material (yubikey-sodium rule 1; a check, not a convention).
+- **Credential expiry is fact validity.** KMS credentials valid until t
+  are a fact with `:not-after`; the temporal pre-filter expires them.
+
+Failure modes to anticipate: an advertised capability temporarily gone
+(derive the guidance; messages wait); permanently gone (YubiKey lost: the
+holdings change, the card is superseded, `:next` handles succession, but
+peers holding the old card still encrypt to a dead key; remedies are
+short card validity, a second `:agree` key on another provider, or
+multi-recipient boxes; to decide); a stale db (the provider decides);
+confused origins (engine-enforced).
+
+### Stroopwafel inside signet
+
+Verified on 2026-10-25 (stroopwafel 0.12.0): the only dependency is
+`org.clojure/clojure`; the code requires `clojure.set` and
+`clojure.string`; 926 lines in three namespaces (`datalog` 677, `core`
+107, `graph` 142, the last for explain only); tests pass on JVM and bb.
+The files are `.clj`; a `.cljc` port is small (the W1 fix catches
+`clojure.lang.ExceptionInfo`, which needs a reader conditional). Since
+0.11 stroopwafel does not depend on signet, so signet → stroopwafel makes
+no cycle. The fact store already keeps an origin set per fact with scope
+filtering; the origins are token block indices (`0`, `N`,
+`:authorizer`), not sayers.
+
+A "stroopwafel-lite" would not be much lighter: unification, rule firing
+and the fixpoint are most of the 677 lines, and dropping checks, policies
+and explain saves maybe 300. Two engines would drift, with inventory and
+policy under different semantics. The facts to handle are the same
+whatever the engine. So: one engine, with a **generic query API** in
+stroopwafel (store, rules, query, origin filter; sayers as origins) used
+by both token evaluation and signet.
+
+Costs: signet's releases tie to stroopwafel's; the engine limits (W1)
+apply to selection too, so received facts must be capped (W3b) or kept
+out of the selection query, or a flood of cards stops our own signing.
+
+### Grouping and ordering after the query
+
+The engine has no aggregation and no negation in rules (read in
+`datalog.clj`: rules join patterns with `:let` and whitelisted `:when`
+guards; checks and policies stop at the first match; `:reject` negates at
+the decision level only). Choosing "the best candidate" (Bob's order of
+preference among the formats Alice's card accepts, above Bob's floor) is
+an aggregation (min rank) or a negation ("no better candidate").
+
+Frank's point: aggregation can work on the result set of a query without
+aggregation, as Datomic's and DataScript's `:find` aggregates do. That
+keeps the engine monotonic; only aggregates inside rules, feeding further
+derivation, need strata. The result set already is a list of maps
+(`eval-body` returns one state per solution, its `:env` a binding map
+such as `{?kid "urn:…" ?format :box/v2 ?rank 1}`), so grouping and
+ordering are standard Clojure on it. As declarative post-processing
+(`{:order-by [?rank ?proof-rank ?kid]}`, a whitelist: sort, group,
+min/max, count, first), configuration can carry it.
+
+Details to get right:
+
+- **Duplicates:** the same binding can come back once per proof; project
+  onto the wanted variables and deduplicate first, or `count` overcounts
+  (Datomic's `:with`).
+- **Ties:** the sort key needs a total order; end it with a tie-breaker
+  such as the kid.
+- **Order of solutions is arbitrary.** The fact store is a Clojure map
+  and evaluation iterates over it: small maps keep insertion order, larger
+  ones hash order (read, not run). Code that takes "the first result" as
+  the choice works in tests and picks arbitrarily at scale. The same goes
+  for the order of `:accepts` on a published card: it comes from rank
+  facts and a sort, or the card's bytes change with no real change.
+- **Comparability:** ranks are numbers from rank facts
+  (`[:self :prefers :encrypt :box/v2 1]`), not comparisons of keywords;
+  `compare` across types throws.
+- **Policies that need the choice:** feed it back as a fact and evaluate
+  again (two explicit passes).
+
+The pipeline: **revocation pre-filter → monotonic Datalog (trust,
+candidates, policy) → grouping and ordering on the result → optional
+second pass.** Both non-monotonic steps sit at the edges, in plain,
+separately testable code; the engine stays as it is.
+
+### Open (Frank's)
+
+- Cards publish holdings, not state: agreed?
+- A backup `:agree` key on another provider in the default card, for a
+  lost YubiKey?
+- Where the db lives: inside signet (acceptable now that stroopwafel's
+  footprint is known) or an identity layer next to it.
+
 ## Open decisions (Frank's)
 
 - Signature profiles as the extension of `-sign` (recommended before the
@@ -786,3 +938,5 @@ ones the holder supports. To decide with box v3 (TODO G15).
   self-scoped assertions admitted without trust, name bindings keeping
   their sayer, a join over multi-signed cards, and a sayer for derived
   aliases.
+- One fact db (2026-10-25 brainstorm): cards publish holdings, not
+  state; a backup `:agree` key; where the db lives.
