@@ -144,6 +144,120 @@ http-client). With our own, the AWS secret key could be a vault entry and
 the SigV4 HMAC chain run as operations: that needs an "HMAC into a new
 entry" variant of `-hmac` (today's returns the tag).
 
+## Prior art: the AWS Encryption SDK
+
+AWS's client-side library for KMS-backed encryption (read in its developer
+guide, 2026-10-24; all *verified* in the docs unless marked). Not a
+candidate dependency: AES-GCM and NIST curves only, no Clojure or bb
+binding (the Java one works from JVM Clojure), and against the
+libsodium-everywhere goal. Worth studying for its design, which solved
+several of signet's problems first.
+
+**What it does.** Envelope encryption: each message gets a fresh data key;
+the payload is encrypted locally; the data key is encrypted by one or more
+*wrapping keys* and the encrypted copies travel in the message. Decrypting
+needs any one wrapping key. The message format is published and all
+language implementations interoperate.
+
+**Interfaces, in layers:**
+
+- **Keyring**: generates, encrypts and decrypts data keys; that is all it
+  does. Kinds: AWS KMS (symmetric or RSA KMS keys, with "discovery"
+  variants that accept any KMS key on decrypt), multi-Region KMS, KMS
+  Hierarchical, KMS ECDH, raw AES, raw RSA, raw ECDH, and the
+  **multi-keyring** (encrypts the data key under every member keyring;
+  decrypts with whichever member can). Custom keyrings implement a
+  published interface (on-encrypt / on-decrypt over a materials object).
+- **Cryptographic materials manager (CMM)**: sits between the SDK and the
+  keyring, assembles the materials (plaintext and encrypted data keys, the
+  signing key), and is the documented hook for policy and caching (the
+  caching CMM; the "required encryption context" CMM that refuses encrypt
+  requests missing given keys).
+- **Encrypt / decrypt**: the application calls these two functions and
+  never sees a data key.
+- Keyrings and CMMs live in a separate library, the Cryptographic Material
+  Providers Library (MPL). The MPL and the newer SDK implementations
+  (.NET, Rust, Go) are written in **Dafny** with proofs and transpiled
+  (documented in the Rust and Go guides).
+
+**Mechanisms:**
+
+- **Algorithm suites**, not free algorithm choices. The default: AES-256-GCM
+  under a key HKDF-derived (SHA-384) from the data key, key commitment,
+  and an ECDSA P-384 signature. The random message ID (32 bytes in format
+  v2) is what makes reusing a data key across messages safe. Weaker suites exist only for
+  compatibility.
+- **Encryption context**: string key-value pairs, not secret, bound to the
+  ciphertext as AAD, stored in plaintext in the header (and, with KMS,
+  visible in CloudTrail). The SDK returns it on decrypt; the application is
+  expected to check that the context it wants is a subset.
+- **Signatures with ephemeral keys.** A signing suite generates a key pair
+  per message, puts the public key in the encryption context
+  (`aws-crypto-public-key`, so it is bound to the encrypted data key) and
+  discards the private key. Purpose: someone allowed only `kms:Decrypt`
+  could otherwise build new messages under a data key they unwrapped. It
+  proves the message came from someone allowed to encrypt; it does **not**
+  identify a sender. The docs say it has no value when the keyring cannot
+  separate encryptors from decryptors (raw AES, raw RSA, ECDH,
+  Hierarchical).
+- **Key commitment** (since 2.0, the default commitment policy
+  `RequireEncryptRequireDecrypt`): the header carries a commitment string
+  derived from the data key (HKDF-SHA-512), checked before decryption.
+  Reason given: a crafted message with several encrypted data keys could
+  hold *different* data keys for different wrapping keys, so two readers
+  would decrypt one ciphertext to two plaintexts. Cost: 30 bytes.
+- **Framed bodies**: plaintext in equal frames (sequence number, a
+  deterministic IV per frame, final frame marked `FF FF FF FF`), so
+  streaming, truncation and reordering are detected.
+- **Hierarchical keyring**: a KMS-protected *branch key* stored in
+  DynamoDB is decrypted once (one KMS call), cached locally for a set time
+  (the cache-limit TTL), and each message's data key is wrapped under a key
+  derived from it with a 16-byte random salt. 10,000 encrypts in one TTL
+  window cost one KMS call instead of 10,000. Branch keys rotate; old
+  versions still decrypt.
+- **KMS ECDH keyring**: sender's KMS key pair (NIST curves only) plus
+  recipient's public key → `DeriveSharedSecret` → a counter-mode KDF
+  yields 64 bytes: 32 for a commitment key, 32 for the wrapping key. Close
+  to signet's box, but on P-256/384/521.
+
+**What signet can take from it:**
+
+1. **Integration 1 is the standard pattern.** The `:kms` unlock method is a
+   KMS keyring around the vault's master key; signet's unlock entries
+   (`:password`, `:recovery-key`) are already a multi-keyring. The design
+   to copy: every unlock entry wraps the same master key, any one opens
+   the file, and adding a KMS key in a second Region is one more entry.
+2. **Encryption context, made checkable.** Signet's AAD today is canonical
+   bytes the caller builds (the vault file binds its whole header). A
+   named, structured context that decrypt *returns* and that a policy can
+   *require* (the required-context CMM) is a cleaner interface for
+   `-wrap`/`-unwrap` with a KMS key, whose context also lands in
+   CloudTrail.
+3. **Key commitment: check signet's formats.** I read
+   `signet.vault.file`: the body is ChaCha20-Poly1305 under a key HKDF'd
+   from the master key and a fresh salt, with the header as AAD. Poly1305
+   does not commit to the key, and the file has several unlock entries,
+   which is the ESDK's scenario: whoever can write the file could, in
+   principle, make the password and the recovery key unlock different
+   master keys, under which one body decrypts to different contents. My
+   judgement (unverified by experiment): low risk for a single-owner file
+   (the writer could simply write a different file), cheap to close: store
+   a commitment (an HKDF output of the master key under its own label) in
+   the header and check it before decrypting. The same question applies
+   to box and shared-key messages once they have more than one recipient.
+4. **Suites, not knobs.** Signet already names versions (`:v 1`, HKDF
+   labels with `/v1/`); the ESDK's suite IDs plus a commitment policy
+   (refuse to decrypt older suites) are the model for retiring an old
+   format.
+5. **Caching KMS calls, the Hierarchical way.** If a KMS-sealed vault is
+   unlocked often, a cached, derived wrapping key with a TTL is the
+   pattern, and the TTL is the same idea as signet's auto-lock (docs/11).
+6. **Two meanings of "signed".** ESDK signatures prove *authorized to
+   encrypt*; signet signatures prove *which identity*. The tutorial should
+   say this: a reader coming from AWS will assume the first.
+7. **Interop, if ever needed.** Signet could write ESDK messages (the format
+   is public), but only with AES-GCM and NIST curves. Not now.
+
 ## Spike plan (when credentials are at hand)
 
 Cost: two KMS keys, about $2 a month; short-lived credentials (SSO is fine
@@ -168,6 +282,8 @@ for the first round).
 - `destroy!` on a KMS key: refuse, or disable and schedule deletion.
 - The credential source: Roles Anywhere with the YubiKey (and which slot),
   or SSO to start.
+- Whether vault files (and multi-recipient messages) get a key commitment
+  (prior art, point 3).
 
 ## Sources
 
@@ -186,3 +302,12 @@ for the first round).
 - Credential helper PKCS#11 support: https://aws.amazon.com/about-aws/whats-new/2023/09/iam-roles-anywhere-credential-helper-pkcs-11-modules/
 - Cryptographic modules with Roles Anywhere: https://aws.amazon.com/blogs/security/how-to-implement-cryptographic-modules-to-secure-private-keys-used-with-iam-roles-anywhere/
 - awyeah-api: https://gittrend.io/repo/grzm/awyeah-api
+- Encryption SDK concepts: https://docs.aws.amazon.com/encryption-sdk/latest/developer-guide/concepts.html
+- Encryption SDK algorithm suites: https://docs.aws.amazon.com/encryption-sdk/latest/developer-guide/supported-algorithms.html
+- Encryption SDK message format: https://docs.aws.amazon.com/encryption-sdk/latest/developer-guide/message-format.html
+- Keyrings: https://docs.aws.amazon.com/encryption-sdk/latest/developer-guide/choose-keyring.html
+- Hierarchical keyring: https://docs.aws.amazon.com/encryption-sdk/latest/developer-guide/use-hierarchical-keyring.html
+- KMS ECDH keyring: https://docs.aws.amazon.com/encryption-sdk/latest/developer-guide/use-kms-ecdh-keyring.html
+- Encryption SDK languages: https://docs.aws.amazon.com/encryption-sdk/latest/developer-guide/programming-languages.html
+- Rust (Dafny origin): https://docs.aws.amazon.com/encryption-sdk/latest/developer-guide/rust.md
+- Go: https://docs.aws.amazon.com/encryption-sdk/latest/developer-guide/go.html
