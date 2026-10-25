@@ -137,6 +137,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `docs/10-password-unlocking.md` — password unlocking and vault persistence (2026-09-27): key layers (password -> Argon2id -> master key -> entries), the vault file as a suite, lock/unlock, the optional recovery key; decisions taken; built in 0.10.0 (`signet.password`, `signet.vault.file`), with "As built" notes.
 - `docs/11-auto-lock-and-password-input.md` — design (2026-09-27): the vault destroy race (a bug to fix first), auto-lock (activity clock, lazy check + timer, :on-dirty), nacljc.tty password reader into guarded memory, passwords as secrets and as handles. Built in 0.10.0 (nacljc.tty in nacljc 0.6.0), with "As built" notes.
 - `docs/12-agent-design.md` — design (2026-09-27): secrets in a separate process; operation-level providers (phase 0), an ssh-agent client provider (sign-only), the signet agent (Unix socket, peer check, CEDN protocol), policy and the PDP seam. Not built.
+- `docs/13-aws-kms-provider.md` — research (2026-10-24): AWS KMS as a provider: Ed25519 signing yes (4096-byte limit vs sign-edn), no X25519; KMS-sealed vault files (a `:kms` unlock method) as the first integration; AWS credentials via an agent, ideally IAM Roles Anywhere with the YubiKey; spike plan. Not built.
 
 ## Current state (2026-09-28)
 
