@@ -829,8 +829,9 @@ peer (below).
   received facts are not visible to selection or policy (W3a). The card
   query reads an allowlist of publishable predicates, so provider details
   (serial, ARN) can't leak onto a card.
-- **Facts hold references only.** Kids and handle references, never key
-  material (yubikey-sodium rule 1; a check, not a convention).
+- **Facts hold references only** (decided, Frank 2026-10-25). Kids and
+  handle references, never key material or any other secret; see "Secrets
+  and metadata" below.
 - **Credential expiry is fact validity.** KMS credentials valid until t
   are a fact with `:not-after`; the temporal pre-filter expires them.
 
@@ -909,6 +910,53 @@ The pipeline: **revocation pre-filter → monotonic Datalog (trust,
 candidates, policy) → grouping and ordering on the result → optional
 second pass.** Both non-monotonic steps sit at the edges, in plain,
 separately testable code; the engine stays as it is.
+
+### Secrets and metadata (Frank, 2026-10-25)
+
+**Only references to secrets in the db** (decided). Guarded memory does
+not help the db itself: facts are Clojure values on the managed heap,
+which the collector moves and copies and nothing wipes; a db kept
+serialized in `sodium_malloc` memory would be parsed onto the heap for
+every query. And the db has nothing secret to protect. The db and the
+vault are disjoint, joined by handles: the db is the index, the vault
+holds the secrets (yubikey-sodium rule 1, "secrets never become Clojure
+values", seen from the db's side).
+
+Secrets the design could tempt into facts:
+
+| Item | Not this | But this |
+|---|---|---|
+| AWS credentials (access key, secret key, session token) | `[:self :kms-creds "AKIA…" "…"]` | the secret in a guarded vault entry; facts `[:self :credential :kms-1 handle]` and `[:self :credential-valid :kms-1 until-t]` |
+| YubiKey PIN | a fact carrying the PIN | the PIN in guarded memory; the db knows `[:self :provider-state yk :unlocked]` |
+| bearer tokens (work for whoever holds them) | the token as a received fact | the token is a secret; only its digest or id becomes a fact |
+| derived secrets (session keys, shared keys) | a fact | vault entries, as phase 0 already does |
+
+**A guard, not a convention:** inserting a fact rejects values that look
+like secret material (byte arrays, values of known secret types such as
+handles' private parts or guarded buffers), and no API accepts a secret
+as a fact value. Built with a failing-first test and an injection check.
+
+**Metadata is private, not secret.** The db reveals the inventory
+(YubiKey serial, slots, KMS ARNs), the contacts (every received card is a
+peer), and when the YubiKey is plugged in. Guarded memory is the wrong
+tool for that:
+
+- **at rest:** the persisted part of the db (configuration, received
+  cards) in an encrypted vault file, its key in guarded memory: there
+  guarded memory does help;
+- **in memory:** core dumps disabled for the process; swap is a risk for
+  the whole heap;
+- **in logs:** explain output and fact dumps show who we talk to; a
+  logging policy for both;
+- **integrity of `:self` facts:** whoever changes the configuration can
+  add a trusted root or a key. Optionally a configuration signed by the
+  local identity's key, checked on load, required if configuration ever
+  arrives remotely. (Guarded memory's read-only protection does not help
+  inside Clojure.)
+
+Where the db lives is not decided by this: the handles in the db resolve
+to the vault, which is signet's, a mild argument for keeping the db next
+to it.
 
 ### Open (Frank's)
 
