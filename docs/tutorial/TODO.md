@@ -84,7 +84,7 @@ docs/14 "Distribution and discovery of cards".
 - [ ] **K2** reader defenses for a set of cards → size checks before parsing, CEDN depth limits, caps per sayer (W3b); fork detection (two cards superseding one) fails closed; hash fetched bytes against their digest; prune superseded cards but keep chain tips and fork evidence
 - [ ] **K3** no lookup by key → directory index under signing and derived keys only (never asserted keys); the reader verifies every answer
 - [ ] **K4** no lookup by name → name bindings as a namer's signed statements (`[:named-by ns "bob" kid]`) stored in the same untrusted directory; trust in the namer is a `:self` fact
-- [ ] **K5** no directory → the Datomic model: one ordering transactor, signed hash-chained transactions, `since t` sync, subscriptions, the local fact db (W8) as the peer's db; a bb HTTP service or static files first; DHT (BEP 44, Pkarr) or Nostr relays as later backends
+- [ ] **K5** no directory → the Datomic model: one ordering transactor, signed hash-chained transactions, `since t` sync, subscriptions, the local fact db (W8) as the peer's db; a bb HTTP service or static files first; DHT (BEP 44, Pkarr), IPFS/IPNS (card bytes as CIDs, an IPNS record per card chain, tree heads as signed CIDs; read through a trustless gateway from bb) or Nostr relays as later backends
 - [ ] **K6** a directory can withhold, roll back or equivocate → transparency: Merkle tree over the log (inclusion and consistency proofs), witnesses comparing signed tree heads; a verifiable map for partial replication; short validity and several directories meanwhile
 
 ## Order (proposed)

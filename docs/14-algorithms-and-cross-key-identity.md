@@ -1172,6 +1172,38 @@ verification) and the 2019 flooding of the SKS keyservers; key
 transparency (CONIKS, Keybase, WhatsApp, Apple); the GNU Name System
 (SDSI-style zones of keys, records encrypted in a DHT).
 
+**IPFS** (Frank's question; from memory, not checked) has several of
+these properties in one system:
+
+- **content addressing:** a block's address (CID) is the hash of its
+  bytes, so any node can serve it and the reader verifies by hashing (our
+  "card keyed by digest");
+- **Merkle DAGs:** a directory log stored in IPFS gets its Merkle tree for
+  free; a signed tree head can be a CID signed by the directory's key;
+- **IPNS:** a mutable pointer whose name is the hash of a public key
+  (Ed25519 by default), signed by that key, with a sequence number and an
+  expiry, pointing at a CID, published to the DHT (optionally pubsub).
+  That is "a card chain per identity": an IPNS record pointing at the
+  latest card, its `seq` the card's version. Near-identical in design to
+  BEP 44, which has a much larger, faster DHT but about 1 KB per record;
+- **DNSLink:** a DNS TXT record maps a domain to a CID or IPNS name (a
+  domain as namer).
+
+Limits: content stays available only while someone pins it (the owner and
+the directory would pin cards); DHT lookups take seconds, records expire
+and must be republished, and an open DHT invites Sybil and eclipse
+attacks (withholding again); the sequence number protects only against
+records older than the newest one the reader has seen; DHT lookups show
+other nodes what one asks for; the reference node (kubo) is a heavy Go
+daemon, so from bb the path is HTTP to a "trustless gateway", which
+serves verifiable blocks (CAR files) and can withhold but not lie.
+
+So IPFS fits as a storage and transport backend, not as the trust layer:
+card bytes as CIDs, an IPNS record per identity's card chain, a namer's
+bindings as signed records stored by CID, transparency-log tree heads as
+signed CIDs. Trust stays in the signatures, `card/read` and `:self`
+facts.
+
 ### A transparent directory: the Datomic model (Frank)
 
 Frank's idea: a central transactor, immutable replicated state, every
@@ -1231,8 +1263,8 @@ Datomic (JVM-only) or DataScript: it runs on bb, keeps the "only
 references to secrets" rule under our control, and admits Merkle proofs
 later without changing the record format. The backend is replaceable
 underneath, because every record proves itself: a bb HTTP service or
-static files over HTTPS first, Mainline DHT (BEP 44, Pkarr) or Nostr
-relays later.
+static files over HTTPS first, Mainline DHT (BEP 44, Pkarr), IPFS/IPNS
+or Nostr relays later.
 
 ### Open (Frank's)
 
