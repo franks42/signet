@@ -107,6 +107,22 @@
   {:doc  "cljfmt fix on every Clojure file"
    :task (shell "cljfmt" "fix" "src" "test" "build.clj" "bb.edn" "deps.edn")}
 
+  md
+  {:doc  "Check markdown against editmd's style (scripts/mdfmt.clj): lists files that would change, exits 1 if any. Args: files (default: every tracked .md)"
+   :task (let [files (or (seq *command-line-args*)
+                         (remove clojure.string/blank?
+                                 (clojure.string/split-lines
+                                  (:out (shell {:out :string} "git" "ls-files" "*.md")))))]
+           (apply shell "bb" "scripts/mdfmt.clj" files))}
+
+  md:fix
+  {:doc  "Format markdown to editmd's style in place (scripts/mdfmt.clj). Args: files (default: every tracked .md)"
+   :task (let [files (or (seq *command-line-args*)
+                         (remove clojure.string/blank?
+                                 (clojure.string/split-lines
+                                  (:out (shell {:out :string} "git" "ls-files" "*.md")))))]
+           (apply shell "bb" "scripts/mdfmt.clj" "--write" files))}
+
   verify
   {:doc  "Verify an ECDSA / Ed25519 signature. secp256k1 verification
           shells out to JVM Clojure (BouncyCastle) since BC isn't

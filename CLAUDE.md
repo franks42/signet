@@ -304,6 +304,7 @@ bb test:jar          # install signet's jar, run its tests from a scratch consum
 bb test:clojars V    # the same against release V from Clojars (empty local repo)
 bb release-check     # X.Y.Z only, CHANGELOG section required
 bb lint / bb fmt     # clj-kondo / cljfmt on every Clojure file
+bb md / bb md:fix    # check / format markdown to editmd's style (scripts/mdfmt.clj); args: files
 ```
 
 `.clj-kondo/config.edn` lints only the `:clj` branch of `.cljc` files, because
