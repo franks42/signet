@@ -870,6 +870,71 @@ Costs: signet's releases tie to stroopwafel's; the engine limits (W1)
 apply to selection too, so received facts must be capped (W3b) or kept
 out of the selection query, or a flood of cards stops our own signing.
 
+### DataScript instead? (Frank's question, 2026-10-26)
+
+Compared from source: DataScript 1.8.1 (shallow clone) against
+stroopwafel 0.12.0.
+
+|                      | stroopwafel 0.12.0                                  | DataScript 1.8.1                                                         |
+| -------------------- | --------------------------------------------------- | ------------------------------------------------------------------------ |
+| code                 | 926 lines (engine 677)                              | 7,895 lines                                                              |
+| dependencies         | Clojure only                                        | `persistent-sorted-set`, `extend-clj`                                    |
+| platforms            | JVM and bb (tested)                                 | JVM and ClojureScript; **not stock bb (tested, below)**                  |
+| data model           | tuples of any length                                | entity–attribute–value triples; statements become entities               |
+| schema               | none                                                | cardinality, unique identity, references, tuple attributes               |
+| indexes              | none: each pattern scans all facts                  | EAVT, AEVT, AVET sorted indexes                                          |
+| rules                | recursive, `:let`, whitelisted `:when`              | recursive, plus `not`, `not-join`, `or`, `or-join`                       |
+| negation, aggregates | none, deliberately (monotonic)                      | both                                                                     |
+| provenance per fact  | origin set per fact, scope filtering                | none built in (model a sayer attribute, `d/filter` views)                |
+| untrusted rules      | designed for them: whitelisted functions, no `eval` | queries are trusted code                                                 |
+| limits               | fail closed (W1)                                    | none                                                                     |
+| explain              | proof trees                                         | none                                                                     |
+| real time            | none (stateless evaluation)                         | `transact!`, `listen!` reports                                           |
+| pull, entity API     | none                                                | yes                                                                      |
+| history              | none                                                | none (old states are old db values you keep); durable storage on the JVM |
+
+**On bb (tested 2026-10-26, bb 1.13.228):** loading DataScript 1.8.1
+from Clojars fails in SCI at the first `deftype`, `datascript/lru.cljc`
+line 5: "Babashka's deftype supports full map types (add IPersistentMap
+to the interface list). Alternatively, use reify for individual
+interfaces like Associative, ILookup." Further obstacles would follow:
+`Datom` with mutable primitive fields, and the Java side of
+`persistent-sorted-set` (expected, not checked). Researched the same
+day:
+
+- bb has a build-time flag, `BABASHKA_FEATURE_DATASCRIPT` (default
+  `false`), that compiles DataScript into a custom bb (in the build docs
+  since at least v0.2.0). bb is a GraalVM native image with an
+  interpreter; it can't create Java classes at runtime, so such libraries
+  load only when compiled in;
+- bb 1.12.215 (February 2026) reportedly added `deftype` for full map
+  types; DataScript implements the interfaces individually, which still
+  fails;
+- the usual workaround is **Datalevin** (DataScript-compatible API, LMDB
+  storage) as a babashka pod (`dtlv`, in the pod registry);
+- no discussion found claiming DataScript runs from source on stock bb (a
+  pasted claim saying it does is contradicted by the docs and the test).
+
+**Conclusion:** stroopwafel stays the engine in signet. A custom bb
+build would make every signet user depend on it, and a pod adds a
+native process next to every program. DataScript lacks what matters for
+authorization (provenance per fact, untrusted rules, fail-closed limits,
+explain, monotonic core). Ideas to borrow into stroopwafel (W9): an
+index by predicate (the local db stays small, but patterns stop scanning
+everything), filtered views by origin (`d/filter`, for W3a), and
+post-query aggregates (W10). If a large, persistent directory mirror
+becomes real (thousands of cards, past stroopwafel's default 1,000-fact
+limit), Datalevin (pod or JVM) or DataScript (JVM, ClojureScript) can
+hold the replica outside signet and hand the relevant facts to
+stroopwafel.
+
+Sources: [babashka build docs](https://github.com/babashka/babashka/blob/master/doc/build.md),
+[babashka README](https://github.com/babashka/babashka/),
+[Clojurians #babashka 2022-09-29](https://clojurians-log.clojureverse.org/babashka/2022-09-29),
+[Clojurians #announcements 2026-02-17](https://clojurians-log.clojureverse.org/announcements/2026-02-17),
+[Datalevin installation](https://cljdoc.org/d/datalevin/datalevin/0.10.7/doc/installation),
+[pod registry](https://github.com/Flexiana/pod-registry).
+
 ### Grouping and ordering after the query
 
 The engine has no aggregation and no negation in rules (read in
