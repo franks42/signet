@@ -701,6 +701,7 @@ accept within a configured staleness).
    Signing keys always prove possession by signing the card. An `:agree`
    key carries one of these proof levels, which the reader computes; the
    card cannot claim them:
+
    - `:derived`: the reader derives it from a signing key on the card
      (X25519 from Ed25519). Equivalent to proven.
    - `:signed`: the key pair signed the card itself (possible for
@@ -716,6 +717,7 @@ accept within a configured staleness).
    key whose private key someone else holds. Messages boxed to it can be
    read by that party, and an unknown key-share is possible: Alice
    believes she writes to Bob, but Carol can read. Who can cause it:
+
    - _Not an outsider._ Adding a key changes the card bytes, so it
      requires the card's signing keys. An outsider who has those keys has
      taken over the identity anyway.

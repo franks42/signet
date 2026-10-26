@@ -29,6 +29,7 @@ SLIP-0010.
 - **The seed is the HKDF pseudo-random key.** 64 random bytes. RFC 5869
   (§3.3) allows skipping HKDF-Extract when the input is already a uniformly
   random key of hash length (documented). So the seed _is_ PRK.
+
 - **Each key is HKDF-SHA-512-Expand(seed, label, length)**, at most 64
   bytes, which is a single HMAC truncated to the length:
 
@@ -42,6 +43,7 @@ SLIP-0010.
   0x02), which puts the secret T(1) into an HMAC _message_: KMS can still
   compute it, but nacljc's HMAC takes only public messages. With SHA-512,
   every key is one HMAC, one KMS `GenerateMac` call.)
+
 - **Per algorithm**:
 
   | Key              | Output                                           | Accept when |
@@ -60,6 +62,7 @@ SLIP-0010.
   goes up and the HMAC runs again. The chance is about 2⁻³² for P-256 and
   negligible for the others, so the retry path is tested by injection, not
   by finding a real vector.
+
 - **`index`** gives rotation without a new seed: index 1 is the next key.
   **`counter`** starts at 0 and only moves on rejection.
 

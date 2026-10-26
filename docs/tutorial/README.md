@@ -45,11 +45,13 @@ nbb/browser ports.
 ## Chapters
 
 ### 1. Five minutes: sign, verify, box
+
 `me`, a peer's kid, `sign`/`verify`, `box`/`unbox`. No algorithm names, no
 key records. **[works]** for most, **[change]**: `box` takes a public-key
 record today, `unbox` a kid (D1, D2).
 
 ### 2. References, not keys
+
 What a handle, a kid and an identity are; why they print, log and
 serialize safely; what the vault does with them; what never leaves
 (`export-secret` and its acknowledgement). The PKCS#11 comparison: same
@@ -57,6 +59,7 @@ idea, without sessions, templates and attribute arrays. **[works]**,
 **[change]** for identity.
 
 ### 3. Key cards: who I am, and what I accept
+
 _Drafted: `03-key-cards.md`._ Alice publishes a card listing her keys,
 their purposes, what she accepts and verifies; Bob reads it, checks the
 proof level of each agreement key, and boxes to her by his own order of
@@ -68,6 +71,7 @@ Using several keys by purpose (`(sign me tx {:for :cosmos})`) moves to
 chapter 4 or stays here, to decide.
 
 ### 4. Where keys live
+
 The same code with the identity's keys in guarded memory, SoftHSM, the
 YubiKey (through ykagent), and KMS. Configuration, not code, moves a key.
 Capabilities: a provider that can't do an operation fails closed with
@@ -75,18 +79,21 @@ Capabilities: a provider that can't do an operation fails closed with
 signet (yubikey-sodium has them as its own providers) (D5, D6).
 
 ### 5. Verifying: the relying party
+
 Trust configuration by reference: accepted roots, kids, bindings,
 validity. Valid, verified, authorized (README); where stroopwafel takes
 over. **[works]** for `{:signer kid}`/`{:root kid}`, **[new]** for
 bindings (D7).
 
 ### 6. Secrets that stay inside
+
 Shared keys, Noise sessions, password keys, vault files: every derived
 secret is an entry; the caller names outputs and destroys temporaries.
 What the caller sees vs what the provider holds. **[works]** (phase 0 and
 the secret-results change).
 
 ### 7. Keys from one seed
+
 A seed as a vault entry; deriving keys for several algorithms with labels;
 importing each derived key straight into its target provider; determinism
 (derive twice, same kid) as the restore test; where the seed lives
@@ -94,18 +101,22 @@ afterwards, including wrapping it under a KEK held by KMS or the YubiKey
 with its own access rules (docs/15). **[new]** (D8, D9).
 
 ### 8. Lifecycle
+
 Generate, back up, rotate (a binding between old and new key), revoke,
 recover. Each step by reference. **[change]**/**[new]** (D7, D10).
 
 ### 9. When things fail
+
 YubiKey unplugged, agent locked, KMS offline or denying, wrong password.
 What the developer sees: an error taxonomy. **[change]** (D11).
 
 ### 10. Testing without hardware
+
 Stand-ins for every provider (the ops-only provider, SoftHSM, a fake KMS),
 so tests run without a YubiKey or AWS. **[works]** in part.
 
 ### Appendix: the provider side
+
 For provider authors: the operations, capabilities, secret results,
 temporaries, and how KMS and the YubiKey map onto them.
 
@@ -122,26 +133,37 @@ the user's side of it.
 - **D1 Identity as the reference.** One identity reference for _me_;
   operations pick a key by purpose. (Frank: yes, 2026-10-24; the shape is
   to settle.)
+
 - **D2 Others by kid.** Peers named by kid everywhere (`box`, `unbox`,
   `verify`, sessions); public-key records internal.
+
 - **D3 Purposes and profiles.** The vocabulary (`:signet`, `:x509`,
   `:cosmos`, `:eth`, ...) and where the mapping to algorithm and profile
   lives (the identity's configuration).
+
 - **D4 Bindings.** Two-signer statements; `:same-entity` vs `:speaks-for`
   with tags; transitivity (docs/14).
+
 - **D5 Capabilities.** Per key: algorithm, profiles, operations, maximum
   message size, exportability, destroy semantics.
+
 - **D6 Large messages.** Signet signs a framed digest when a provider's
   limit is below the message (KMS 4096 bytes, the agent's 512-byte frames).
+
 - **D7 Trust configuration.** How a relying party names roots, kids and
   bindings.
+
 - **D8 Seed as an entry**, and `derive-into!` as the operation that
   derives and imports in one step.
+
 - **D9 Where the seed lives**: kept, offline (mnemonic or Shamir shares),
   or wrapped under a KEK (docs/15, variants A, B, C).
+
 - **D10 Rotation and revocation** by reference.
+
 - **D11 Error taxonomy**: `:unsupported` (never), `:unavailable` (retry),
   `:denied` (policy), `:locked` (needs unlocking).
+
 - **D12 Sync or async** (to be settled in the tutorial). KMS and agents
   are network or socket calls; in nbb and the browser, I/O is
   asynchronous; libsodium.js initializes asynchronously once, then runs
@@ -152,6 +174,7 @@ the user's side of it.
 
 - **D13 Unknown options** (chapter 1, F2): reject option keys a function
   doesn't know, so a typo can't silently drop a property such as expiry.
+
 - **D14 Values, not bytes** (chapter 1, F3, F4): `box`/`unbox` over EDN
   values like `sign-edn`, bytes as the lower layer; and whether kids
   travel visibly in a box by default.
@@ -159,6 +182,7 @@ the user's side of it.
 - **D15 Choosing by the relying party** (docs/14): signed capability
   statements per key; Alice derives a matching key from her seed where an
   operation needs one; authenticated, with a policy floor.
+
 - **D16 Key cards** (docs/14, next to resolve): a self-signed EDN map,
   `:type :signet/key-card`, naming an identity's keys with their purposes,
   profiles, accepted formats and validity, and signed by every key it

@@ -2,11 +2,14 @@
 (ns mdfmt
   "Format markdown to editmd's serializer style.
 
-  Usage: bb scripts/mdfmt.clj [--write] FILE...
+  Usage: bb scripts/mdfmt.clj [--write] [--editmd] FILE...
   (or `bb md` / `bb md:fix`, which default to every tracked .md)
 
   Without --write, lists the files that would change and exits 1 if any
-  would. With --write, rewrites them in place.
+  would. With --write, rewrites them in place. With --editmd, also
+  formats each file with editmd's own serializer (`editmd --normalize`,
+  when editmd is installed) and prints where the two disagree, not
+  counting editmd's backslash escapes; this never changes the exit code.
 
   Formatting only, never inside fenced code or inline code spans:
   - bullet markers `*` and `+` become `-`;
@@ -16,11 +19,19 @@
     (a list may start at 0);
   - tables are padded so the pipes line up (separator dashes to the
     column width, alignment colons kept, a table's indentation kept);
-  - thematic breaks (`***`, `___`) become `---`.
+  - thematic breaks (`***`, `___`) become `---`;
+  - blank lines as editmd writes them: one between blocks (around
+    headings, top-level fences and tables, between a paragraph and a
+    list, before a list nested in a spread item, between all items of a
+    list where any two are separated), never two in a row outside code,
+    and the file ends with exactly one newline.
 
-  Line count and line wrapping never change, and a second run changes
-  nothing."
-  (:require [clojure.string :as str]))
+  Line wrapping never changes, and a second run changes nothing. editmd
+  also escapes some characters (`\\[`, `\\~`), turns bare URLs into
+  `<…>`, joins code spans split across lines and re-indents lists; this
+  script leaves those alone (--editmd shows them)."
+  (:require [babashka.process :as p]
+            [clojure.string :as str]))
 
 (def ^:private fence #"^(\s*)(```|~~~)")
 (def ^:private bullet #"^(\s*)[*+]\s+")
@@ -135,6 +146,128 @@
                          (map pad r widths))]
              (str indent "| " (str/join " | " cells) " |"))))))
 
+;; ---- Blank lines between blocks ----
+
+(def ^:private list-marker #"^(\s*)([-*+]|\d+[.)])\s+")
+(def ^:private heading #"^#{1,6}(\s|$)")
+
+(defn- indent-of [^String l] (- (count l) (count (str/triml l))))
+
+(defn- kinds
+  "Each line's kind: :blank, :code (inside or on a fence), :fence-open,
+  :fence-close, :heading, :table, :item or :text."
+  [lines]
+  (loop [ls lines, in-fence false, tok nil, acc []]
+    (if-let [[l & more] (seq ls)]
+      (let [m (re-find fence l)]
+        (cond
+          (and m (not in-fence)) (recur more true (nth m 2) (conj acc :fence-open))
+          (and m (= (nth m 2) tok)) (recur more false nil (conj acc :fence-close))
+          in-fence (recur more true tok (conj acc :code))
+          (str/blank? l) (recur more false nil (conj acc :blank))
+          (re-find heading l) (recur more false nil (conj acc :heading))
+          (str/starts-with? l "|") (recur more false nil (conj acc :table))
+          (re-find list-marker l) (recur more false nil (conj acc :item))
+          :else (recur more false nil (conj acc :text))))
+      acc)))
+
+(defn- spread-item?
+  "Whether the list item whose marker is line `start` is spread (loose):
+  a blank line separates two of its own blocks, not just the items of a
+  list nested in it."
+  [lines ks start]
+  (let [k (indent-of (nth lines start))
+        c (count (first (re-find list-marker (nth lines start))))
+        n (count lines)
+        end (loop [i (inc start)]
+              (if (and (< i n)
+                       (or (= :blank (nth ks i)) (> (indent-of (nth lines i)) k)))
+                (recur (inc i))
+                i))]
+    (boolean
+     (some (fn [i]
+             (and (= :blank (nth ks i))
+                  (< (inc i) end)
+                  (not= :blank (nth ks (inc i)))
+                  (let [nxt (nth lines (inc i))
+                        prev (last (remove str/blank? (subvec lines start i)))]
+                    (and (= c (indent-of nxt))
+                         ;; blank between two items of a nested list: not ours
+                         (not (and (= :item (nth ks (inc i)))
+                                   (or (and (re-find list-marker prev) (= c (indent-of prev)))
+                                       (> (indent-of prev) c))))))))
+           (range (inc start) end)))))
+
+(defn- spread-list-item?
+  "Whether line i is an item, not the first, of a list in which some two
+  items are separated by a blank line (editmd then separates them all)."
+  [lines ks i]
+  (when (= :item (nth ks i))
+    (let [k (indent-of (nth lines i))
+          n (count lines)
+          ordered? (fn [j] (boolean (re-find ordered (nth lines j))))
+          item-at-k? (fn [j] (and (= :item (nth ks j))
+                                  (= k (indent-of (nth lines j)))
+                                  (= (ordered? i) (ordered? j))))
+          in-list? (fn [j] (or (= :blank (nth ks j))
+                               (> (indent-of (nth lines j)) k)
+                               (item-at-k? j)))
+          start (loop [j i] (if (and (pos? j) (in-list? (dec j))) (recur (dec j)) j))
+          start (loop [j start] (if (= :blank (nth ks j)) (recur (inc j)) j))
+          end (loop [j i] (if (and (< j n) (in-list? j)) (recur (inc j)) j))]
+      (and (some item-at-k? (range start i))
+           (some #(and (= :blank (nth ks %)) (< (inc %) end) (item-at-k? (inc %)))
+                 (range start end))))))
+
+(defn- blank-before?
+  "Whether editmd puts a blank line between lines i-1 and i."
+  [lines ks i]
+  (let [p (nth ks (dec i)), l (nth ks i)
+        top? (fn [j] (zero? (indent-of (nth lines j))))]
+    (and (not= :blank p) (not= :blank l) (not= :code p) (not= :code l)
+         (or (and (= l :heading) (top? i))
+             (and (= p :heading) (top? (dec i)))
+             (and (= l :fence-open) (top? i) (not= p :fence-close))
+             (and (= p :fence-close) (top? (dec i)) (not= l :fence-open))
+             (and (= l :table) (not= p :table) (top? i))
+             (and (= p :table) (not= l :table) (top? (dec i)))
+             (and (= l :item) (= p :text) (top? i) (top? (dec i)))
+             (spread-list-item? lines ks i)
+             ;; a nested list starting inside a spread item
+             (and (= l :item)
+                  ;; the line before belongs to the parent item, not the nested list
+                  (let [pi (indent-of (nth lines (dec i))), j (indent-of (nth lines i))]
+                    (or (and (= p :text) (<= pi j))
+                        (and (= p :item) (< pi j))))
+                  (let [j (indent-of (nth lines i))
+                        parent (->> (range (dec i) -1 -1)
+                                    (filter #(and (= :item (nth ks %))
+                                                  (< (indent-of (nth lines %)) j)))
+                                    first)]
+                    (and parent (spread-item? lines ks parent))))))))
+
+(defn- space-blocks
+  "editmd's blank lines: one between blocks (around headings, top-level
+  fences and tables, between a paragraph and a list, and before a list
+  nested in a spread item), never two in a row outside code, none at the
+  start, and the text ends with exactly one newline."
+  [lines]
+  (let [lines (vec lines)
+        ks (kinds lines)
+        out (reduce (fn [out i]
+                      (let [l (nth lines i)]
+                        (cond
+                          (and (= :blank (nth ks i))
+                               (or (empty? out) (str/blank? (peek out))))
+                          out
+                          (and (pos? i) (blank-before? lines ks i))
+                          (conj out "" l)
+                          :else (conj out l))))
+                    []
+                    (range (count lines)))
+        out (loop [out out] (if (and (seq out) (str/blank? (peek out))) (recur (pop out)) out))]
+    (conj out "")))
+
 (defn process
   "Formats a markdown string."
   [text]
@@ -147,7 +280,7 @@
     (loop [i 0, out [], para [], in-fence false, fence-tok nil
            counters {}]                 ; indentation -> next number of the open ordered list
       (if (>= i n)
-        (str/join "\n" (flush out para))
+        (str/join "\n" (space-blocks (flush out para)))
         (let [line (nth lines i)
               m (re-find fence line)]
           (cond
@@ -192,21 +325,97 @@
                          (not (str/starts-with? line "- ")))
                     [line {}]
 
+                    ;; a bullet item ends ordered lists at its indentation and deeper
+                    (re-find #"^\s*- " line)
+                    (let [k (indent-of line)]
+                      [line (into {} (remove (fn [[c _]] (>= c k))) counters)])
+
                     :else [line counters])]
               (recur (inc i) out (conj para line) in-fence fence-tok counters))))))))
 
+;; ---- Comparing with editmd's own serializer ----
+
+(defn- editmd-binary
+  "editmd's executable, from $EDITMD or the usual install locations; nil
+  when it isn't installed."
+  []
+  (->> [(System/getenv "EDITMD")
+        "/Applications/editmd.app/Contents/MacOS/editmd"
+        (str (System/getProperty "user.home") "/Applications/editmd.app/Contents/MacOS/editmd")]
+       (remove nil?)
+       (filter #(.canExecute (java.io.File. ^String %)))
+       first))
+
+(defn- comparable
+  "A line as compared with editmd's: backslash escapes before punctuation
+  removed and runs of spaces and dashes collapsed, so an escape (and the
+  table padding it shifts) doesn't count as a difference."
+  [line]
+  (-> line
+      (str/replace #"\\([!-/:-@\[-`{-~])" "$1")
+      (str/replace #"-{3,}" "---")
+      (str/replace #"\s+" " ")
+      str/trimr))
+
+(defn- hunks
+  "`diff -U0` output as [[removed added] ...]."
+  [diff-out]
+  (->> (str/split-lines diff-out)
+       (drop-while #(not (str/starts-with? % "@@")))
+       (partition-by #(str/starts-with? % "@@"))
+       (remove #(str/starts-with? (first %) "@@"))
+       (map (fn [ls]
+              [(keep #(when (str/starts-with? % "-") (subs % 1)) ls)
+               (keep #(when (str/starts-with? % "+") (subs % 1)) ls)]))))
+
+(defn- temp-file [text]
+  (let [f (doto (java.io.File/createTempFile "mdfmt" ".md") .deleteOnExit)]
+    (spit f text)
+    (str f)))
+
+(defn- diff-hunks
+  "The changes from text a to text b, as [[removed added] ...]."
+  [a b]
+  (hunks (:out (p/shell {:out :string :continue true} "diff" "-U0" (temp-file a) (temp-file b)))))
+
+(defn- compare-editmd
+  "Formats each file with this script and with `editmd --normalize`, and
+  prints where they disagree, apart from editmd's backslash escapes.
+  Returns the number of files that disagree."
+  [editmd files]
+  (let [disagree
+        (for [f files
+              :let [ours (process (slurp f))
+                    theirs (:out (p/shell {:out :string :err :string}
+                                          editmd "--normalize" (temp-file ours)))
+                    real (remove (fn [[rm add]] (= (map comparable rm) (map comparable add)))
+                                 (diff-hunks ours theirs))]
+              :when (seq real)]
+          (do (println (str f ": differs from editmd in " (count real) " places"))
+              (doseq [[rm add] (take 3 real)]
+                (doseq [l rm] (println "    mdfmt: " (subs l 0 (min 100 (count l)))))
+                (doseq [l add] (println "    editmd:" (subs l 0 (min 100 (count l)))))
+                (println "    --"))
+              f))]
+    (count (doall disagree))))
+
 (defn -main [& args]
   (let [write? (some #{"--write"} args)
-        files (remove #{"--write"} args)
+        editmd? (some #{"--editmd"} args)
+        files (remove #{"--write" "--editmd"} args)
+        _ (when editmd?
+            (if-let [editmd (editmd-binary)]
+              (let [n (compare-editmd editmd files)]
+                (println (str "editmd comparison: " n " of " (count files)
+                              " files differ (escapes not counted)")))
+              (println "editmd comparison skipped: editmd is not installed")))
         changed (doall
                  (for [f files
                        :let [src (slurp f)
                              dst (process src)]
                        :when (not= src dst)]
-                   (let [n (count (filter true? (map not=
-                                                     (str/split src #"\n" -1)
-                                                     (str/split dst #"\n" -1))))]
-                     (println (str f ": " n " lines " (if write? "formatted" "to format")))
+                   (let [n (count (diff-hunks src dst))]
+                     (println (str f ": " n " changes " (if write? "made" "to make")))
                      (when write? (spit f dst))
                      f)))]
     (when (and (seq changed) (not write?))

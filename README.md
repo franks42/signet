@@ -238,7 +238,6 @@ clojure -M:test:jca         # the JCA backend
 SIGNET_BACKEND=jca bb …     # JCA on babashka
 ```
 
-
 ## Deployment hardening (opt-in)
 
 signet keeps secrets out of application code, but a crashing or inspected
@@ -257,6 +256,7 @@ and for the JVM flags and machine settings a process cannot set itself.
 **The libsodium backend loads the library that `NACLJC_LIBSODIUM` or
 `-Dnacljc.libsodium` names.** Whoever controls those controls the crypto:
 set them only from deployment configuration you trust.
+
 ## Compatibility
 
 **Upgrading from 0.6.0:** see [CHANGELOG.md](CHANGELOG.md). In short:

@@ -109,6 +109,7 @@ are secret; a kid derived by HMAC is public.
    entry.
 
 What still passes through the host, by design:
+
 - **Deprecated key records** (box and session inputs that hold `:d`):
   their DH runs on the backend; a session moves the output into the vault
   at once, box uses it as bytes. Records are on the heap anyway.

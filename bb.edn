@@ -108,12 +108,12 @@
    :task (shell "cljfmt" "fix" "src" "test" "build.clj" "bb.edn" "deps.edn")}
 
   md
-  {:doc  "Check markdown against editmd's style (scripts/mdfmt.clj): lists files that would change, exits 1 if any. Args: files (default: every tracked .md)"
+  {:doc  "Check markdown against editmd's style (scripts/mdfmt.clj): lists files that would change, exits 1 if any. When editmd is installed, also reports where editmd's own serializer disagrees (informational). Args: files (default: every tracked .md)"
    :task (let [files (or (seq *command-line-args*)
                          (remove clojure.string/blank?
                                  (clojure.string/split-lines
                                   (:out (shell {:out :string} "git" "ls-files" "*.md")))))]
-           (apply shell "bb" "scripts/mdfmt.clj" files))}
+           (apply shell "bb" "scripts/mdfmt.clj" "--editmd" files))}
 
   md:fix
   {:doc  "Format markdown to editmd's style in place (scripts/mdfmt.clj). Args: files (default: every tracked .md)"
