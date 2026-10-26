@@ -1072,6 +1072,176 @@ there are several. Implicit choices stay visible:
 Later: a `send` above `box` and `session` that uses an established
 session to "alice" when there is one, and a box otherwise.
 
+## Distribution and discovery of cards (Frank, 2026-10-26)
+
+Brainstorm, no code. How cards reach the peers that need them, change in
+real time, and are found by key or by name. Recorded as TODO K1–K6.
+
+### Not a CRDT: what Yjs taught us
+
+editmd syncs through [Yjs](https://github.com/yjs/yjs) (read 2026-10-26,
+v14.0.0-rc.29: `INTERNALS.md`, `THREAT_MODEL.md`, `src/`). Yjs is a list
+CRDT (YATA): every insert gets an id `(clientID, clock)`, maps keep the
+last entry per key, deletes are a set of ids with no author, and peers
+sync by exchanging state vectors and the missing updates. Values are
+JSON-like (plus `Uint8Array`) and atomic. The `clientID` is a random
+number the client picks itself; updates are unsigned. Its threat model
+(§3.1) says the CRDT is for trusted peers only: "untrusted peers are never
+allowed to write updates to the original Yjs document", and filtering
+updates on a server "is a common antipattern".
+
+A shared file of cards is exactly the untrusted-writer case, and needs
+none of what a CRDT provides:
+
+- signed cards are immutable values that prove themselves; merging sets
+  of them is set union (a grow-only set keyed by card digest);
+- which card is current comes from the cards (`:supersedes`, `:next`,
+  validity), never from a CRDT's last-writer order;
+- the signed bytes travel, not JSON: a round trip through JSON can change
+  the canonical form and break the signature.
+
+Yjs fits where all writers trust each other: shared editing (editmd), or
+one person's own devices.
+
+### Threats to a set of signed cards
+
+Signatures and a grow-only set rule out forgery, alteration and
+deletion. What remains:
+
+1. **Denial of service:** volume (anyone can make valid self-signed
+   cards), size (huge cards, deep EDN), CPU (a signature check per card),
+   the parser (a CEDN reader on untrusted bytes needs depth and size
+   limits). Size checks before parsing, parsing before verifying; caps per
+   sayer (W3b); engine limits fail closed (W1).
+2. **Withholding (rollback):** a peer or directory passes on an older,
+   still valid card and keeps the reader on a compromised key.
+   Signatures don't help. Short validity, several sources, positive
+   freshness statements, `:next` for the compromise case.
+3. **Equivocation:** two cards superseding the same card, shown to
+   different peers. A shared set makes the fork visible; the reader
+   fails closed and trusts neither until policy decides (KERI's duplicity
+   detection).
+4. **Metadata:** the set shows who is in it, what they advertise, and
+   (without private sync) who fetches what.
+
+The reader must also handle replays of old cards (the supersession chain
+decides), Sybil cards (dormant until `:self` trusts the key), name
+squatting (explicit petname adoption, N5), digests that don't match the
+bytes (hash what you fetch), and honest growth (prune superseded cards,
+keep chain tips and enough history to detect forks).
+
+### Single writer, read by all
+
+"Read-only" is enforced by each reader, not by the document: a reader
+accepts only content signed by the one writer. A single-writer document
+needs no merging, only a signed, versioned state
+(`{:seq 7, :prev <digest>, :content …}`): readers keep the highest
+verified `:seq`, and two versions with the same `:seq` prove a fork.
+That is a card with `:supersedes`. So the shared "file of cards" is the
+union of one single-writer chain per identity, readable by everyone, and
+stored by anyone. Privacy ("only these may read") is a separate layer:
+encryption to the readers' agreement keys, or a group key.
+
+### Discovery: by key and by name
+
+- **By key needs no trusted directory.** A card counts only if the key
+  signed it (or is derived from a key that did), so any directory, even a
+  hostile one, can answer; the reader verifies. **Index a card under a kid
+  only if that kid signed it or is derived from one that did**; otherwise
+  Mallory's card listing Alice's kid as an asserted key would come back
+  for Alice's kid.
+- **By name is a namer's signed statement:**
+  `[:named-by <name-server kid> "bob" <Bob's root kid>]`, with validity.
+  It lives in the same untrusted directory; the reader verifies it
+  against a name server that `:self` trusts for names, then looks up by
+  key. Storage and authority are separate: the name server signs, any
+  directory stores.
+- **Real time:** subscriptions (by kid, or by namer and name), short
+  validity with refetching, and directory hints on the card
+  (`:services {:directory […]}`).
+- **First contact:** an introduction out of band (a kid plus directory
+  hints, by QR code or link), as KERI's OOBI.
+
+Prior art (from memory, not checked in this session): OpenPGP Web Key
+Directory, `did:web` and Nostr NIP-05 (a domain as namer, over HTTPS);
+DANE/OPENPGPKEY (RFC 7929); BitTorrent BEP 44 mutable items and Pkarr
+(Ed25519-signed records with a sequence number, found by the hash of the
+key, about 1000 bytes per record), IPNS; Nostr relays and its outbox
+model; keys.openpgp.org (open lookup by fingerprint, by email only after
+verification) and the 2019 flooding of the SKS keyservers; key
+transparency (CONIKS, Keybase, WhatsApp, Apple); the GNU Name System
+(SDSI-style zones of keys, records encrypted in a DHT).
+
+### A transparent directory: the Datomic model (Frank)
+
+Frank's idea: a central transactor, immutable replicated state, every
+transaction a new database value, clients resyncing from the last one
+they saw, and the card details as Datalog facts.
+
+| Datomic                                   | Directory of cards                                                                                     |
+| ----------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| one transactor orders all writes          | the directory accepts signed records (cards, name bindings) and orders them                            |
+| each transaction is a new db value at `t` | each accepted batch is directory state `t`                                                             |
+| append-only, immutable log                | append-only log of records signed by their owners                                                      |
+| peers sync "since `t`"                    | one counter, because one party orders (simpler than Yjs's state vectors)                               |
+| peers query locally with Datalog          | the local fact db (W8): replicated records as received facts, `:self` facts local, stroopwafel's rules |
+| `as-of`, `since`, `history`               | audit ("what did the directory say at `t`"), fork detection over the history                           |
+| the novelty stream                        | subscriptions                                                                                          |
+
+The transactor orders records but doesn't author them: it can't forge
+or alter a card. Its power is censorship (refusing a record), withholding
+(serving an old `t`) and equivocation (different logs for different
+peers). Against the last two:
+
+1. **signed transactions** `{:t 1042 :prev <hash of tx 1041> :records
+   <hash>}`, signed by the directory's key: a hash chain; two signed
+   transactions with the same `t` prove equivocation;
+2. **a Merkle tree over the log:** inclusion proofs ("your card is in
+   the log at `t`") and consistency proofs ("the log at `t2` extends the
+   log at `t1`");
+3. **witnesses** that compare the signed tree heads, so split views show.
+
+That is certificate transparency (RFC 6962, RFC 9162) and, for
+name→key mappings, key transparency: the field's answer to this old
+problem is centralized ordering made checkable rather than trusted.
+Censorship can't be prevented with one transactor, but it isn't fatal:
+cards prove themselves, so an owner can publish through another directory
+or an introduction.
+
+Nuances:
+
+- **Full or partial replication.** For a team or an organization every
+  peer can hold the whole log (a few thousand cards, a few megabytes):
+  the pure Datomic model, with private local lookups. A global directory
+  is fetched partially; proving "this is the latest card for this kid"
+  then needs a proof that nothing newer exists, i.e. a verifiable map
+  (a sparse Merkle tree, as CONIKS), not only a log.
+- **Two times.** Datomic keeps transaction time (when the directory
+  learned something); cards carry valid time (`:not-before`,
+  `:not-after`). Some questions need both ("had the directory accepted
+  Alice's new card when Bob encrypted to the old one?"). XTDB models both;
+  with our own log, valid time stays in the data.
+
+Building blocks we have: signet signs the records, and `signet.chain`
+links signed entries by the previous signature (to check whether it fits
+as the log format); stroopwafel is the peer's query engine; the W8 fact
+db already makes a new db value per event. Proposal: our own small log
+(signed transactions, `since t` sync) plus stroopwafel, rather than
+Datomic (JVM-only) or DataScript: it runs on bb, keeps the "only
+references to secrets" rule under our control, and admits Merkle proofs
+later without changing the record format. The backend is replaceable
+underneath, because every record proves itself: a bb HTTP service or
+static files over HTTPS first, Mainline DHT (BEP 44, Pkarr) or Nostr
+relays later.
+
+### Open (Frank's)
+
+- Index cards under signing and derived keys only: agreed?
+- First directory: a bb HTTP service with subscriptions, or static files
+  over HTTPS?
+- Full replication (team scale) first, verifiable map later?
+- `signet.chain` as the log format, or a separate transaction format?
+
 ## Open decisions (Frank's)
 
 - Signature profiles as the extension of `-sign` (recommended before the

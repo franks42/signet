@@ -76,6 +76,17 @@ docs/14 "Sessions, key ids and local names".
 - [ ] **N5** peers are named by kid only → petnames bound to principals (`[:named-by :self kid "bob"]`, W2), never to one key; the operation picks the facet; explicit adoption of card nicknames; uniqueness enforced, fail closed
 - [ ] **N6** `box` needs a handle, a public-key record and bytes → `(box "alice" msg)`: default identity, petname → card → capability matching (W10), EDN payload (D14); the choice returned and pinnable; specific errors; a tutorial `[new]` snippet. Later a `send` over session or box
 
+## Distribution and discovery (brainstorm, 2026-10-26)
+
+docs/14 "Distribution and discovery of cards".
+
+- [ ] **K1** no way to share cards among peers → a grow-only set of signed card bytes keyed by digest, one single-writer chain per identity; current card decided by `card/read` (`:supersedes`, `:next`, validity), never by a CRDT; Yjs only where all writers trust each other (its threat model §3.1)
+- [ ] **K2** reader defenses for a set of cards → size checks before parsing, CEDN depth limits, caps per sayer (W3b); fork detection (two cards superseding one) fails closed; hash fetched bytes against their digest; prune superseded cards but keep chain tips and fork evidence
+- [ ] **K3** no lookup by key → directory index under signing and derived keys only (never asserted keys); the reader verifies every answer
+- [ ] **K4** no lookup by name → name bindings as a namer's signed statements (`[:named-by ns "bob" kid]`) stored in the same untrusted directory; trust in the namer is a `:self` fact
+- [ ] **K5** no directory → the Datomic model: one ordering transactor, signed hash-chained transactions, `since t` sync, subscriptions, the local fact db (W8) as the peer's db; a bb HTTP service or static files first; DHT (BEP 44, Pkarr) or Nostr relays as later backends
+- [ ] **K6** a directory can withhold, roll back or equivocate → transparency: Merkle tree over the log (inclusion and consistency proofs), witnesses comparing signed tree heads; a verifiable map for partial replication; short validity and several directories meanwhile
+
 ## Order (proposed)
 
 1. Done: **W1** (the engine fails closed at its limits; stroopwafel 0.12.0, pdp `1ceccb1`). **Key card** (G13, D16): decisions 1–6 made, chapter 3 drafted (C1–C7). Profiles (G2), capabilities (G7), bindings (G3) and relying-party choice (G12) take their vocabulary from it.
@@ -91,3 +102,5 @@ docs/14 "Sessions, key ids and local names".
 - W8: do cards publish holdings only, never state? A backup `:agree` key on another provider in the default card, for a lost YubiKey? Does the db live inside signet or in an identity layer next to it?
 - N5: the form of a petname: string, keyword or tagged?
 - N2: a DH ratchet, or the symmetric ratchet only?
+- K3: index cards under signing and derived keys only?
+- K5: first directory as a bb HTTP service with subscriptions, or static files over HTTPS? Full replication first, verifiable map later? `signet.chain` as the log format?
