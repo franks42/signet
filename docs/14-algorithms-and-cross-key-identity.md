@@ -966,6 +966,110 @@ to it.
 - Where the db lives: inside signet (acceptable now that stroopwafel's
   footprint is known) or an identity layer next to it.
 
+## Sessions, key ids and local names (Frank, 2026-10-25)
+
+Brainstorm, no code. Six items, recorded as TODO N1–N6.
+
+**N1. The session id is Noise's handshake hash `h`.** Candidates: the
+ephemeral X25519 public keys (unique, but only part of what defines the
+session), the DH output (secret, so not an id), and `h`, the hash over
+the whole transcript (protocol name, both statics, both ephemerals, the
+handshake payloads). The Noise spec names `h` for channel binding (§11.2;
+documented). Both sides compute it, it is unique, binds everything and
+reveals nothing secret: a self-certifying alias for the session, as a kid
+is for a key. Verified in `session.cljc`: `h` is tracked internally; the
+public API (`initiator`, `responder`, `established?`, `write-message!`,
+`read-message!`, `close!`) does not expose it, and there is no rekey.
+Proposal: a `session-id` accessor, available only once the handshake is
+complete.
+
+**N2. Key lifetime: epochs and rekeying.** A new key derived from the
+previous one (every message, or every n) is a *symmetric ratchet*
+(Noise's `Rekey()`, Signal's chain keys): forward secrecy within the
+session, since a leaked current key does not open earlier messages, but
+no healing, since today's key derives all later ones. A new DH gives
+post-compromise security (Signal's DH ratchet per round trip, MLS
+epochs). The session id stays stable (`h`); an **epoch** counts the
+keys: `(session-id, epoch n)` names the current key. Messages within a
+session are linkable to it anyway, so a new id per rekey buys the
+parties nothing; each key still has its own id (N3). Symmetric ratchet
+first; a DH ratchet as a later option.
+
+**N3. A symmetric key's id is a keyed derivation of the key.** Frank's
+"hash of msg + const", written as
+`key-id = BLAKE2b(key = k, message = "signet/key-id/v1")` (or
+HKDF-Expand(k, label)): derived like any subkey, under a label nothing
+else uses, so it never equals a key that encrypts; no length extension.
+Caveats:
+
+- **high-entropy keys only:** for a password-derived key the id is an
+  offline guessing oracle; session and box keys are fine;
+- **linkability:** the id shows that two messages used the same key;
+  fine inside the AEAD's associated data, see N4 for the wire;
+- **computed inside the provider:** the secret stays in guarded memory,
+  the result is public: a provider operation `key-id` (yubikey-sodium
+  rule 1);
+- **it is also a key commitment:** what G4 says vault files lack; one
+  construction for both.
+
+**N4. Local session ids, as QUIC connection ids.** Alice names the
+session A1, Bob names it B1, each a `:self` assertion trusted only
+locally. Each endpoint chooses the id its peer uses to address it, and
+may rotate it.
+
+- **on the wire:** the receiver's local id, for a one-step lookup (the
+  sender's optionally);
+- **inside the encryption** (associated data): `h` and the epoch, for
+  cryptographic binding;
+- **rotating** local ids keeps an observer from linking messages within
+  a session; a stable `h` in the clear would allow that.
+
+**N5. Petnames bind to principals.** "bob" in Alice's context is SDSI's
+`(Alice bob)`, in our vocabulary `[:named-by :self <Bob's root kid>
+"bob"]` (W2), and the petname model (Mark Miller; Zooko's triangle): a
+petname is local, unique in its context and chosen by its owner; a kid is
+global and self-certifying; a nickname is what Bob proposes on his card
+(`:names`). Rules:
+
+- **a name binds to a principal, never to one key.** "bob" means Bob's
+  identity (root kid, through his current card); the *operation* picks
+  the facet: `box` his `:agree` key, `verify` his signing keys, `session`
+  his static key. A name bound to one key breaks at the first rotation;
+  a specific key is named by its kid;
+- kids are recognized by `urn:signet:pk:`; anything else is a petname
+  (keywords or a tagged form would avoid collisions; to decide);
+- **adoption is explicit:** a nickname on a received card never becomes
+  a petname by itself, or Mallory's card proposes "alice";
+- `:self` enforces uniqueness; two principals under one name fail
+  closed.
+
+**N6. The short form: `(box/box "alice" "hi alice")`.** Every implicit
+piece resolves through the fact db:
+
+| Piece | Resolves through |
+|---|---|
+| sender | the default identity, `[:self :default-identity …]` |
+| "alice" | `[:named-by :self ?p "alice"]`, then her current valid card |
+| key and format | her `:accepts` ∩ what I support, at or above my floor, by my preferences (grouping and ordering after the query) |
+| payload | an EDN value (D14); no `"UTF-8"` |
+
+`:self` is not an argument: it is the local authority (namespace, trust
+root), while *me* is the identity that signs and authenticates, and
+there may be several (work, personal). `(box "alice" msg)` means
+`(box (me) "alice" msg)`; an identity is passed explicitly only when
+there are several. Implicit choices stay visible:
+
+- the result says what was chosen (kid, format, proof level), as
+  `box/choose` does in chapter 3; a choice can be pinned;
+- failures are specific: no card for "alice" → `:not-found`; no common
+  format → `:unsupported` with the reason; my own key unavailable for box
+  v3's authentication → "insert the YubiKey";
+- Alice re-issuing her card *should* change the choice; silently going
+  below my floor never may.
+
+Later: a `send` above `box` and `session` that uses an established
+session to "alice" when there is one, and a box otherwise.
+
 ## Open decisions (Frank's)
 
 - Signature profiles as the extension of `-sign` (recommended before the
@@ -988,3 +1092,5 @@ to it.
   aliases.
 - One fact db (2026-10-25 brainstorm): cards publish holdings, not
   state; a backup `:agree` key; where the db lives.
+- Sessions and names (2026-10-25 brainstorm, N1–N6): the petname form
+  (string, keyword or tagged); a DH ratchet or not.
