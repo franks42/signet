@@ -1,13 +1,16 @@
 # Signet — CLJC 25519 Crypto Library
 
 ## Project Overview
+
 Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request signing and encryption with EDN-native message formats.
 
 ## Architecture — Two Concerns
+
 - **signet**: Crypto primitives — key management, request signing, encryption (DH + symmetric)
 - **stroopwafel**: Capability semantics — bearer tokens, Datalog policy, built on signet
 
 ## Key Decisions Made
+
 - **Name**: signet (like a signet ring — personal key for signing/sealing)
 - **Crypto backends** (`signet.impl` facade, selected once at load: `-Dsignet.backend` / `SIGNET_BACKEND` (empty = unset), **default `sodium` since 0.11.0**, Frank's decision 2026-10-24: one implementation everywhere; no silent fallback, JCA only on explicit request; JDK 25+ on the JVM accepted; secp256k1 stays on BouncyCastle):
   - `:sodium` (default) — `signet.impl.sodium`, libsodium via `nacljc.core` (the backend keeps the name `:sodium`: it names libsodium, the native engine, not the wrapper) (github.com/franks42/nacljc, `com.github.franks42/nacljc 0.6.0`, a regular dependency in deps.edn and bb.edn; the version in test/signet/consumer_check.clj (test:jar) must match; babashka.ffi). Without libsodium, loading fails with an error naming the JCA opt-in (`bb test:fail-closed`).
@@ -25,6 +28,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 ## Implemented Namespaces
 
 ### signet.key — Key management
+
 - Records: Ed25519KeyPair/PublicKey/PrivateKey, X25519KeyPair/PublicKey/PrivateKey, X25519SharedKey
 - `signing-keypair` / `encryption-keypair` — multimethod, extensible (generate, from-bytes, from-map)
 - `signing-public-key` / `signing-private-key` — extraction multimethods
@@ -40,6 +44,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - Predicates: `signing-keypair?`, `signing-public-key?`, etc.
 
 ### signet.sign — Request signing
+
 - Low-level: `sign` / `verify` (bytes in, bytes out)
 - High-level: `sign-edn` / `verify-edn` (EDN envelopes with cedn + UUIDv7)
 - Zero-config: `(sign-edn! payload)` uses the default keypair, creating and
@@ -48,6 +53,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - Digests: `message-digest` (same across signers), `digest` (unique per envelope)
 
 ### signet.chain — Capability chains ✅
+
 - `extend` — create chain or add block (ephemeral key plumbing internal)
 - `close` — add final block + seal (ephemeral key discarded, chain frozen)
 - `verify` — verify all signatures, chain links, and seal proof
@@ -58,6 +64,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - Predicates: `chain?`, `open?`, `sealed?`
 
 ### signet.session — Noise_KK forward-secret sessions ✅ (0.6.0; on vault handles in 0.9.0)
+
 - `Noise_KK_25519_ChaChaPoly_SHA256` — KK handshake pattern, X25519 DH, ChaCha20-Poly1305 AEAD, SHA-256 hashing
 - API: `initiator`, `responder` (local static = vault handle; peer = public key or kid), `write-message!`, `read-message!`, `established?`, `close!`, `with-conclave`
 - Wire-compatible with other Noise implementations since 0.9.0 (prologue order fixed); `test/signet/noise_vectors_test.clj` checks the cacophony and snow vectors
@@ -68,25 +75,31 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - See `docs/05-noise-kk-session-design.md` for the design walkthrough
 
 ### signet.encoding — Base64url
+
 - `bytes->base64url` / `base64url->bytes`
 
 ### signet.vault — secrets by reference (0.8.0; docs/07)
+
 - Handles (`KeyHandle`: kid + vault id); providers `:memory` and `:sodium` (`signet.vault.sodium`, nacljc guarded memory)
 - Providers offer operations (docs/12 phase 0, 0.11.0-SNAPSHOT): `-sign`, `-x25519-dh`, `-hkdf`, `-hmac`, `-aead-encrypt`/`-aead-decrypt`, `-argon2id`, `-wrap`/`-unwrap`; secret results go into new entries the caller names (temporary entries, destroyed by the caller with `vault/destroy-temp!`; `vault/temp-entry-count` is 0 between operations), never back to the caller. Lending (`-with-material`) is the separate `Lending` protocol; `lending-provider` builds the operations from it (`:memory`, `:sodium`). signet's crypto code calls operations only (`test/signet/operations_test.clj`: a provider without `Lending` runs every feature); `vault/with-material` is `^:no-doc`, for white-box tests
 - `generate-signing-key!`, `generate-encryption-key!`, `import-*-key!`, `export-secret` (ack), `destroy!`, `public-key`, `lookup`, `handle(s)`, defaults, `import-password!`
 - Session entries (Noise secrets), internal entries (a vault file's master key), the gate (read/write lock), `note-use!` (auto-lock hook); `^:no-doc` internals for signet.password / signet.vault.file
 
 ### signet.shared — shared (DH-derived) symmetric keys as handles (0.8.0)
+
 - `shared-key!`, `seal`/`open` (directional, key-committing), `mac`
 
 ### signet.encryption — box v2 (docs/06)
+
 - `box`/`unbox` with vault handles; optional `:from`/`:to` kids, `:aad`, 24-byte nonce, HKDF-bound directional key
 
 ### signet.password — password-derived keys (0.10.0, slice 1 of docs/10)
+
 - `password-key!` (Argon2id; password bytes wiped; key kept in the vault), `seal`, `open` (with the handle or the password)
 - libsodium backend only; JCA throws `:signet.impl/unsupported`
 
 ### signet.vault.file — vault files (0.10.0, slice 2 of docs/10)
+
 - `create!`, `open!` (locked), `unlock!`, `lock!`, `save!` (or `:auto-save`), `change-password!`, `status`
 - Optional recovery key: `add-recovery-key!` (ack; returns `SIGNET-RK1-…` bytes once), `unlock-with-recovery-key!`, `reset-password!` (only after a recovery unlock), `remove-recovery-key!`
 - password → Argon2id → wraps the random master key (an internal vault entry) → per-save HKDF key encrypts the body and wraps each identity key (`impl/wrap-material`, nacljc `wrap-secret`); header is the body's AAD
@@ -96,15 +109,18 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - Each vault has a gate (read/write lock, fair Semaphore + thread-local `*held*`): lending material = read, destroying = write; destroy inside an operation throws `::destroy-inside-operation`
 
 ### signet.impl — backend facade
+
 - The 22 crypto functions every other namespace calls (`impl/…`), forwarded to the selected backend
 - `impl/backend` — `:jca` or `:sodium`
 - Unknown backend, or `:sodium` without libsodium/nacljc → loud error at load (no silent fallback)
 
 ### signet.impl.sodium — libsodium backend
+
 - Same 22 functions and contracts as `signet.impl.jvm`, on `nacljc.core`
 - Fixed-size inputs length-checked (libsodium reads them blindly)
 
 ### signet.impl.jvm — JCA backend
+
 - Ed25519 key generation, sign, verify
 - X25519 key generation, DH key agreement
 - Ed25519↔X25519 cross-curve conversion (birational map + SHA-512)
@@ -112,6 +128,7 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - SHA-256 hashing
 
 ## Implementation Phases
+
 1. **Phase 1 (MVP)**: Key management + Ed25519 signing ✅
 2. **Phase 1b**: Capability chains (signet.chain) ✅
 3. **Phase 2**: X25519 encryption (`signet.encryption`, box v2) ✅
@@ -119,12 +136,14 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 5. Since then: the vault and handles (0.8.0), sessions on handles (0.9.0), password unlocking and vault files (0.10.0) ✅
 
 ## Related Local Projects
+
 - `../stroopwafel` — First consumer (capability-based auth tokens). Adds Datalog on top of signet.chain.
 - `../canonical-edn` — Deterministic EDN serialization. Required dependency.
 - `../uuidv7.cljc` — Portable UUIDv7. Required dependency.
 - `../naclj` — Deprecated NaCl wrapper by Frank. Inspiration for URN key identifiers and DH design.
 
 ## Design Docs
+
 - `docs/01-landscape-research.md` — Clojure crypto ecosystem survey
 - `docs/02-prior-art-analysis.md` — Analysis of naclj, caesium, stroopwafel, cedn, uuidv7
 - `docs/03-design-ideas.md` — Detailed design: namespace structure, key representation, envelope format
@@ -138,17 +157,45 @@ Portable CLJC library for Ed25519/X25519 elliptic curve cryptography: request si
 - `docs/11-auto-lock-and-password-input.md` — design (2026-09-27): the vault destroy race (a bug to fix first), auto-lock (activity clock, lazy check + timer, :on-dirty), nacljc.tty password reader into guarded memory, passwords as secrets and as handles. Built in 0.10.0 (nacljc.tty in nacljc 0.6.0), with "As built" notes.
 - `docs/12-agent-design.md` — design (2026-09-27): secrets in a separate process; operation-level providers (phase 0), an ssh-agent client provider (sign-only), the signet agent (Unix socket, peer check, CEDN protocol), policy and the PDP seam. Not built.
 - `docs/13-aws-kms-provider.md` — research (2026-10-24): AWS KMS as a provider: Ed25519 signing yes (4096-byte limit vs sign-edn), no X25519; KMS-sealed vault files (a `:kms` unlock method) as the first integration; AWS credentials via an agent, ideally IAM Roles Anywhere with the YubiKey; spike plan; prior art: the AWS Encryption SDK (keyrings, encryption context, key commitment). Not built.
-- `docs/14-algorithms-and-cross-key-identity.md` — design notes (2026-10-24): 25519 at the core, P-256/secp256k1 at the edges via vetted libraries and providers; algorithm × provider matrix; signature profiles (pre-hash, encoding, low-s, recovery id); several keys from one seed; cross-signed key bindings (one identity, several keys) for SPKI assertions and stroopwafel. Not built.
-- `docs/tutorial/README.md` — tutorial outline (2026-10-24): cryptography by reference, written as the API we want; snippets marked [works]/[change]/[new]; [works] blocks run as a test (`signet.tutorial-test`, `;; =>` lines are checks); identity as the central reference; decisions D1–D14 (sync/async is D12). Chapters: 01-five-minutes, 03-key-cards.
+- `docs/14-algorithms-and-cross-key-identity.md` — the main design document (2026-10-24 to 10-26, ~1300 lines): 25519 at the core, P-256/secp256k1 at the edges; signature profiles; several keys from one seed; cross-signed key bindings; **key cards** (dictionary, reader rules, decisions 1–6, proof levels for `:agree` keys, forward secrecy and box v3); cards as says-statements in stroopwafel (gaps, `:self`, trust as facts, revocation as a pre-filter); **one fact db** for keys, capabilities and cards (holdings/state/received facts, only references to secrets, stroopwafel inside signet, grouping and ordering after the query, DataScript compared and rejected for bb); **sessions, key ids and local names** (handshake hash as session id, epochs, keyed key ids, petnames, `(box "alice" msg)`); **distribution and discovery** (no CRDT, threats to card sets, lookup by key and by name, a transparent directory on the Datomic model, IPFS). Not built.
+- `docs/tutorial/README.md` — tutorial outline (2026-10-24): cryptography by reference, written as the API we want; snippets marked [works]/[change]/[new]; [works] blocks run as a test (`signet.tutorial-test`, `;; =>` lines are checks); identity as the central reference; decisions D1–D16 (sync/async is D12, key cards D16). Chapters: 01-five-minutes, 03-key-cards.
+- `docs/tutorial/TODO.md` — **the working list**: one task per line, F (chapter 1), C (chapter 3), G (design docs), W (stroopwafel and pdp), N (sessions and names), K (distribution and discovery), the proposed order, and `## Open questions` for Frank.
 - `docs/15-seed-and-kek.md` — design and research (2026-10-24): one seed, many keys; HKDF-Expand with the seed as the HMAC key; seed storage; KEK variants (KMS symmetric, a KMS HMAC key as the seed (verified feasible in AWS docs), YubiKey); importing derived keys; spike plan. Not built.
 
-## Current state (2026-09-28)
+## Current state (2026-10-26): start here
+
+**Coding is on hold** (Frank, 2026-10-24) except fixes he approves one by
+one. The work is design through the tutorial: chapters written as the API
+we want, gaps recorded in `docs/tutorial/TODO.md`, designs and Frank's
+decisions in `docs/14`. Many turns are brainstorming ("no coding"):
+answer, then record in docs/14 and the TODO when Frank asks, then commit
+and push when he asks.
+
+- **Built since 0.10.0** (on main, 0.11.0-SNAPSHOT): libsodium as the
+  default backend; docs/12 phase 0 (operation-level providers, secret
+  results kept in the provider); chapter 1 and chapter 3 (key cards,
+  drafted, [works] blocks pass).
+- **Sibling repos touched:** stroopwafel 0.12.0 (`270d2c2`: fixpoint
+  limits fail closed, W1; not tagged or on Clojars yet), stroopwafel-pdp
+  `1ceccb1` (passes `:limits`/`:error`; its deps.edn asks for signet
+  0.3.1, which can't be resolved: Frank's choice). Changes there need
+  Frank's approval.
+- **Next:** the TODO's "Order (proposed)" and its "Open questions"
+  (Frank's answers pending). Nothing is started.
+- **Markdown docs:** Frank reads and edits them in editmd (rules in the
+  global CLAUDE.md: targeted Edit, never perl/sed on docs; Open questions
+  and Decisions sections; editmd's style). `bb md` checks the style and
+  compares with editmd's own serializer; `bb md:fix` formats. Nine older
+  docs are not formatted yet (`bb md` lists them).
+
+## State at 0.10.0 (2026-09-28)
 
 **Released: signet 0.10.0 (2026-09-28), on nacljc 0.6.0. main is
 0.11.0-SNAPSHOT** (CHANGELOG has an empty `## 0.11.0 (unreleased)`).
 CI green on both repos.
 
 What 0.10.0 brought (details in CHANGELOG.md):
+
 - Password unlocking, docs/10: `signet.password` (password-derived key
   handles, seal/open) and `signet.vault.file` (vault files: create!/open!/
   unlock!/lock!/save!, :auto-save, change-password!, optional recovery key
