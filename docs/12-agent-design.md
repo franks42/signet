@@ -14,11 +14,11 @@ any code running in the process (the runtime attack surface of docs/07).
 Moving the secrets to a separate process changes what a compromise of the
 application yields:
 
-| An attacker in the application process can | today | with the agent |
-|---|---|---|
-| read key bytes | yes (with effort: guarded memory, not a boundary) | **no** |
-| copy the keys for later, elsewhere | yes | **no** |
-| use the keys while connected | yes | yes, **within the agent's policy** |
+| An attacker in the application process can | today                                             | with the agent                     |
+| ------------------------------------------ | ------------------------------------------------- | ---------------------------------- |
+| read key bytes                             | yes (with effort: guarded memory, not a boundary) | **no**                             |
+| copy the keys for later, elsewhere         | yes                                               | **no**                             |
+| use the keys while connected               | yes                                               | yes, **within the agent's policy** |
 
 The third row is ssh-agent's known limit: whoever can talk to the socket
 can ask for operations. The agent's policy (confirmation, per-key rules,
@@ -38,16 +38,16 @@ with the secret, and signet runs the crypto on it. That cannot cross a
 process boundary. The provider protocol has to offer **operations**
 instead, and a secret result stays inside the provider as a new entry:
 
-| Operation | Input | Returns |
-|---|---|---|
-| `-sign` | key id, message | signature (public) |
-| `-x25519-dh` | key id, peer public key | **new entry id** (the DH output never leaves) |
-| `-hkdf` | entry id (ikm or salt), salt/info, lengths, `:secret?` | new entry ids, or public bytes |
-| `-hmac` | entry id, data | tag (public) |
-| `-aead-encrypt` / `-aead-decrypt` | entry id, nonce, data, aad | ciphertext / plaintext (data, not keys) |
-| `-wrap` / `-unwrap` | entry id (key), entry id / ciphertext | ciphertext / new entry id |
-| `-argon2id` | entry id (password), salt, limits | new entry id |
-| `-generate`, `-import`, `-destroy`, `-export` | as today | as today |
+| Operation                                     | Input                                                  | Returns                                       |
+| --------------------------------------------- | ------------------------------------------------------ | --------------------------------------------- |
+| `-sign`                                       | key id, message                                        | signature (public)                            |
+| `-x25519-dh`                                  | key id, peer public key                                | **new entry id** (the DH output never leaves) |
+| `-hkdf`                                       | entry id (ikm or salt), salt/info, lengths, `:secret?` | new entry ids, or public bytes                |
+| `-hmac`                                       | entry id, data                                         | tag (public)                                  |
+| `-aead-encrypt` / `-aead-decrypt`             | entry id, nonce, data, aad                             | ciphertext / plaintext (data, not keys)       |
+| `-wrap` / `-unwrap`                           | entry id (key), entry id / ciphertext                  | ciphertext / new entry id                     |
+| `-argon2id`                                   | entry id (password), salt, limits                      | new entry id                                  |
+| `-generate`, `-import`, `-destroy`, `-export` | as today                                               | as today                                      |
 
 The vault already funnels nearly every use of secret material through a
 few internal functions: `sign`, `x25519-dh`, `hkdf-pair!`,
@@ -73,25 +73,25 @@ are secret; a kid derived by HMAC is public.
 
 **As built (2026-10-24, 0.11.0-SNAPSHOT).** Two steps, the same day.
 
-1. *Operations instead of lending.* `-with-material` moved to a separate
+1. _Operations instead of lending._ `-with-material` moved to a separate
    `Lending` protocol; `lending-provider` builds every operation from it,
    and `:memory` and `:sodium` are built that way.
-2. *Secret results stay in the provider* (the gap left by step 1, flagged
+2. _Secret results stay in the provider_ (the gap left by step 1, flagged
    by Frank as "should be addressed", closed the same day). A
    secret-producing operation writes its result into a new entry the
    caller names (an output spec `[id alg]` or `[id alg n]`) and returns
    nothing:
 
-| Operation | Inputs | Result |
-|---|---|---|
-| `-sign` | entry, message | signature (public) |
-| `-x25519-dh` | entry, peer public key, out | entry |
-| `-hkdf` | ikm and salt (each an entry or public bytes), info, outs | one or more entries (slices of one output) |
-| `-hmac` | entry, data | tag (public): commitments, derived kids, MACs |
-| `-aead-encrypt` / `-aead-decrypt` | entry, nonce, data, aad | ciphertext / plaintext |
-| `-argon2id` | entry (a password), salt, limits, out | entry |
-| `-wrap` | entry, wrapping-key entry, nonce, aad | ciphertext (public) |
-| `-unwrap` | wrapping-key entry, nonce, ciphertext, aad, out | entry |
+| Operation                         | Inputs                                                   | Result                                        |
+| --------------------------------- | -------------------------------------------------------- | --------------------------------------------- |
+| `-sign`                           | entry, message                                           | signature (public)                            |
+| `-x25519-dh`                      | entry, peer public key, out                              | entry                                         |
+| `-hkdf`                           | ikm and salt (each an entry or public bytes), info, outs | one or more entries (slices of one output)    |
+| `-hmac`                           | entry, data                                              | tag (public): commitments, derived kids, MACs |
+| `-aead-encrypt` / `-aead-decrypt` | entry, nonce, data, aad                                  | ciphertext / plaintext                        |
+| `-argon2id`                       | entry (a password), salt, limits, out                    | entry                                         |
+| `-wrap`                           | entry, wrapping-key entry, nonce, aad                    | ciphertext (public)                           |
+| `-unwrap`                         | wrapping-key entry, nonce, ciphertext, aad, out          | entry                                         |
 
    Plus storage methods: `-move!` (a derived root becomes a shared or
    password key under its kid) and `-public-key` (a restored key is
@@ -251,7 +251,7 @@ which a client must never accept from the agent.
 - **Audit:** an append-only log of operations (time, client, key,
   operation; never data).
 - **The PDP seam:** the agent is exactly the point where "may this
-  client use this key for this?" is asked, the *authorized* question of
+  client use this key for this?" is asked, the _authorized_ question of
   the trust model. Keep it a function the policy calls
   (`(authorize? request context)`), so stroopwafel's Datalog policy can
   plug in later.

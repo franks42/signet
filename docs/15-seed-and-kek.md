@@ -2,8 +2,8 @@
 
 Status: **design and research, 2026-10-24; not built, no spike.** KMS facts
 are from AWS's documentation read that day (links at the end), marked
-*verified*; everything else is marked *documented* (a standard, from
-memory) or *unverified*. Background: docs/14 ("Several keys from one
+_verified_; everything else is marked _documented_ (a standard, from
+memory) or _unverified_. Background: docs/14 ("Several keys from one
 seed"), docs/13 (KMS), the tutorial outline (chapter 7).
 
 ## Why
@@ -28,7 +28,7 @@ SLIP-0010.
 
 - **The seed is the HKDF pseudo-random key.** 64 random bytes. RFC 5869
   (§3.3) allows skipping HKDF-Extract when the input is already a uniformly
-  random key of hash length (documented). So the seed *is* PRK.
+  random key of hash length (documented). So the seed _is_ PRK.
 - **Each key is HKDF-SHA-512-Expand(seed, label, length)**, at most 64
   bytes, which is a single HMAC truncated to the length:
 
@@ -39,17 +39,17 @@ SLIP-0010.
 
   (Revised 2026-10-24 from HMAC-SHA-256 with a 32-byte seed. With SHA-256,
   P-256 and P-384 needed a second block, T(2) = HMAC(seed, T(1) ‖ label ‖
-  0x02), which puts the secret T(1) into an HMAC *message*: KMS can still
+  0x02), which puts the secret T(1) into an HMAC _message_: KMS can still
   compute it, but nacljc's HMAC takes only public messages. With SHA-512,
   every key is one HMAC, one KMS `GenerateMac` call.)
 - **Per algorithm**:
 
-  | Key | Output | Accept when |
-  |---|---|---|
-  | Ed25519 | 32 bytes, the seed of `crypto_sign_seed_keypair` | always |
-  | X25519 | 32 bytes (clamped by the library) | always |
-  | P-256, secp256k1 | 32 bytes, a big-endian scalar d | 0 < d < n |
-  | P-384 | 48 bytes, d | 0 < d < n |
+  | Key              | Output                                           | Accept when |
+  | ---------------- | ------------------------------------------------ | ----------- |
+  | Ed25519          | 32 bytes, the seed of `crypto_sign_seed_keypair` | always      |
+  | X25519           | 32 bytes (clamped by the library)                | always      |
+  | P-256, secp256k1 | 32 bytes, a big-endian scalar d                  | 0 < d < n   |
+  | P-384            | 48 bytes, d                                      | 0 < d < n   |
 
 - **ECDSA scalars by rejection, not reduction** (revised 2026-10-24 from
   FIPS 186-5's "64 extra bits, then mod n"). Reduction is arithmetic on a
@@ -122,7 +122,7 @@ anywhere (the vault file, S3).
   `kms:EncryptionContext:purpose = signet/seed`, granted to a separate role
   (for example one requiring MFA). Everyday roles cannot unwrap; every
   unwrap is in CloudTrail.
-- **Limit**: `Decrypt` returns the seed. The rule controls *when* it can be
+- **Limit**: `Decrypt` returns the seed. The rule controls _when_ it can be
   unwrapped, not what happens after; derivation runs locally in guarded
   memory, and the seed is destroyed afterwards.
 
@@ -162,7 +162,7 @@ Limits and open points:
 
 - **The derived key comes back to the caller** (it must, to be imported
   elsewhere). Whoever holds `kms:GenerateMac` on the key can obtain every
-  derived private key: the permission *is* the identity. Treat it like
+  derived private key: the permission _is_ the identity. Treat it like
   the seed.
 - No condition key restricts the message (unverified: none found), so the
   permission cannot be limited to some labels. One KMS HMAC key per
@@ -180,8 +180,8 @@ PIV has no symmetric wrap, but a PIV X25519 (firmware 5.7+) or P-256 key
 can be the recipient of a box: the seed is sealed to the slot's public key
 and unsealing needs that slot's private key.
 
-- **Access**: a dedicated slot with PIN policy *always* and touch policy
-  *always* (a device change, Frank's call), while everyday slots keep a
+- **Access**: a dedicated slot with PIN policy _always_ and touch policy
+  _always_ (a device change, Frank's call), while everyday slots keep a
   cached PIN. Every derivation needs the PIN and a touch.
 - **Alternative**: FIDO2's `hmac-secret` extension, per credential and with
   touch, as age-plugin-fido2 and systemd-cryptenroll use it (documented).
@@ -191,12 +191,12 @@ and unsealing needs that slot's private key.
 
 ### Comparison
 
-| | Seed leaves the KEK holder | "May derive" is | Audit | Works offline |
-|---|---|---|---|---|
-| Vault file | yes, into guarded memory | the vault password | no | yes |
-| A. KMS KEK | yes, into guarded memory | `kms:Decrypt` + context | CloudTrail | no |
-| B. KMS HMAC seed | **never** (derived keys do) | `kms:GenerateMac` on one key | CloudTrail | no (the offline backup does) |
-| C. YubiKey KEK | yes, into guarded memory | PIN + touch on one slot | none on device | yes |
+|                  | Seed leaves the KEK holder  | "May derive" is              | Audit          | Works offline                |
+| ---------------- | --------------------------- | ---------------------------- | -------------- | ---------------------------- |
+| Vault file       | yes, into guarded memory    | the vault password           | no             | yes                          |
+| A. KMS KEK       | yes, into guarded memory    | `kms:Decrypt` + context      | CloudTrail     | no                           |
+| B. KMS HMAC seed | **never** (derived keys do) | `kms:GenerateMac` on one key | CloudTrail     | no (the offline backup does) |
+| C. YubiKey KEK   | yes, into guarded memory    | PIN + touch on one slot      | none on device | yes                          |
 
 ## Importing derived keys into their targets
 
@@ -234,7 +234,7 @@ memory and inside the target.
 - The nacljc addition: expand-only HKDF-SHA-512, secret in, secret out.
 - The default home of the seed: vault file, offline, or a KEK (A, B, C).
 - B's one-key-per-identity rule and who holds `kms:GenerateMac`.
-- A dedicated YubiKey slot with PIN and touch *always* for C.
+- A dedicated YubiKey slot with PIN and touch _always_ for C.
 
 ## Sources
 

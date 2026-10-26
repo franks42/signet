@@ -64,7 +64,7 @@ Alice signs a request (any EDN value), valid for five minutes:
 (def signed (sign/sign-edn alice {:op :read :path "/reports"} {:ttl 300}))
 ```
 
-Bob checks it, *expecting Alice*:
+Bob checks it, _expecting Alice_:
 
 ```clojure
 ;; [works]
@@ -74,7 +74,7 @@ Bob checks it, *expecting Alice*:
 
 - **valid**: well-formed, the signature checks out under the key the
   envelope names, not expired. Anyone's envelope can be valid.
-- **verified**: valid, *and* signed by the identity Bob expected.
+- **verified**: valid, _and_ signed by the identity Bob expected.
 
 The same envelope, expecting someone else:
 
@@ -85,7 +85,7 @@ The same envelope, expecting someone else:
 ```
 
 `verify-edn` never throws on bad input; it answers with `:valid? false`
-and an `:error`. Whether Alice may *read /reports* is a third question
+and an `:error`. Whether Alice may _read /reports_ is a third question
 (authorization), and not signet's: that is policy (stroopwafel).
 
 ## Encrypt to someone
@@ -147,7 +147,7 @@ decision in the outline.
   Independently of D2, a wrong argument should give an `ex-info` that
   names it.
 - **F2. Unknown options are ignored.** `(sign-edn alice x {:ttl-ms 60000})`
-  signs *without* expiry and says nothing; a typo removes a security
+  signs _without_ expiry and says nothing; a typo removes a security
   property. Proposal: reject unknown option keys (fail closed). New
   decision D13.
 - **F3. Bytes in, bytes out.** `sign-edn` takes an EDN value, `box` takes

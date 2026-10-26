@@ -15,8 +15,8 @@ interfaces may change wherever the tutorial finds a better one.
 
 ## The claim
 
-Application code names *who* and *what for*, never *how* or *with which
-key bytes*. It holds references: an **identity** for itself, **kids** for
+Application code names _who_ and _what for_, never _how_ or _with which
+key bytes_. It holds references: an **identity** for itself, **kids** for
 others. Which algorithm, which key, which provider (guarded memory, a
 YubiKey, AWS KMS, an agent) and which signature format are decided by
 configuration and by the purpose of the call. PKCS#11 has worked by
@@ -30,17 +30,17 @@ nbb/browser ports.
 
 ## Glossary (to settle names first)
 
-| Term | Meaning | Today |
-|---|---|---|
-| identity | a reference to *me*: one or more keys, bound together, each in some provider, used by purpose | partly: a signing-key handle; Noise sessions already accept one as the identity (`operations_test`) |
-| kid | the public name of one key, `urn:signet:pk:<alg>:<b64>` | yes |
-| handle | a reference to one secret key in a vault | yes (`KeyHandle`) |
-| principal | how a relying party names someone else: a kid, or an identity's root kid plus its bindings | kid only |
-| provider | where keys live and operations run | yes (phase 0 operations) |
-| vault | a named set of entries with its provider | yes |
-| purpose / profile | what an operation is for (`:signet`, `:x509`, `:cosmos`, `:eth`); fixes algorithm, pre-hash, encoding | no (docs/14) |
-| binding | a statement, signed by both keys, that two keys belong to one identity | no (docs/14) |
-| seed | a secret from which keys are derived; itself a vault entry | no |
+| Term              | Meaning                                                                                               | Today                                                                                               |
+| ----------------- | ----------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| identity          | a reference to _me_: one or more keys, bound together, each in some provider, used by purpose         | partly: a signing-key handle; Noise sessions already accept one as the identity (`operations_test`) |
+| kid               | the public name of one key, `urn:signet:pk:<alg>:<b64>`                                               | yes                                                                                                 |
+| handle            | a reference to one secret key in a vault                                                              | yes (`KeyHandle`)                                                                                   |
+| principal         | how a relying party names someone else: a kid, or an identity's root kid plus its bindings            | kid only                                                                                            |
+| provider          | where keys live and operations run                                                                    | yes (phase 0 operations)                                                                            |
+| vault             | a named set of entries with its provider                                                              | yes                                                                                                 |
+| purpose / profile | what an operation is for (`:signet`, `:x509`, `:cosmos`, `:eth`); fixes algorithm, pre-hash, encoding | no (docs/14)                                                                                        |
+| binding           | a statement, signed by both keys, that two keys belong to one identity                                | no (docs/14)                                                                                        |
+| seed              | a secret from which keys are derived; itself a vault entry                                            | no                                                                                                  |
 
 ## Chapters
 
@@ -57,7 +57,7 @@ idea, without sessions, templates and attribute arrays. **[works]**,
 **[change]** for identity.
 
 ### 3. Key cards: who I am, and what I accept
-*Drafted: `03-key-cards.md`.* Alice publishes a card listing her keys,
+_Drafted: `03-key-cards.md`._ Alice publishes a card listing her keys,
 their purposes, what she accepts and verifies; Bob reads it, checks the
 proof level of each agreement key, and boxes to her by his own order of
 preference. Adding a P-256 key re-issues the card (`:supersedes`), which
@@ -113,13 +113,13 @@ temporaries, and how KMS and the YubiKey map onto them.
 
 Moved to its own document, `docs/15-seed-and-kek.md`: the derivation
 scheme (HKDF-Expand with the seed as the HMAC key), where the seed lives,
-three KEK variants (KMS symmetric key, a KMS HMAC key *as* the seed, the
+three KEK variants (KMS symmetric key, a KMS HMAC key _as_ the seed, the
 YubiKey) and importing derived keys into their targets. Chapter 7 tells
 the user's side of it.
 
 ## Decisions the tutorial must settle
 
-- **D1 Identity as the reference.** One identity reference for *me*;
+- **D1 Identity as the reference.** One identity reference for _me_;
   operations pick a key by purpose. (Frank: yes, 2026-10-24; the shape is
   to settle.)
 - **D2 Others by kid.** Peers named by kid everywhere (`box`, `unbox`,

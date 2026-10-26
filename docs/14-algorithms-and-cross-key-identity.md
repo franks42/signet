@@ -1,9 +1,9 @@
 # More algorithms, more providers, and one identity across keys
 
 Status: **design notes, 2026-10-24; nothing built.** Claims are marked
-*verified* (read in signet's source or a primary document), *documented*
+_verified_ (read in signet's source or a primary document), _documented_
 (from a standard or vendor documentation, from memory and not re-read
-today), or *unverified*.
+today), or _unverified_.
 
 ## The principle: 25519 at the core, other curves at the edges
 
@@ -40,12 +40,12 @@ a key lives.
 
 ## Which provider can hold which algorithm
 
-| Algorithm | libsodium | BouncyCastle / C library | YubiKey PIV | AWS KMS |
-|---|---|---|---|---|
-| Ed25519 | yes | yes | firmware 5.7+ (verified on Frank's 5.8 key, yubikey-sodium) | yes, messages ≤ 4096 bytes (docs/13) |
-| X25519 | yes | yes | firmware 5.7+ (documented, not tried) | no |
-| P-256 / P-384 | no | yes | yes | yes, sign and ECDH |
-| secp256k1 | no | yes | no (documented: PIV has no secp256k1) | yes, signing |
+| Algorithm     | libsodium | BouncyCastle / C library | YubiKey PIV                                                 | AWS KMS                              |
+| ------------- | --------- | ------------------------ | ----------------------------------------------------------- | ------------------------------------ |
+| Ed25519       | yes       | yes                      | firmware 5.7+ (verified on Frank's 5.8 key, yubikey-sodium) | yes, messages ≤ 4096 bytes (docs/13) |
+| X25519        | yes       | yes                      | firmware 5.7+ (documented, not tried)                       | no                                   |
+| P-256 / P-384 | no        | yes                      | yes                                                         | yes, sign and ECDH                   |
+| secp256k1     | no        | yes                      | no (documented: PIV has no secp256k1)                       | yes, signing                         |
 
 YubiKey options for secp256k1 are the OpenPGP applet (unverified whether
 and from which firmware) or a different device. KMS covers secp256k1
@@ -63,7 +63,7 @@ message hash and the public key and checks that it gets r back.
 **Low-s: every signature has a twin.** If (r, s) is valid for a message,
 (r, n − s) is valid too: same message, same key, same r. Anyone can make
 the twin, no private key needed. Exactly one of the two has s ≤ n/2; the
-*low-s rule* says to publish that one. Normalizing after signing is one
+_low-s rule_ says to publish that one. Normalizing after signing is one
 comparison and one subtraction:
 
 ```
@@ -73,7 +73,7 @@ if s > n/2 then s := n − s
 Blockchains require it because a transaction id is a hash over the
 transaction, signature included: without the rule, anyone relaying a
 transaction could swap in the twin, giving the same valid payment a
-different id (*transaction malleability*, a well-known Bitcoin problem).
+different id (_transaction malleability_, a well-known Bitcoin problem).
 Bitcoin enforces low-s in relay policy, Ethereum since Homestead (EIP-2),
 and Cosmos SDK chains, Provenance included, reject high-s in verification
 (all documented).
@@ -96,7 +96,7 @@ non-canonical form, and libsodium does.
 
 **The recovery id: the public key from the signature.** From (r, s) and
 the message hash one can compute the public key that made the signature,
-up to a small ambiguity: in practice two candidate keys. The *recovery id*
+up to a small ambiguity: in practice two candidate keys. The _recovery id_
 `v` (0 or 1; also written 27/28, or folded with the chain id under
 EIP-155) says which.
 
@@ -114,11 +114,11 @@ equal to the known public key. Cheap, and it needs only the public key.
 **Why one key needs several outputs.** The same secp256k1 key and message
 must give different bytes per destination:
 
-| | pre-hash | s | output |
-|---|---|---|---|
-| signet today | SHA-256 | either half | r‖s, 64 bytes |
-| Cosmos / Provenance | SHA-256 | low half | r‖s, 64 bytes |
-| Ethereum | Keccak-256 | low half | r‖s‖v, 65 bytes |
+|                     | pre-hash   | s           | output          |
+| ------------------- | ---------- | ----------- | --------------- |
+| signet today        | SHA-256    | either half | r‖s, 64 bytes   |
+| Cosmos / Provenance | SHA-256    | low half    | r‖s, 64 bytes   |
+| Ethereum            | Keccak-256 | low half    | r‖s‖v, 65 bytes |
 
 A profile (next section) fixes all three, so a caller says "sign for
 Cosmos" and needs to know none of this.
@@ -130,13 +130,13 @@ key and message give signatures in different shapes, and an outside
 verifier accepts only its own. The proposal: a provider signs under a
 named **profile**, and the profile fixes every choice.
 
-| Profile | Pre-hash | Encoding | low-s | Extra |
-|---|---|---|---|---|
-| `:ed25519` | none (EdDSA, pure) | 64 bytes | n/a | signet's default |
-| `:p256/x509` | SHA-256 | DER | not required | X.509, TLS, PIV |
-| `:p256/webauthn` | SHA-256 over authenticatorData ‖ SHA-256(clientData) | DER | not required | what a passkey produces; see below |
-| `:secp256k1/cosmos` | SHA-256 | raw r‖s, 64 bytes | required | Cosmos SDK, Provenance |
-| `:secp256k1/eth` | Keccak-256 | r‖s‖v, 65 bytes | required (EIP-2) | needs the recovery id |
+| Profile             | Pre-hash                                             | Encoding          | low-s            | Extra                              |
+| ------------------- | ---------------------------------------------------- | ----------------- | ---------------- | ---------------------------------- |
+| `:ed25519`          | none (EdDSA, pure)                                   | 64 bytes          | n/a              | signet's default                   |
+| `:p256/x509`        | SHA-256                                              | DER               | not required     | X.509, TLS, PIV                    |
+| `:p256/webauthn`    | SHA-256 over authenticatorData ‖ SHA-256(clientData) | DER               | not required     | what a passkey produces; see below |
+| `:secp256k1/cosmos` | SHA-256                                              | raw r‖s, 64 bytes | required         | Cosmos SDK, Provenance             |
+| `:secp256k1/eth`    | Keccak-256                                           | r‖s‖v, 65 bytes   | required (EIP-2) | needs the recovery id              |
 
 Consequences for providers:
 
@@ -209,7 +209,7 @@ means.
 ### Why both keys must sign
 
 A statement signed by the Ed25519 key alone ("K_p256 is also me") proves
-only that the Ed25519 holder *claims* the P-256 key. Anyone can claim any
+only that the Ed25519 holder _claims_ the P-256 key. Anyone can claim any
 public key. If Mallory claims Alice's P-256 key, Alice's P-256 signatures
 start counting as Mallory's: an unknown-key-share or misattribution attack
 (the reason X.509 requests carry proof of possession and Keybase's
@@ -245,7 +245,7 @@ whatever its holder can produce:
 A symmetric `:same-entity` makes the identity as weak as its weakest key:
 a software P-256 key in a browser would carry the authority of a
 hardware-held Ed25519 root. SPKI's own vocabulary is directional: K1
-*speaks for* K2, optionally only for some tags.
+_speaks for_ K2, optionally only for some tags.
 
 The proposal: the binding names one relation, stroopwafel derives
 directional facts from it, and **policy chooses**:
@@ -277,7 +277,7 @@ the strength question made explicit.
   identities. Options: no transitive closure (only direct bindings), a
   depth limit, or closure only through a designated root key.
 - **Revocation.** Revoking either key must void every binding naming it;
-  revoking a binding needs a statement signed by *either* key (a
+  revoking a binding needs a statement signed by _either_ key (a
   compromised key must not be able to keep a binding alive).
 - **Which key is the root.** Natural choice: the hardware-held Ed25519 key
   is the entity's root, and other keys get `:speaks-for` with tags.
@@ -316,12 +316,12 @@ documents' verification methods, TLS's cipher-suite negotiation.
 **The statement is also what to exchange instead of a bare kid**
 (Frank, 2026-10-24: "a signed uri with the key"). A kid already carries
 the whole public key, so the signature does not add the key; it adds
-*proof of possession*: the key is a valid point and someone holding its
+_proof of possession_: the key is a valid point and someone holding its
 private key made the statement. A self-signed kid alone is weak (it is
 replayable, says nothing about what the key is for, and invalid keys
 already fail closed when used: libsodium rejects small-order keys). Signed
 together with the capabilities, purpose, expiry and bindings, it becomes a
-*key card*, like an OpenPGP self-signature on a user ID. Self-signed means
+_key card_, like an OpenPGP self-signature on a user ID. Self-signed means
 possession, not trust: whether this is Bob's card is still learned
 authentically, by fingerprint, or by a signature from someone Alice
 trusts (SPKI). The kid stays the reference; the card is how it travels.
@@ -337,7 +337,7 @@ trusts (SPKI). The kid stays the reference; the card is how it travels.
   base mode): Alice needs no key of her own; Bob's key and accepted
   profile are enough.
 - **Signing for Bob**: Bob's own key type is irrelevant; what matters is
-  what Bob can *verify* (`:verifies`). A JWT or X.509 verifier that only
+  what Bob can _verify_ (`:verifies`). A JWT or X.509 verifier that only
   knows ES256 makes Alice sign with her P-256 key.
 
 **3. Negotiation must be authenticated and have a floor.**
@@ -354,8 +354,8 @@ trusts (SPKI). The kid stays the reference; the card is how it travels.
 
 **Two consequences worth noting:**
 
-- **Pairwise keys.** The same seed can derive a different key *per relying
-  party* (Bob's kid in the label), as passkeys do per site: Bob and Carol
+- **Pairwise keys.** The same seed can derive a different key _per relying
+  party_ (Bob's kid in the label), as passkeys do per site: Bob and Carol
   then cannot link Alice by her key. Linkable identity via bindings, or
   unlinkable pairwise keys, becomes a per-relationship choice.
 - **One encryption format for every curve.** Box v2 is X25519 and
@@ -386,38 +386,38 @@ Nothing in the card changes that.
 RFC 9420 is verified (sections 7 and 10 read on 2026-10-25). The others
 are documented from memory and not re-read for this section.
 
-| Spec | Signed by | What to take |
-|---|---|---|
-| MLS KeyPackage (RFC 9420) | its own signature key (label `"KeyPackageTBS"`) | the closest model. Carries a signature key, an HPKE `init_key`, a leaf `encryption_key`, **capabilities** (versions, cipher suites, extensions, proposals, credential types) and a **lifetime** (`not_before`, `not_after`). Rules: the sender must check the lifetime and the receiver should; applications must set a maximum lifetime and reject longer ones; every extension used must be listed in capabilities; the encryption key must differ from `init_key`; KeyPackages are meant for one use (reuse enables replay), with an optional "last resort" package; a client must support everything it advertises (13.4) |
-| Signal prekey bundle (X3DH/PQXDH) | the long-term identity key signs the prekey | an identity key vouching for an encryption key, which is our binding applied to `:agree` keys |
-| PKCS#10 CSR, S/MIME capabilities (RFC 2986, RFC 8551) | the key it contains | proof of possession; algorithm preferences, in order, as an attribute. Replayable (no freshness) |
-| DPoP (RFC 9449) | the key in its header | freshness for a *presentation*: issued-at, a unique id, the audience (method and URL) |
-| JWK / COSE_Key (RFC 7517, RFC 9052) | (a key, not a card) | the vocabulary: `use`, `key_ops` (sign, verify, encrypt, decrypt, wrapKey, unwrapKey, deriveKey, deriveBits), `alg`, and `crit` for must-understand headers; RFC 7638 thumbprints |
-| W3C DID document | the controller | keys by role (`authentication`, `assertionMethod`, `keyAgreement`, `capabilityInvocation`, `capabilityDelegation`); service endpoints; `did:key`, an identifier that is the key, as signet's kid is |
-| OpenPGP self-signature (RFC 9580) | the primary key | key flags (certify, sign, encrypt communications, encrypt storage, authenticate); preferred algorithms in order; key expiration; subkeys bound by the primary key, with a back-signature by the subkey (cross-signing) |
-| KERI | the current keys | pre-rotation: commit now to the hash of the next key, so a stolen current key cannot rotate the identity |
-| WebAuthn / YubiKey PIV attestation | the authenticator's attestation key | evidence that the key was generated in hardware and cannot be exported; trusting it is a separate question (the vendor's root) |
-| X.509, SSH certificates | an issuer | validity periods, key usage; the issuer part is trust, so it is out of scope here |
+| Spec                                                  | Signed by                                       | What to take                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ----------------------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| MLS KeyPackage (RFC 9420)                             | its own signature key (label `"KeyPackageTBS"`) | the closest model. Carries a signature key, an HPKE `init_key`, a leaf `encryption_key`, **capabilities** (versions, cipher suites, extensions, proposals, credential types) and a **lifetime** (`not_before`, `not_after`). Rules: the sender must check the lifetime and the receiver should; applications must set a maximum lifetime and reject longer ones; every extension used must be listed in capabilities; the encryption key must differ from `init_key`; KeyPackages are meant for one use (reuse enables replay), with an optional "last resort" package; a client must support everything it advertises (13.4) |
+| Signal prekey bundle (X3DH/PQXDH)                     | the long-term identity key signs the prekey     | an identity key vouching for an encryption key, which is our binding applied to `:agree` keys                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| PKCS#10 CSR, S/MIME capabilities (RFC 2986, RFC 8551) | the key it contains                             | proof of possession; algorithm preferences, in order, as an attribute. Replayable (no freshness)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| DPoP (RFC 9449)                                       | the key in its header                           | freshness for a _presentation_: issued-at, a unique id, the audience (method and URL)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| JWK / COSE_Key (RFC 7517, RFC 9052)                   | (a key, not a card)                             | the vocabulary: `use`, `key_ops` (sign, verify, encrypt, decrypt, wrapKey, unwrapKey, deriveKey, deriveBits), `alg`, and `crit` for must-understand headers; RFC 7638 thumbprints                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| W3C DID document                                      | the controller                                  | keys by role (`authentication`, `assertionMethod`, `keyAgreement`, `capabilityInvocation`, `capabilityDelegation`); service endpoints; `did:key`, an identifier that is the key, as signet's kid is                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| OpenPGP self-signature (RFC 9580)                     | the primary key                                 | key flags (certify, sign, encrypt communications, encrypt storage, authenticate); preferred algorithms in order; key expiration; subkeys bound by the primary key, with a back-signature by the subkey (cross-signing)                                                                                                                                                                                                                                                                                                                                                                                                        |
+| KERI                                                  | the current keys                                | pre-rotation: commit now to the hash of the next key, so a stolen current key cannot rotate the identity                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| WebAuthn / YubiKey PIV attestation                    | the authenticator's attestation key             | evidence that the key was generated in hardware and cannot be exported; trusting it is a separate question (the vendor's root)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| X.509, SSH certificates                               | an issuer                                       | validity periods, key usage; the issuer part is trust, so it is out of scope here                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
 ### The dictionary (draft)
 
-| Key | Meaning | From |
-|---|---|---|
-| `:type` | `:signet/key-card` | JOSE `typ`, MLS structures |
-| `:v` | card format version | MLS `version` |
-| `:keys` | the keys this card names, each a map described by the rows below | DID verification methods, MLS (several keys in one package) |
-| `:kid` (per key) | the key itself; the kid carries the algorithm and the public key | `did:key`, JWK |
-| `:purposes` (per key) | what the key is for: `#{:sign :agree :authenticate :certify}`; a relying party refuses other uses | JWK `key_ops`, OpenPGP key flags, DID roles |
-| `:profiles` (per key) | signature profiles the key produces (`:ed25519`, `:p256/x509`, `:secp256k1/cosmos`) | the profiles in this doc |
-| `:accepts` (per key) | encryption formats the key can open, in preference order (`:box/v2`, `:hpke/p256-sha256-aes128gcm`) | MLS cipher suites, OpenPGP preferences, S/MIME capabilities |
-| `:verifies` | signature profiles the holder can check, in order | MLS capabilities, TLS `signature_algorithms` |
-| `:formats` | envelope and protocol versions the holder speaks | MLS `versions` |
-| `:critical` | keys the reader must understand, or else reject the card | JOSE `crit`, MLS (extensions listed in capabilities) |
-| `:not-before`, `:not-after` | validity; the relying party also enforces its own maximum | MLS `Lifetime`, X.509 validity |
-| `:next` | hash of the next key or card (pre-rotation) | KERI |
-| `:attestation` | optional hardware evidence, per key (YubiKey PIV attestation, WebAuthn) | WebAuthn, PIV |
-| `:names` | optional claimed names: assertions, not facts | OpenPGP user IDs, SDSI local names |
-| `:services` | optional endpoints (agent, inbox) | DID services |
+| Key                         | Meaning                                                                                             | From                                                        |
+| --------------------------- | --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `:type`                     | `:signet/key-card`                                                                                  | JOSE `typ`, MLS structures                                  |
+| `:v`                        | card format version                                                                                 | MLS `version`                                               |
+| `:keys`                     | the keys this card names, each a map described by the rows below                                    | DID verification methods, MLS (several keys in one package) |
+| `:kid` (per key)            | the key itself; the kid carries the algorithm and the public key                                    | `did:key`, JWK                                              |
+| `:purposes` (per key)       | what the key is for: `#{:sign :agree :authenticate :certify}`; a relying party refuses other uses   | JWK `key_ops`, OpenPGP key flags, DID roles                 |
+| `:profiles` (per key)       | signature profiles the key produces (`:ed25519`, `:p256/x509`, `:secp256k1/cosmos`)                 | the profiles in this doc                                    |
+| `:accepts` (per key)        | encryption formats the key can open, in preference order (`:box/v2`, `:hpke/p256-sha256-aes128gcm`) | MLS cipher suites, OpenPGP preferences, S/MIME capabilities |
+| `:verifies`                 | signature profiles the holder can check, in order                                                   | MLS capabilities, TLS `signature_algorithms`                |
+| `:formats`                  | envelope and protocol versions the holder speaks                                                    | MLS `versions`                                              |
+| `:critical`                 | keys the reader must understand, or else reject the card                                            | JOSE `crit`, MLS (extensions listed in capabilities)        |
+| `:not-before`, `:not-after` | validity; the relying party also enforces its own maximum                                           | MLS `Lifetime`, X.509 validity                              |
+| `:next`                     | hash of the next key or card (pre-rotation)                                                         | KERI                                                        |
+| `:attestation`              | optional hardware evidence, per key (YubiKey PIV attestation, WebAuthn)                             | WebAuthn, PIV                                               |
+| `:names`                    | optional claimed names: assertions, not facts                                                       | OpenPGP user IDs, SDSI local names                          |
+| `:services`                 | optional endpoints (agent, inbox)                                                                   | DID services                                                |
 
 When the card is presented to one relying party, it goes inside a fresh
 envelope (`:aud`, `:iat`, a nonce), DPoP-style. The card itself stays
@@ -471,7 +471,7 @@ public key, as in SPKI). There are two kinds of identifier for it:
 - **Self-certifying aliases** are identifiers the relying party derives
   itself from the public key: the kid, a hash of the key, or any URI
   scheme that contains the whole key or its hash (`did:key`). The
-  equivalence of these aliases with the key is *computed* by the reader,
+  equivalence of these aliases with the key is _computed_ by the reader,
   not asserted by anyone, so it needs no sayer and no trust. Two
   conditions:
   - The alias must name its derivation (algorithm and hash), as a
@@ -489,7 +489,7 @@ Reading a card therefore produces facts, each tagged with its sayer and
 validity. Examples: K says "my purposes are …"; K says "I accept …"; K1
 says K2 is the same entity, and K2 says the same about K1; K says its
 next key hashes to H. Whether "K1 and K2 are the same entity" follows from
-those mutual statements is a *rule* in the relying party's policy, not
+those mutual statements is a _rule_ in the relying party's policy, not
 something the card decides.
 
 **Consequence: a reduction engine.** Several questions are policy
@@ -554,7 +554,7 @@ an assertion block directly, but it would lose its per-key structure.
 1. **Untrusted sayers are dropped** (pdp pre-filter pass 4: an assertion
    survives only if its sayer is a trust root or delegated for that
    type). A card is signed by a key nobody trusts yet, so all of its
-   statements would vanish. Needed: *self-scoped* assertions. These are
+   statements would vanish. Needed: _self-scoped_ assertions. These are
    statements whose subject is the sayer itself (my purposes, my formats,
    my names in my namespace, my other keys). They are admitted without
    trust because they bind only the sayer; policy rules decide whether
@@ -633,7 +633,7 @@ not a Datalog feature.
 Revocation and negative permissions are where policy evaluation becomes
 ambiguous: a deny by one sayer against an allow by another, order
 dependence, revocations of revocations. Frank's position (2026-10-25):
-treat revocation specially and filter revoked statements out *before*
+treat revocation specially and filter revoked statements out _before_
 the reduction. The reduction then stays monotonic: adding facts can only
 add conclusions.
 
@@ -669,7 +669,7 @@ Alternatives and complements, each avoiding a revocation where possible:
   inside a token, which can only make a decision fail (Biscuit's model).
   A "deny" asserted by another sayer is not a statement type.
 
-Open: when a *key* is revoked, are its statements from before the
+Open: when a _key_ is revoked, are its statements from before the
 revocation still valid? The compromise time is usually unknown, so the
 conservative answer is that all of them are revoked. Also open: what the
 pre-filter does when a revocation source is unavailable (fail closed, or
@@ -697,7 +697,7 @@ accept within a configured staleness).
    an encryption key that the card asserts but that hasn't proven
    possession is less harmful than trusting an unproven signing key. A
    wrong encryption key leaks confidentiality to whoever holds it, while
-   an unproven signing key would let someone *speak as* the identity.
+   an unproven signing key would let someone _speak as_ the identity.
    Signing keys always prove possession by signing the card. An `:agree`
    key carries one of these proof levels, which the reader computes; the
    card cannot claim them:
@@ -716,12 +716,12 @@ accept within a configured staleness).
    key whose private key someone else holds. Messages boxed to it can be
    read by that party, and an unknown key-share is possible: Alice
    believes she writes to Bob, but Carol can read. Who can cause it:
-   - *Not an outsider.* Adding a key changes the card bytes, so it
+   - _Not an outsider._ Adding a key changes the card bytes, so it
      requires the card's signing keys. An outsider who has those keys has
      taken over the identity anyway.
-   - *The holder, by mistake or on purpose.* A malicious holder can leak
+   - _The holder, by mistake or on purpose._ A malicious holder can leak
      plaintext anyway; a mistaken one is what the proof levels catch.
-   - *A compromised issuing system* (for example, card generation in an
+   - _A compromised issuing system_ (for example, card generation in an
      environment an attacker controls). Here `:signed` or `:derived` help,
      because the attacker would also need that key's private half to
      sign.
@@ -748,12 +748,12 @@ accept within a configured staleness).
 **Forward secrecy, raised with decision 2 ("the default should use
 ephemeral keys").** What each mode gives:
 
-| Mode | Keys | Forward secrecy |
-|---|---|---|
-| box today (verified in `encryption.cljc`) | static-static X25519, a fresh HKDF key per message (salt = nonce) | none: a later compromise of either static key opens past boxes |
-| ephemeral sender + static recipient (HPKE base/auth mode) | a fresh sender key per message; auth mode adds static-static for sender authentication | only against compromise of the *sender's* key; a compromise of the recipient's static key still opens every past message |
-| one-time prekeys (Signal, MLS) | the recipient publishes single-use keys | yes, for asynchronous messages; needs one-time cards (decision 4: not now) |
-| Noise KK session (verified in `session.cljc`) | ephemeral on both sides | yes; both sides must take part |
+| Mode                                                      | Keys                                                                                   | Forward secrecy                                                                                                          |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| box today (verified in `encryption.cljc`)                 | static-static X25519, a fresh HKDF key per message (salt = nonce)                      | none: a later compromise of either static key opens past boxes                                                           |
+| ephemeral sender + static recipient (HPKE base/auth mode) | a fresh sender key per message; auth mode adds static-static for sender authentication | only against compromise of the _sender's_ key; a compromise of the recipient's static key still opens every past message |
+| one-time prekeys (Signal, MLS)                            | the recipient publishes single-use keys                                                | yes, for asynchronous messages; needs one-time cards (decision 4: not now)                                               |
+| Noise KK session (verified in `session.cljc`)             | ephemeral on both sides                                                                | yes; both sides must take part                                                                                           |
 
 So "ephemeral by default" can mean two things. For **boxes**, the
 achievable default is an ephemeral sender key with static authentication
@@ -784,14 +784,14 @@ query reflect it.
 
 ### Three kinds of facts
 
-| Kind | Example | Changes when | Source | Origin |
-|---|---|---|---|---|
-| **Holdings** | `:self` holds K in YubiKey 39977151 slot 9c; KMS key X | keys are added, rotated, destroyed | configuration | `:self` |
-| **State** | YubiKey present/absent; agent unlocked/locked; KMS credentials valid until t; P-256 module loaded | plug, unplug, unlock, expiry | watchers, through statecharts | `:self` |
-| **Received** | Bob says his `:agree` key is K', until t | cards arrive, expire, are revoked | signature verification | the sayer |
+| Kind         | Example                                                                                           | Changes when                       | Source                        | Origin    |
+| ------------ | ------------------------------------------------------------------------------------------------- | ---------------------------------- | ----------------------------- | --------- |
+| **Holdings** | `:self` holds K in YubiKey 39977151 slot 9c; KMS key X                                            | keys are added, rotated, destroyed | configuration                 | `:self`   |
+| **State**    | YubiKey present/absent; agent unlocked/locked; KMS credentials valid until t; P-256 module loaded | plug, unplug, unlock, expiry       | watchers, through statecharts | `:self`   |
+| **Received** | Bob says his `:agree` key is K', until t                                                          | cards arrive, expire, are revoked  | signature verification        | the sayer |
 
-Derived from them: *available* (held, present, unlocked), *possible*
-(held, but absent or locked), *publishable*, and the candidates for a
+Derived from them: _available_ (held, present, unlocked), _possible_
+(held, but absent or locked), _publishable_, and the candidates for a
 peer (below).
 
 ### What follows
@@ -809,7 +809,7 @@ peer (below).
   immutable value, so what-if queries and "what do I lose if X goes away"
   (the difference of two query results) are cheap.
 - **The db advises; the provider decides.** Operations use the db to
-  *select* a key. The provider stays authoritative: if the YubiKey is
+  _select_ a key. The provider stays authoritative: if the YubiKey is
   pulled between query and operation, the provider fails closed and the
   event updates the db. A fact saying "available" never replaces the
   provider's own check.
@@ -924,12 +924,12 @@ values", seen from the db's side).
 
 Secrets the design could tempt into facts:
 
-| Item | Not this | But this |
-|---|---|---|
+| Item                                                    | Not this                         | But this                                                                                                                      |
+| ------------------------------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | AWS credentials (access key, secret key, session token) | `[:self :kms-creds "AKIA…" "…"]` | the secret in a guarded vault entry; facts `[:self :credential :kms-1 handle]` and `[:self :credential-valid :kms-1 until-t]` |
-| YubiKey PIN | a fact carrying the PIN | the PIN in guarded memory; the db knows `[:self :provider-state yk :unlocked]` |
-| bearer tokens (work for whoever holds them) | the token as a received fact | the token is a secret; only its digest or id becomes a fact |
-| derived secrets (session keys, shared keys) | a fact | vault entries, as phase 0 already does |
+| YubiKey PIN                                             | a fact carrying the PIN          | the PIN in guarded memory; the db knows `[:self :provider-state yk :unlocked]`                                                |
+| bearer tokens (work for whoever holds them)             | the token as a received fact     | the token is a secret; only its digest or id becomes a fact                                                                   |
+| derived secrets (session keys, shared keys)             | a fact                           | vault entries, as phase 0 already does                                                                                        |
 
 **A guard, not a convention:** inserting a fact rejects values that look
 like secret material (byte arrays, values of known secret types such as
@@ -984,7 +984,7 @@ Proposal: a `session-id` accessor, available only once the handshake is
 complete.
 
 **N2. Key lifetime: epochs and rekeying.** A new key derived from the
-previous one (every message, or every n) is a *symmetric ratchet*
+previous one (every message, or every n) is a _symmetric ratchet_
 (Noise's `Rekey()`, Signal's chain keys): forward secrecy within the
 session, since a leaked current key does not open earlier messages, but
 no healing, since today's key derives all later ones. A new DH gives
@@ -1032,7 +1032,7 @@ global and self-certifying; a nickname is what Bob proposes on his card
 (`:names`). Rules:
 
 - **a name binds to a principal, never to one key.** "bob" means Bob's
-  identity (root kid, through his current card); the *operation* picks
+  identity (root kid, through his current card); the _operation_ picks
   the facet: `box` his `:agree` key, `verify` his signing keys, `session`
   his static key. A name bound to one key breaks at the first rotation;
   a specific key is named by its kid;
@@ -1046,15 +1046,15 @@ global and self-certifying; a nickname is what Bob proposes on his card
 **N6. The short form: `(box/box "alice" "hi alice")`.** Every implicit
 piece resolves through the fact db:
 
-| Piece | Resolves through |
-|---|---|
-| sender | the default identity, `[:self :default-identity …]` |
-| "alice" | `[:named-by :self ?p "alice"]`, then her current valid card |
+| Piece          | Resolves through                                                                                                 |
+| -------------- | ---------------------------------------------------------------------------------------------------------------- |
+| sender         | the default identity, `[:self :default-identity …]`                                                              |
+| "alice"        | `[:named-by :self ?p "alice"]`, then her current valid card                                                      |
 | key and format | her `:accepts` ∩ what I support, at or above my floor, by my preferences (grouping and ordering after the query) |
-| payload | an EDN value (D14); no `"UTF-8"` |
+| payload        | an EDN value (D14); no `"UTF-8"`                                                                                 |
 
 `:self` is not an argument: it is the local authority (namespace, trust
-root), while *me* is the identity that signs and authenticates, and
+root), while _me_ is the identity that signs and authenticates, and
 there may be several (work, personal). `(box "alice" msg)` means
 `(box (me) "alice" msg)`; an identity is passed explicitly only when
 there are several. Implicit choices stay visible:
@@ -1064,7 +1064,7 @@ there are several. Implicit choices stay visible:
 - failures are specific: no card for "alice" → `:not-found`; no common
   format → `:unsupported` with the reason; my own key unavailable for box
   v3's authentication → "insert the YubiKey";
-- Alice re-issuing her card *should* change the choice; silently going
+- Alice re-issuing her card _should_ change the choice; silently going
   below my floor never may.
 
 Later: a `send` above `box` and `session` that uses an established

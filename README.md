@@ -16,7 +16,7 @@ signet keeps three questions apart:
 - **Valid:** the envelope is well-formed, the signature checks out under
   the key named in `:signer`, and it hasn't expired. This is only
   self-consistency: anyone can produce a valid envelope with their own key.
-- **Verified:** valid, *and* the signer (or a chain's root) is the identity
+- **Verified:** valid, _and_ the signer (or a chain's root) is the identity
   you expected. Pass it in, as one kid or a set of kids:
   `(sign/verify-edn env {:signer kid})`, `(chain/verify token {:root kid})`.
   The result then has `:verified?`, and `:valid?` also requires it.
@@ -166,7 +166,7 @@ cacophony and snow test vectors).
   responder's static key: keep non-idempotent commands and long-lived
   secrets for transport messages (docs/05).
 - **Sessions must be closed.** `with-conclave` closes when the block exits.
-  `close!` closes from *any* state of the session, even the first one.
+  `close!` closes from _any_ state of the session, even the first one.
   Afterwards any state of it throws `::session-closed`. A session never
   closed leaves its secrets in the vault; `vault/session-entry-count`
   shows how many.
@@ -175,7 +175,7 @@ cacophony and snow test vectors).
   lives as long as a connection needs `close!` when the connection closes.
   A transport layer that does this for its callers belongs to a consumer
   or a companion library, not to signet.
-- A conclave is a closed meeting (*con clave*, "with a key"); an enclave is
+- A conclave is a closed meeting (_con clave_, "with a key"); an enclave is
   where a vault keeps its secrets.
 
 ## Keys: what is stored, what is not
@@ -222,10 +222,10 @@ property `signet.backend`, then the environment variable `SIGNET_BACKEND`,
 then the default **`sodium`** (since 0.11.0; before, it was `jca`). Both
 backends produce byte-identical signatures, keys and ciphertexts.
 
-| Backend | Namespace | Needs | Notes |
-|---|---|---|---|
-| `sodium` (default) | `signet.impl.sodium` | libsodium >= 1.0.19 (`brew install libsodium`), [nacljc](https://github.com/franks42/nacljc) 0.6.0 (a dependency of signet), JDK 25+ (add `--enable-native-access=ALL-UNNAMED` to silence the JDK's warning), or bb >= 1.13.220 | One implementation on every platform (the browser plan is libsodium.js). Secrets in guarded memory. Password keys and vault files need it. |
-| `jca` | `signet.impl.jvm` | a JDK | Only when asked for: `-Dsignet.backend=jca` or `SIGNET_BACKEND=jca`. No native dependency. Deriving a public key from a seed does not work on babashka. |
+| Backend            | Namespace            | Needs                                                                                                                                                                                                                           | Notes                                                                                                                                                   |
+| ------------------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `sodium` (default) | `signet.impl.sodium` | libsodium >= 1.0.19 (`brew install libsodium`), [nacljc](https://github.com/franks42/nacljc) 0.6.0 (a dependency of signet), JDK 25+ (add `--enable-native-access=ALL-UNNAMED` to silence the JDK's warning), or bb >= 1.13.220 | One implementation on every platform (the browser plan is libsodium.js). Secrets in guarded memory. Password keys and vault files need it.              |
+| `jca`              | `signet.impl.jvm`    | a JDK                                                                                                                                                                                                                           | Only when asked for: `-Dsignet.backend=jca` or `SIGNET_BACKEND=jca`. No native dependency. Deriving a public key from a seed does not work on babashka. |
 
 **No silent fallback.** Without libsodium (or on a JDK older than 25) the
 default fails when signet loads, with an error that names the cause and the

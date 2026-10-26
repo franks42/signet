@@ -20,7 +20,7 @@ instead of her kid. The kid stays the reference; the card is how it
 travels.
 
 **What a card is not:** a statement of trust. A valid card proves that
-whoever made it holds its keys. Whether this is *the* Alice, and what she
+whoever made it holds its keys. Whether this is _the_ Alice, and what she
 may do, is decided elsewhere: by how Bob got the card, by certificates,
 by policy (chapter 5, stroopwafel). Keep that in mind throughout.
 
@@ -80,14 +80,14 @@ stored, mailed or put on a web page. It contains nothing secret.
 What the fields mean (the full dictionary, and where each field comes
 from, is in docs/14):
 
-| Field | Says |
-|---|---|
-| `:keys` | the identity's keys, each with what it is for |
+| Field       | Says                                                                                      |
+| ----------- | ----------------------------------------------------------------------------------------- |
+| `:keys`     | the identity's keys, each with what it is for                                             |
 | `:purposes` | `:sign`, `:certify` (signs cards and bindings), `:agree` (key agreement), `:authenticate` |
-| `:profiles` | the signature formats a key produces (`:ed25519`, `:p256/x509`, `:secp256k1/cosmos`) |
-| `:accepts` | the encryption formats a key can open, in Alice's order of preference |
-| `:verifies` | the signature formats Alice can check |
-| `:formats` | the envelope and box versions Alice speaks |
+| `:profiles` | the signature formats a key produces (`:ed25519`, `:p256/x509`, `:secp256k1/cosmos`)      |
+| `:accepts`  | the encryption formats a key can open, in Alice's order of preference                     |
+| `:verifies` | the signature formats Alice can check                                                     |
+| `:formats`  | the envelope and box versions Alice speaks                                                |
 
 ## Bob reads it
 
@@ -160,7 +160,7 @@ cases visible.
 ## Bob encrypts to Alice, by her card
 
 The API we want: Bob boxes to the card. signet picks the key with
-`:agree`, and the format by *Bob's* order of preference among those the
+`:agree`, and the format by _Bob's_ order of preference among those the
 card accepts, never Alice's order, and never below Bob's floor:
 
 ```clojure
@@ -244,8 +244,8 @@ matters, use a session (chapter 6) instead of a box. Noise defines 25519
 and 448 only, so for P-256 the stronger option is a `:signed` card.
 
 Box v3 (an ephemeral sender key with static authentication, HPKE's auth
-mode) is planned: a later compromise of the *sender's* key will no longer
-open past boxes. A later compromise of the *recipient's* key still will.
+mode) is planned: a later compromise of the _sender's_ key will no longer
+open past boxes. A later compromise of the _recipient's_ key still will.
 That is true of any message that can be sent while the recipient is
 offline, and only sessions or one-time keys avoid it (docs/14,
 "Decisions").

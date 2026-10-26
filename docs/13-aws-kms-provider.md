@@ -2,8 +2,8 @@
 
 Status: **research, 2026-10-24; not built, no spike yet.** Everything below
 is from AWS's documentation (links at the end), read on that date; nothing
-was run against AWS. Claims are marked *verified* (read in the docs or in
-signet's source) or *unverified*.
+was run against AWS. Claims are marked _verified_ (read in the docs or in
+signet's source) or _unverified_.
 
 ## Why
 
@@ -24,20 +24,20 @@ yubikey-sodium's generic PKCS#11 provider is the starting point.
 
 ## What KMS offers, against signet's operations
 
-| signet (Provider op) | AWS KMS | Notes |
-|---|---|---|
-| `-sign`, Ed25519 | **yes**: key spec `ECC_NIST_EDWARDS25519`, `Sign` with `ED25519_SHA_512` and `MessageType: RAW` | Added 2025-11-07, all Regions (verified). **Messages up to 4096 bytes** (verified). `ED25519_PH_SHA_512` is HashEdDSA: a different signature (unusable for signet). |
-| `-x25519-dh` | **no** | `DeriveSharedSecret` is ECDH on NIST P-256/384/521 (and SM2 in China) only; not Ed25519, not secp256k1, no X25519 (verified). |
-| `-hkdf`, `-aead-*` (ChaCha20-Poly1305) | no | KMS has no HKDF and no ChaCha20. |
-| `-hmac` | yes, with HMAC keys (`HMAC_256`, `GenerateMac`/`VerifyMac`) | The tag is returned to the caller; KMS cannot derive a key into a new KMS key, so HMAC does not help keep derived secrets inside. |
-| `-wrap` / `-unwrap` | **yes**: symmetric `Encrypt`/`Decrypt` (AES-256-GCM, up to 4096 bytes, encryption context as AAD) | The fit for vault files (below). The ciphertext format is KMS's own (not decryptable outside KMS). |
-| `-public-key` | `GetPublicKey` (DER SubjectPublicKeyInfo) | Gives signet's kid. |
-| `-generate!` | `CreateKey` | 5 per second; a management call, not a hot path. |
-| `-import!` | yes: asymmetric keys (all but ML-DSA) accept imported material | Existing signet identities could move into KMS (verified). |
-| `-export` | never | Fails closed (`:unsupported`). |
-| `-destroy!` | `ScheduleKeyDeletion`, 7 to 30 days' wait; or `DisableKey` | Not immediate: the provider must say which it did (refuse, or disable and schedule). |
-| secp256k1 (signet's BouncyCastle path) | `ECC_SECG_P256K1`, `ECDSA_SHA_256` | DER signatures; low-s normalization not documented (unverified). |
-| post-quantum signing | `ML_DSA_44/65/87`, `ML_DSA_SHAKE_256` | A possible PQ path (docs/07's open PQ topic). |
+| signet (Provider op)                   | AWS KMS                                                                                           | Notes                                                                                                                                                               |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-sign`, Ed25519                       | **yes**: key spec `ECC_NIST_EDWARDS25519`, `Sign` with `ED25519_SHA_512` and `MessageType: RAW`   | Added 2025-11-07, all Regions (verified). **Messages up to 4096 bytes** (verified). `ED25519_PH_SHA_512` is HashEdDSA: a different signature (unusable for signet). |
+| `-x25519-dh`                           | **no**                                                                                            | `DeriveSharedSecret` is ECDH on NIST P-256/384/521 (and SM2 in China) only; not Ed25519, not secp256k1, no X25519 (verified).                                       |
+| `-hkdf`, `-aead-*` (ChaCha20-Poly1305) | no                                                                                                | KMS has no HKDF and no ChaCha20.                                                                                                                                    |
+| `-hmac`                                | yes, with HMAC keys (`HMAC_256`, `GenerateMac`/`VerifyMac`)                                       | The tag is returned to the caller; KMS cannot derive a key into a new KMS key, so HMAC does not help keep derived secrets inside.                                   |
+| `-wrap` / `-unwrap`                    | **yes**: symmetric `Encrypt`/`Decrypt` (AES-256-GCM, up to 4096 bytes, encryption context as AAD) | The fit for vault files (below). The ciphertext format is KMS's own (not decryptable outside KMS).                                                                  |
+| `-public-key`                          | `GetPublicKey` (DER SubjectPublicKeyInfo)                                                         | Gives signet's kid.                                                                                                                                                 |
+| `-generate!`                           | `CreateKey`                                                                                       | 5 per second; a management call, not a hot path.                                                                                                                    |
+| `-import!`                             | yes: asymmetric keys (all but ML-DSA) accept imported material                                    | Existing signet identities could move into KMS (verified).                                                                                                          |
+| `-export`                              | never                                                                                             | Fails closed (`:unsupported`).                                                                                                                                      |
+| `-destroy!`                            | `ScheduleKeyDeletion`, 7 to 30 days' wait; or `DisableKey`                                        | Not immediate: the provider must say which it did (refuse, or disable and schedule).                                                                                |
+| secp256k1 (signet's BouncyCastle path) | `ECC_SECG_P256K1`, `ECDSA_SHA_256`                                                                | DER signatures; low-s normalization not documented (unverified).                                                                                                    |
+| post-quantum signing                   | `ML_DSA_44/65/87`, `ML_DSA_SHAKE_256`                                                             | A possible PQ path (docs/07's open PQ topic).                                                                                                                       |
 
 **Redundancy and backups:** multi-Region keys (asymmetric and HMAC
 included) share key ID and key material across Regions; each replica works
@@ -147,7 +147,7 @@ entry" variant of `-hmac` (today's returns the tag).
 ## Prior art: the AWS Encryption SDK
 
 AWS's client-side library for KMS-backed encryption (read in its developer
-guide, 2026-10-24; all *verified* in the docs unless marked). Not a
+guide, 2026-10-24; all _verified_ in the docs unless marked). Not a
 candidate dependency: AES-GCM and NIST curves only, no Clojure or bb
 binding (the Java one works from JVM Clojure), and against the
 libsodium-everywhere goal. Worth studying for its design, which solved
@@ -155,7 +155,7 @@ several of signet's problems first.
 
 **What it does.** Envelope encryption: each message gets a fresh data key;
 the payload is encrypted locally; the data key is encrypted by one or more
-*wrapping keys* and the encrypted copies travel in the message. Decrypting
+_wrapping keys_ and the encrypted copies travel in the message. Decrypting
 needs any one wrapping key. The message format is published and all
 language implementations interoperate.
 
@@ -204,12 +204,12 @@ language implementations interoperate.
   `RequireEncryptRequireDecrypt`): the header carries a commitment string
   derived from the data key (HKDF-SHA-512), checked before decryption.
   Reason given: a crafted message with several encrypted data keys could
-  hold *different* data keys for different wrapping keys, so two readers
+  hold _different_ data keys for different wrapping keys, so two readers
   would decrypt one ciphertext to two plaintexts. Cost: 30 bytes.
 - **Framed bodies**: plaintext in equal frames (sequence number, a
   deterministic IV per frame, final frame marked `FF FF FF FF`), so
   streaming, truncation and reordering are detected.
-- **Hierarchical keyring**: a KMS-protected *branch key* stored in
+- **Hierarchical keyring**: a KMS-protected _branch key_ stored in
   DynamoDB is decrypted once (one KMS call), cached locally for a set time
   (the cache-limit TTL), and each message's data key is wrapped under a key
   derived from it with a 16-byte random salt. 10,000 encrypts in one TTL
@@ -229,8 +229,8 @@ language implementations interoperate.
    the file, and adding a KMS key in a second Region is one more entry.
 2. **Encryption context, made checkable.** Signet's AAD today is canonical
    bytes the caller builds (the vault file binds its whole header). A
-   named, structured context that decrypt *returns* and that a policy can
-   *require* (the required-context CMM) is a cleaner interface for
+   named, structured context that decrypt _returns_ and that a policy can
+   _require_ (the required-context CMM) is a cleaner interface for
    `-wrap`/`-unwrap` with a KMS key, whose context also lands in
    CloudTrail.
 3. **Key commitment: check signet's formats.** I read
@@ -252,8 +252,8 @@ language implementations interoperate.
 5. **Caching KMS calls, the Hierarchical way.** If a KMS-sealed vault is
    unlocked often, a cached, derived wrapping key with a TTL is the
    pattern, and the TTL is the same idea as signet's auto-lock (docs/11).
-6. **Two meanings of "signed".** ESDK signatures prove *authorized to
-   encrypt*; signet signatures prove *which identity*. The tutorial should
+6. **Two meanings of "signed".** ESDK signatures prove _authorized to
+   encrypt_; signet signatures prove _which identity_. The tutorial should
    say this: a reader coming from AWS will assume the first.
 7. **Interop, if ever needed.** Signet could write ESDK messages (the format
    is public), but only with AES-GCM and NIST curves. Not now.
