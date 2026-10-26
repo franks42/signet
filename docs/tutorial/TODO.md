@@ -70,6 +70,19 @@ for each item and an injection check for each guard.
 | W10 | no aggregation; solution order is arbitrary | grouping and ordering after the query (Frank): declarative post-processing on the result maps (sort, group, min/max, count, first); deduplicate by projection, total order with a tie-breaker, ranks from rank facts; never rely on solution order; docs/14 "Grouping and ordering after the query" | stroopwafel | open |
 | W7 | stroopwafel docs still describe the pre-0.11 token API | README and `context.md` rewritten on 2026-10-25; the use-case, LLM and websocket docs are marked as pre-0.11 | stroopwafel | done |
 
+## Sessions, key ids and local names (brainstorm, 2026-10-25)
+
+docs/14 "Sessions, key ids and local names".
+
+| # | Gap | Proposal | Status |
+|---|---|---|---|
+| N1 | sessions have no public id; `h` is internal to `session.cljc` (verified) | a `session-id` accessor returning the handshake hash `h`, only after the handshake | open |
+| N2 | no rekey; one key per session | epochs: `(session-id, epoch n)`; a symmetric ratchet (Noise `Rekey()`) first, a DH ratchet as a later option | open |
+| N3 | symmetric keys have no id | `key-id = BLAKE2b(key = k, "signet/key-id/v1")` as a provider operation; high-entropy keys only; doubles as the key commitment G4 asks for | open |
+| N4 | sessions are named only by the objects that hold them | local session ids per side, QUIC-style: the receiver's id on the wire, rotatable; `h` and the epoch inside the associated data | open |
+| N5 | peers are named by kid only | petnames bound to principals (`[:named-by :self kid "bob"]`, W2), never to one key; the operation picks the facet; explicit adoption of card nicknames; uniqueness enforced, fail closed. Form of a petname (string, keyword, tagged) to decide | open |
+| N6 | `box` needs a handle, a public-key record and bytes | `(box "alice" msg)`: default identity, petname → card → capability matching (W10), EDN payload (D14); the choice returned and pinnable; specific errors. A tutorial `[new]` snippet. Later a `send` over session or box | open |
+
 ## Order (proposed)
 
 0. Done: **W1** (the engine fails closed at its limits; stroopwafel
